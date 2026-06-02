@@ -2,5 +2,12 @@
 package main
 
 import (
-	_ "github.com/envsh/fedlet/fbprotocols/gomuks"
+	 "github.com/envsh/fedlet/fbprotocols/gomuks"
 )
+
+func init() {
+	gomuks.SetPublishInfo(func(data []byte) error {
+		return publish(channel_name, data)
+	})
+	gomuks.Start("")
+}

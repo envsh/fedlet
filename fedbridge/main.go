@@ -16,6 +16,7 @@ import (
 )
 
 var publishViaHTTP bool = true
+var channel_name = "reddit"
 
 func publish(channel string, data []byte) error {
 	if publishViaHTTP {
@@ -48,7 +49,7 @@ func main() {
 
 	// go poll_toxrest()
 	go poll_demopub()
-	go poll_gomuks()
+	// go poll_gomuks()
 	// go echoLoop()
 	go tunloop()
 

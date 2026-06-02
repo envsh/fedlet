@@ -1,4 +1,4 @@
-package main
+package gomuks
 
 import (
 	"encoding/base64"
@@ -12,6 +12,31 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+/////
+func publish(data []byte) error {
+	if pubfn_ == nil {
+		return fmt.Errorf("pubfn not set")
+	}
+
+	return pubfn_(data)
+}
+
+var pubfn_ func([]byte) error
+
+func SetPublishInfo(pubfn func([]byte) error) {
+	pubfn_ = pubfn
+}
+
+func Start(info string) {
+	go poll_gomuks()
+}
+
+/////
+
+func init() {
+	// go poll_gomuks()
+}
 
 const gomuksHost = "127.0.0.1:29325"
 
@@ -119,7 +144,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 			if !ok {
 				return
 			}
-			if err := publish(channel_name, msg); err != nil {
+			if err := publish(msg); err != nil {
 				log.Println("publish error:", err)
 			}
 

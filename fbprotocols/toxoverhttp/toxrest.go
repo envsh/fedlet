@@ -1,4 +1,4 @@
-package main
+package toxoverhttp
 
 import (
 	"encoding/json"
@@ -6,10 +6,30 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"fmt"
 )
 
+/////
+func publish(data []byte) error {
+	if pubfn_ == nil {
+		return fmt.Errorf("pubfn not set")
+	}
+
+	return pubfn_(data)
+}
+
+var pubfn_ func([]byte) error
+
+func SetPublishInfo(pubfn func([]byte) error) {
+	pubfn_ = pubfn
+}
+func Start(info string) {
+	go poll_toxrest()
+}
+
+////
+
 var toxrest_url = "http://127.0.0.1:8181/api/events?after="
-var channel_name = "reddit"
 
 type Event struct {
 	ID        uint64    `json:"event_id"`
@@ -66,7 +86,7 @@ func poll_toxrest() {
 				log.Println("marshal error:", err)
 				continue
 			}
-			if err := publish(channel_name, evJSON); err != nil {
+			if err := publish(evJSON); err != nil {
 				log.Println("publish error:", err)
 			} else {
 				published++
