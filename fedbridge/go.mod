@@ -10,6 +10,9 @@ go 1.22.1
 
 // replace github.com/envsh/toxera/fedkey => ../go-toxcore/fedkey
 
+require github.com/envsh/fedlet v0.0.0
+replace github.com/envsh/fedlet => ../
+
 require github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77 // indirect
 
 require github.com/envsh/libp2px v0.0.0-20260525021834-b5562f8364c8 // indirect
