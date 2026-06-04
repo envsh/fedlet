@@ -10,6 +10,13 @@
 * fedbridge后端使用，接入多种协议，转换写入fednet。
   目前考虑使用http接口发送
   起到类似matterbridge的作用
+  重量级包，应该很大
+
+* fbprotocols 不同fed/nonfed协议后端消息源
+  matrix/nostr/misskey/tox/tg/...
+
+* fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
+  客户端也要使用，必须轻量
 
 * qlfed UI端
   qlfeditive

@@ -24,6 +24,9 @@ func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
 }
 func Start(info string) {
+	if info != "" {
+		toxrest_url = info
+	}
 	go poll_toxrest()
 }
 

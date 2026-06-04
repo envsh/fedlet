@@ -2,12 +2,19 @@
 package main
 
 import (
-	 "github.com/envsh/fedlet/fbprotocols/gomuks"
+	"flag"
+
+	"github.com/envsh/fedlet/fbprotocols/gomuks"
 )
+
+var gomuksInfo string
 
 func init() {
 	gomuks.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)
 	})
-	gomuks.Start("")
+	flag.StringVar(&gomuksInfo, "gomuks", "", "gomuks info")
+	starters = append(starters, func() {
+		gomuks.Start(gomuksInfo)
+	})
 }

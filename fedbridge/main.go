@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	// "os"
 	"time"
 	"context"
 
@@ -14,6 +14,8 @@ import (
 	"github.com/envsh/libp2px/pbexec"
 	"github.com/envsh/libp2px/pbtunnel"
 )
+
+var starters []func()
 
 var publishViaHTTP bool = true
 var channel_name = "reddit"
@@ -32,19 +34,19 @@ func publish(channel string, data []byte) error {
 }
 
 func main() {
-	cfg := p2put.ParseConfig()
+	cfg, p2putFs := p2put.ConfigFlags()
 	cfg.Dht = false
-	_ = cfg
 
-	// err1 := cfg.Fset.Parse(os.Args[1:])
-	// if err1 != nil {
-	// 	// log.Println(err1)
-	// 	return
-	// }
-	// cfg.KeyFile = *keyFile
-	// cfg.ListenPort = *port
+	p2putFs.VisitAll(func(f *flag.Flag) {
+		flag.Var(f.Value, f.Name, f.Usage)
+	})
+	flag.Parse()
 
-	go p2put.MainLibp2p(cfg)
+	for _, fn := range starters {
+		fn()
+	}
+
+	go p2put.MainLibp2p(*cfg)
 	p2put.InstallRestHandler("/p2pin", nil)
 
 	// go poll_toxrest()
