@@ -11,14 +11,15 @@ go 1.22.1
 // replace github.com/envsh/toxera/fedkey => ../go-toxcore/fedkey
 
 require github.com/envsh/fedlet v0.0.0
+
 replace github.com/envsh/fedlet => ../
 
 require github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77 // indirect
 
-require github.com/envsh/libp2px v0.0.0-20260525021834-b5562f8364c8 // indirect
+require github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc
 
 // github.com/envsh/libp2px v0.0.0
-require github.com/gorilla/websocket v1.5.3
+require github.com/gorilla/websocket v1.5.3 // indirect
 
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
@@ -134,6 +135,7 @@ require (
 	github.com/quic-go/quic-go v0.46.0 // indirect
 	github.com/quic-go/webtransport-go v0.8.0 // indirect
 	github.com/raulk/go-watchdog v1.3.0 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect

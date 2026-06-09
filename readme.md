@@ -1,4 +1,4 @@
-
+o 
 
 * fednet/p2put 在server端可能是集成的，也可能是独立进程
   server端有点重的，可能需要接入多种协议消息流，转换为fednet消息
@@ -15,7 +15,8 @@
 * fbprotocols 不同fed/nonfed协议后端消息源
     matrix/nostr/misskey/tox/tg/...
     irccloud无法连接非irc.irccloud.com的服务端！！！没法用
-
+	github.com/microsoftgraph/msgraph-sdk-go/models 编译该包内存炸了，有问题
+	不要引入该包。
 
 * fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
   客户端也要使用，必须轻量

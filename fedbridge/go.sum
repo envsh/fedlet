@@ -59,14 +59,10 @@ github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymF
 github.com/envoyproxy/go-control-plane v0.9.1-0.20191026205805-5f8ba28d4473/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1mIlRU8Am5FuJP05cCM98=
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
-github.com/envsh/libp2px v0.0.0-20260525021153-33202b717824 h1:uVIm8Da0JuW0smReYU/oBHkfPCqaqakF+275ybxEqqk=
-github.com/envsh/libp2px v0.0.0-20260525021153-33202b717824/go.mod h1:21JATe9CMuBcrmXytQAgqRi6dxjeWkpZxe8uRJqZSq8=
-github.com/envsh/libp2px v0.0.0-20260525021834-b5562f8364c8 h1:IO6FDplH2Wl818P6uEf6LFk3RJdMTxmgtQZf/+DctOI=
-github.com/envsh/libp2px v0.0.0-20260525021834-b5562f8364c8/go.mod h1:21JATe9CMuBcrmXytQAgqRi6dxjeWkpZxe8uRJqZSq8=
+github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc h1:pYgQszBLWzyEacjyXn4wPONfUiFwvpz/2+RBlNuTZvQ=
+github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc/go.mod h1:21JATe9CMuBcrmXytQAgqRi6dxjeWkpZxe8uRJqZSq8=
 github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77 h1:5+RVBRQ1ElX0kPOjkyoP1SxAVC8stzAvZ7z3x1U9GUA=
 github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77/go.mod h1:cAy6LTDETbzUNUhJAH3zVlyEL/aLUUszFuSHvCwU3K8=
-github.com/envsh/toxera/p2put v0.0.0-20260524012940-1dc81aa9d2e0 h1:lk+2AnjOtG+iYpc+8Z6Ww0fo5l/7mb0q0yQ4Hq0qiJc=
-github.com/envsh/toxera/p2put v0.0.0-20260524012940-1dc81aa9d2e0/go.mod h1:nTI62XzBiAxGNZUXvjm7WTO2nI7KPRhl9rGFwRrj9Yw=
 github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568/go.mod h1:xEzjJPgXI435gkrCt3MPfRiAkVrwSbHsst4LCFVfpJc=
 github.com/flynn/noise v1.1.0 h1:KjPQoQCEFdZDiP03phOvGi11+SVVhBG2wOWAorLsstg=
 github.com/flynn/noise v1.1.0/go.mod h1:xbMo+0i6+IGbYdJhF31t2eR1BIU0CYc12+BNAKwUTag=
@@ -388,8 +384,8 @@ github.com/quic-go/webtransport-go v0.8.0/go.mod h1:N99tjprW432Ut5ONql/aUhSLT0YV
 github.com/raulk/go-watchdog v1.3.0 h1:oUmdlHxdkXRJlwfG0O9omj8ukerm8MEQavSiDTEtBsk=
 github.com/raulk/go-watchdog v1.3.0/go.mod h1:fIvOnLbF0b0ZwkB9YU4mOW9Did//4vPZtDqv66NfsMU=
 github.com/rogpeppe/go-internal v1.3.0/go.mod h1:M8bDsm7K2OlrFYOpmOWEs/qY81heoFRclV5y23lUDJ4=
-github.com/rogpeppe/go-internal v1.10.0 h1:TMyTOH3F/DB16zRVcYyreMH6GnZZrwQVAoYjRBZyWFQ=
-github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncjaFoBhdsK/akog=
+github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
+github.com/rogpeppe/go-internal v1.12.0/go.mod h1:E+RYuTGaKKdloAfM02xzb0FW3Paa99yedzYV+kq4uf4=
 github.com/russross/blackfriday v1.5.2/go.mod h1:JO/DiYxRf+HjHt06OyowR9PTA263kcR/rfWxYHBV53g=
 github.com/russross/blackfriday/v2 v2.0.1/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/sergi/go-diff v1.0.0/go.mod h1:0CfEIISq7TuYL3j771MWULgwwjU+GofnZX9QAmXWZgo=
