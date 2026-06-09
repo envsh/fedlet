@@ -2,19 +2,47 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"strings"
 
 	"github.com/envsh/fedlet/fbprotocols/irccloud"
 )
 
-var ircInfo string
+var ircInfo, ircJoin string
 
 func init() {
-	irccloud.SetPublishInfo(func(data []byte) error {
-		return publish(channel_name, data)
-	})
-	flag.StringVar(&ircInfo, "irc", "", "IRCCloud email:password")
+	flag.StringVar(&ircInfo,    "irc",        "", "IRCCloud email:password")
+	flag.StringVar(&ircJoin,    "irc-join",   "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")
 	starters = append(starters, func() {
-		irccloud.Start(ircInfo)
+		info := ircInfo
+		if ircJoin != "" {
+			var cfg irccloud.AppConfig
+			if err := json.Unmarshal([]byte(ircInfo), &cfg); err != nil {
+				if parts := strings.SplitN(ircInfo, ":", 2); len(parts) == 2 {
+					cfg.Email = parts[0]
+					cfg.Password = parts[1]
+				}
+			}
+			cfg.Channels = splitTrim(ircJoin, ",")
+			if b, err := json.Marshal(cfg); err == nil {
+				info = string(b)
+			}
+		}
+		irccloud.SetPublishInfo(func(data []byte) error {
+			return publish(channel_name, data)
+		})
+		irccloud.Start(info)
 	})
+}
+
+func splitTrim(s, sep string) []string {
+	var out []string
+	for _, v := range strings.Split(s, sep) {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

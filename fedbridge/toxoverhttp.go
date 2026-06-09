@@ -13,7 +13,7 @@ func init() {
 	toxoverhttp.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)
 	})
-	flag.StringVar(&toxhsURL, "toxhs", "", "toxoverhttp REST URL")
+	flag.StringVar(&toxhsURL, "toxhs", "http://127.0.0.1:8181", "toxoverhttp REST URL")
 	starters = append(starters, func() {
 		toxoverhttp.Start(toxhsURL)
 	})

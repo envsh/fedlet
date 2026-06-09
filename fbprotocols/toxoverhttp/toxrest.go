@@ -123,9 +123,9 @@ func poll_toxrest() {
 
 		published := 0
 		for _, ev := range events {
-			log.Println("**", ev.ID)
+			// log.Println("**", ev.ID)
 			if ev.ID > after {
-				after = ev.ID
+				after = ev.ID // after means after
 			}
 			evJSON, err := json.Marshal(ev)
 			if err != nil {
