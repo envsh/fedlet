@@ -5,41 +5,81 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
-const baseURL = "https://www.irccloud.com"
+type ShardRedirect struct {
+	APIHost string
+	Cookie  string
+}
+
+func (s *ShardRedirect) Error() string {
+	return fmt.Sprintf("redirect to shard %s", s.APIHost)
+}
 
 type Config struct {
 	Email    string
 	Password string
 }
 
+type ServerParams struct {
+	Hostname     string
+	Port         int
+	SSL          bool
+	Netname      string
+	Nickname     string
+	Realname     string
+	ServerPass   string
+	NSPass       string
+	JoinCommands string
+	Channels     string
+}
+
 type Client struct {
-	hc *http.Client
+	hc      *http.Client
+	baseURL string
 }
 
 func NewClient() *Client {
-	return &Client{hc: &http.Client{}}
+	return &Client{
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives:   true,
+				MaxIdleConnsPerHost: -1,
+			},
+		},
+		baseURL: "https://www.irccloud.com",
+	}
+}
+
+func (c *Client) SetBaseURL(u string) {
+	c.baseURL = u
 }
 
 func (c *Client) Authenticate(cfg Config) (sessionKey string, err error) {
+	t0 := time.Now()
 	token, err := c.getFormToken()
 	if err != nil {
 		return "", fmt.Errorf("formtoken: %w", err)
 	}
+	log.Println("IRCCloud formtoken took", time.Since(t0))
+
+	t1 := time.Now()
 	sessionKey, err = c.doLogin(cfg.Email, cfg.Password, token)
 	if err != nil {
 		return "", fmt.Errorf("login: %w", err)
 	}
+	log.Println("IRCCloud login took", time.Since(t1))
 	return sessionKey, nil
 }
 
 func (c *Client) getFormToken() (string, error) {
-	req, err := http.NewRequest("POST", baseURL+"/chat/auth-formtoken", nil)
+	req, err := http.NewRequest("POST", c.baseURL+"/chat/auth-formtoken", nil)
 	if err != nil {
 		return "", err
 	}
@@ -69,7 +109,7 @@ func (c *Client) doLogin(email, password, token string) (string, error) {
 	v.Set("email", email)
 	v.Set("password", password)
 
-	req, err := http.NewRequest("POST", baseURL+"/chat/login", strings.NewReader(v.Encode()))
+	req, err := http.NewRequest("POST", c.baseURL+"/chat/login", strings.NewReader(v.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +141,7 @@ func (c *Client) authenticatedPost(path, sessionKey string, form url.Values) (*h
 	}
 	form.Set("session", sessionKey)
 
-	req, err := http.NewRequest("POST", baseURL+path, strings.NewReader(form.Encode()))
+	req, err := http.NewRequest("POST", c.baseURL+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +151,7 @@ func (c *Client) authenticatedPost(path, sessionKey string, form url.Values) (*h
 }
 
 func (c *Client) ConnectStream(sessionKey, sinceID, streamID string) (<-chan []byte, error) {
-	u := baseURL + "/chat/stream"
+	u := c.baseURL + "/chat/stream"
 	if streamID != "" {
 		q := url.Values{}
 		q.Set("since_id", sinceID)
@@ -124,10 +164,26 @@ func (c *Client) ConnectStream(sessionKey, sinceID, streamID string) (<-chan []b
 		return nil, err
 	}
 	req.Header.Set("Cookie", "session="+sessionKey)
+	req.Close = true
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var sh struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+			APIHost string `json:"api_host"`
+			Cookie  string `json:"cookie"`
+		}
+		if json.Unmarshal(body, &sh) == nil && sh.Message == "set_shard" && sh.APIHost != "" {
+			return nil, &ShardRedirect{APIHost: sh.APIHost, Cookie: sh.Cookie}
+		}
+		return nil, fmt.Errorf("stream %d: %s", resp.StatusCode, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -152,8 +208,17 @@ func (c *Client) ConnectStream(sessionKey, sinceID, streamID string) (<-chan []b
 	return ch, nil
 }
 
-func (c *Client) FetchOOB(oobURL string) (<-chan []byte, error) {
-	resp, err := c.hc.Get(oobURL)
+func (c *Client) FetchOOB(sessionKey, oobURL string) (<-chan []byte, error) {
+	if strings.HasPrefix(oobURL, "/") {
+		oobURL = c.baseURL + oobURL
+	}
+
+	req, err := http.NewRequest("GET", oobURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Cookie", "session="+sessionKey)
+	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -277,6 +342,96 @@ func (c *Client) Heartbeat(sessionKey string, selectedBid int, seenEidsJSON stri
 	return nil
 }
 
+func (c *Client) AddServer(sessionKey string, p ServerParams) (int, error) {
+	v := url.Values{}
+	v.Set("hostname", p.Hostname)
+	v.Set("port", strconv.Itoa(p.Port))
+	if p.SSL {
+		v.Set("ssl", "1")
+	}
+	if p.Netname != "" {
+		v.Set("netname", p.Netname)
+	}
+	v.Set("nickname", p.Nickname)
+	if p.Realname != "" {
+		v.Set("realname", p.Realname)
+	}
+	if p.ServerPass != "" {
+		v.Set("server_pass", p.ServerPass)
+	}
+	if p.NSPass != "" {
+		v.Set("nspass", p.NSPass)
+	}
+	if p.JoinCommands != "" {
+		v.Set("joincommands", p.JoinCommands)
+	}
+	if p.Channels != "" {
+		v.Set("channels", p.Channels)
+	}
+
+	resp, err := c.authenticatedPost("/chat/add-server", sessionKey, v)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var sh struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		APIHost string `json:"api_host"`
+		Cookie  string `json:"cookie"`
+	}
+	if json.Unmarshal(body, &sh) == nil && sh.Message == "set_shard" && sh.APIHost != "" {
+		return 0, &ShardRedirect{APIHost: sh.APIHost, Cookie: sh.Cookie}
+	}
+	var r struct {
+		Success bool `json:"success"`
+		CID     int  `json:"cid"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, fmt.Errorf("add-server decode: %w, body=%s", err, string(body))
+	}
+	if !r.Success {
+		return 0, fmt.Errorf("add-server failed: %s", string(body))
+	}
+	return r.CID, nil
+}
+
+func (c *Client) AddDefaultServer(sessionKey, nickname, realname string) (int, error) {
+	v := url.Values{}
+	v.Set("nickname", nickname)
+	v.Set("realname", realname)
+
+	resp, err := c.authenticatedPost("/chat/add-default-server", sessionKey, v)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var sh struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		APIHost string `json:"api_host"`
+		Cookie  string `json:"cookie"`
+	}
+	if json.Unmarshal(body, &sh) == nil && sh.Message == "set_shard" && sh.APIHost != "" {
+		return 0, &ShardRedirect{APIHost: sh.APIHost, Cookie: sh.Cookie}
+	}
+	var r struct {
+		Success bool `json:"success"`
+		CID     int  `json:"cid"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, fmt.Errorf("add-default-server decode: %w, body=%s", err, string(body))
+	}
+	if !r.Success {
+		return 0, fmt.Errorf("add-default-server failed: %s", string(body))
+	}
+	return r.CID, nil
+}
+
 func (c *Client) Backlog(sessionKey string, cid, bid, num, beforeID int) (<-chan []byte, error) {
 	q := url.Values{}
 	q.Set("cid", strconv.Itoa(cid))
@@ -287,7 +442,7 @@ func (c *Client) Backlog(sessionKey string, cid, bid, num, beforeID int) (<-chan
 	if beforeID > 0 {
 		q.Set("beforeid", strconv.Itoa(beforeID))
 	}
-	u := baseURL + "/chat/backlog?" + q.Encode()
+	u := c.baseURL + "/chat/backlog?" + q.Encode()
 
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {

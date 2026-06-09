@@ -24,7 +24,9 @@ func init() {
 					cfg.Password = parts[1]
 				}
 			}
-			cfg.Channels = splitTrim(ircJoin, ",")
+			if len(cfg.Servers) == 0 {
+				cfg.Channels = splitTrim(ircJoin, ",")
+			}
 			if b, err := json.Marshal(cfg); err == nil {
 				info = string(b)
 			}
