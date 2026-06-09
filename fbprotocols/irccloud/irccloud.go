@@ -196,6 +196,21 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 	case "idle":
 		st.checkServers(cl, cfg)
 
+	case "buffer_msg", "buffer_me_msg":
+		var body struct {
+			From string `json:"from"`
+			Chan string `json:"chan"`
+			To   string `json:"to"`
+			Msg  string `json:"msg"`
+		}
+		if err := json.Unmarshal(msg, &body); err == nil {
+			target := body.Chan
+			if target == "" {
+				target = body.To
+			}
+			log.Printf("<%s> <%s> %s", target, body.From, body.Msg)
+		}
+
 	case "channel_init":
 		var ci struct {
 			CID     int    `json:"cid"`
@@ -319,24 +334,53 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 		}
 	}
 
-	cid, err := cl.AddDefaultServer(st.sessionKey, "fedlet", "fedlet")
+	addServer := func() (int, error) {
+		return cl.AddServer(st.sessionKey, ServerParams{
+			Hostname: "irc.freenode.net",
+			Port:     6697,
+			SSL:      true,
+			Netname:  "Freenode",
+			Nickname: "fedlet",
+			Realname: "fedlet",
+		})
+	}
+	cid, err := addServer()
 	if err != nil {
 		var sh *ShardRedirect
 		if errors.As(err, &sh) {
-			log.Println("add-default-server shard redirect:", sh.APIHost)
+			log.Println("add-server shard redirect:", sh.APIHost)
 			cl.SetBaseURL(sh.APIHost)
 			st.sessionKey = sh.Cookie
-			cid, err = cl.AddDefaultServer(st.sessionKey, "fedlet", "fedlet")
+			cid, err = addServer()
 			if err != nil {
-				log.Println("add-default-server error after redirect:", err)
+				log.Println("add-server error after redirect:", err)
 				return
 			}
+		} else if strings.Contains(err.Error(), "connecting_restricted") {
+			log.Println("add-server restricted, falling back to add-default-server")
+			cid, err = cl.AddDefaultServer(st.sessionKey, "fedlet", "fedlet")
+			if err != nil {
+				var sh2 *ShardRedirect
+				if errors.As(err, &sh2) {
+					log.Println("add-default-server shard redirect:", sh2.APIHost)
+					cl.SetBaseURL(sh2.APIHost)
+					st.sessionKey = sh2.Cookie
+					cid, err = cl.AddDefaultServer(st.sessionKey, "fedlet", "fedlet")
+					if err != nil {
+						log.Println("add-default-server error after redirect:", err)
+						return
+					}
+				} else {
+					log.Println("add-default-server error:", err)
+					return
+				}
+			}
 		} else {
-			log.Println("add-default-server error:", err)
+			log.Println("add-server error:", err)
 			return
 		}
 	}
-	log.Printf("added default server → cid %d", cid)
+	log.Printf("added server irc.freenode.net → cid %d", cid)
 	st.pendingJoins[cid] = cfg.Channels
 }
 

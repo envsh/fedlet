@@ -13,7 +13,9 @@
   重量级包，应该很大
 
 * fbprotocols 不同fed/nonfed协议后端消息源
-  matrix/nostr/misskey/tox/tg/...
+    matrix/nostr/misskey/tox/tg/...
+    irccloud无法连接非irc.irccloud.com的服务端！！！没法用
+
 
 * fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
   客户端也要使用，必须轻量

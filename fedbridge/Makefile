@@ -1,2 +1,2 @@
 all:
-	go build -v -tags gomuks,toxoverhttp,irccloud
+	go build -v -tags gomuks,toxoverhttp

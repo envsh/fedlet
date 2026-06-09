@@ -375,6 +375,7 @@ func (c *Client) AddServer(sessionKey string, p ServerParams) (int, error) {
 	}
 	defer resp.Body.Close()
 
+	log.Printf("AddServer %s (netname=%s port=%d) HTTP %d", p.Hostname, p.Netname, p.Port, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	var sh struct {
 		Success bool   `json:"success"`
