@@ -46,6 +46,7 @@ type messageData struct {
 	ReceivedDateTime string   `json:"receivedDateTime"`
 	FolderID         string   `json:"folderId"`
 	FolderName       string   `json:"folderName"`
+	Charset          string   `json:"charset"`
 }
 
 type stateData struct {
@@ -117,14 +118,14 @@ func saveState(s *stateData) {
 	os.WriteFile(p, data, 0600)
 }
 
-func getBodyPreview(r io.Reader) string {
+func getBodyPreview(r io.Reader) (string, string) {
 	if r == nil {
-		return ""
+		return "", ""
 	}
 
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 
 	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
@@ -133,7 +134,8 @@ func getBodyPreview(r io.Reader) string {
 	}
 
 	if strings.HasPrefix(mediaType, "text/plain") {
-		return readTextBody(msg.Body, params["charset"])
+		cs := params["charset"]
+		return readTextBody(msg.Body, cs), cs
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
@@ -145,12 +147,13 @@ func getBodyPreview(r io.Reader) string {
 			}
 			pmt, pmp, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
 			if strings.HasPrefix(pmt, "text/plain") {
-				return readTextBody(part, pmp["charset"])
+				cs := pmp["charset"]
+				return readTextBody(part, cs), cs
 			}
 		}
 	}
 
-	return ""
+	return "", ""
 }
 
 func readTextBody(r io.Reader, charset string) string {
@@ -299,6 +302,13 @@ func poll(username, password, server string, dirs []string) {
 		return
 	}
 	log.Println("emailimap: logged in")
+
+	enabled, err := c.Enable([]string{"UTF8=ACCEPT"})
+	if err != nil {
+		log.Printf("emailimap: ENABLE UTF8=ACCEPT not supported: %v", err)
+	} else {
+		log.Printf("emailimap: ENABLE UTF8=ACCEPT enabled: %v", enabled)
+	}
 
 	state := loadState()
 
@@ -491,7 +501,7 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 			m.ReceivedDateTime = msg.Envelope.Date.Format(time.RFC3339)
 		}
 
-		m.BodyPreview = getBodyPreview(msg.GetBody(&section))
+		m.BodyPreview, m.Charset = getBodyPreview(msg.GetBody(&section))
 		result = append(result, m)
 	}
 
