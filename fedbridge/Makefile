@@ -1,2 +1,2 @@
 all:
-	go build -v -tags gomuks,toxoverhttp,outlookgraph
+	go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap
