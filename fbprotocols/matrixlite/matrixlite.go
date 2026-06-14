@@ -3,6 +3,7 @@ package matrixlite
 import (
 	"encoding/json"
 	"log"
+	"net/http"
 	"time"
 )
 
@@ -59,14 +60,19 @@ func pollLoop(info string) {
 	cfg := parseConfig(info)
 	log.Printf("matrixlite: server=%s user=%s", cfg.Server, cfg.User)
 
+	var state State
+	state.Load()
+
 	for {
-		client, err := Login(cfg.Server, cfg.User, cfg.Password)
-		if err != nil {
-			log.Printf("matrixlite: login error: %v", err)
+		client := loginOrRestore(cfg, &state)
+		if client == nil {
 			time.Sleep(10 * time.Second)
 			continue
 		}
-		log.Printf("matrixlite: logged in as %s (sliding=%v)", client.userID, client.useSliding)
+
+		state.Server = cfg.Server
+		client.SaveSyncState(&state)
+		state.Save()
 
 		for {
 			events, err := client.Sync(30 * time.Second)
@@ -74,6 +80,10 @@ func pollLoop(info string) {
 				log.Printf("matrixlite: sync error: %v", err)
 				break
 			}
+
+			client.SaveSyncState(&state)
+			state.Save()
+
 			for _, ev := range events {
 				var msg Message
 				if json.Unmarshal(ev.Data, &msg) == nil && msg.Body != "" {
@@ -88,4 +98,43 @@ func pollLoop(info string) {
 		log.Println("matrixlite: disconnected, reconnecting in 5s")
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func loginOrRestore(cfg *Config, state *State) *Client {
+	c := &Client{
+		baseURL: cfg.Server,
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
+	}
+
+	if state.Valid() && state.Server == cfg.Server {
+		c.RestoreFromState(state)
+		if _, err := c.Sync(0); err == nil {
+			log.Printf("matrixlite: restored session for %s (sliding=%v)", c.userID, c.useSliding)
+			return c
+		}
+		if c.refreshToken != "" {
+			if rerr := c.TokenRefresh(); rerr == nil {
+				log.Printf("matrixlite: token refreshed for %s", c.userID)
+				c.SaveSyncState(state)
+				state.Save()
+				if _, err := c.Sync(0); err == nil {
+					return c
+				}
+			}
+		}
+		log.Printf("matrixlite: session expired, re-logging in")
+	}
+
+	var err error
+	c, err = Login(cfg.Server, cfg.User, cfg.Password)
+	if err != nil {
+		log.Printf("matrixlite: login error: %v", err)
+		return nil
+	}
+	log.Printf("matrixlite: logged in as %s (sliding=%v)", c.userID, c.useSliding)
+	return c
 }

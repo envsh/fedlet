@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -264,5 +266,172 @@ func TestSlidingSyncFallbackToNormal(t *testing.T) {
 	}
 	if msg.Body != "fallback" {
 		t.Errorf("body: got %q", msg.Body)
+	}
+}
+
+func TestStateRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	s := State{
+		Server:       "https://matrix.example.com",
+		AccessToken:  "syt_token",
+		RefreshToken: "v2_refresh",
+		UserID:       "@user:example.com",
+		DeviceID:     "DEVICE",
+		NextBatch:    "s123_456",
+		UseSliding:   false,
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	var loaded State
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.AccessToken != s.AccessToken {
+		t.Errorf("token: got %q", loaded.AccessToken)
+	}
+	if loaded.RefreshToken != s.RefreshToken {
+		t.Errorf("refresh: got %q", loaded.RefreshToken)
+	}
+	if loaded.NextBatch != s.NextBatch {
+		t.Errorf("next_batch: got %q", loaded.NextBatch)
+	}
+
+	path := filepath.Join(dir, ".config", "fedlet", "matrixlite-state.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("state file missing: %v", err)
+	}
+}
+
+func TestStateValid(t *testing.T) {
+	s := State{Server: "https://matrix.example.com", AccessToken: "tok"}
+	if !s.Valid() {
+		t.Error("expected valid")
+	}
+	s.AccessToken = ""
+	if s.Valid() {
+		t.Error("expected invalid with empty token")
+	}
+	s.AccessToken = "tok"
+	s.Server = ""
+	if s.Valid() {
+		t.Error("expected invalid with empty server")
+	}
+}
+
+func TestStateSaveSync(t *testing.T) {
+	client := &Client{
+		baseURL:      "https://matrix.example.com",
+		accessToken:  "syt_tok",
+		refreshToken: "v2_ref",
+		userID:       "@u:example.com",
+		deviceID:     "DEV",
+		nextBatch:    "s5",
+		useSliding:   false,
+	}
+
+	s := State{Server: "https://matrix.example.com"}
+	client.SaveSyncState(&s)
+	if s.AccessToken != "syt_tok" {
+		t.Errorf("token: got %q", s.AccessToken)
+	}
+	if s.NextBatch != "s5" {
+		t.Errorf("next_batch: got %q", s.NextBatch)
+	}
+	if s.UseSliding {
+		t.Error("expected useSliding=false")
+	}
+}
+
+func TestStateRestore(t *testing.T) {
+	s := State{
+		Server:      "https://matrix.example.com",
+		AccessToken: "syt_tok",
+		UserID:      "@u:example.com",
+		DeviceID:    "DEV",
+		NextBatch:   "s5",
+	}
+
+	client := &Client{
+		baseURL: s.Server,
+		hc:      &http.Client{Transport: &http.Transport{DisableKeepAlives: true}},
+	}
+	client.RestoreFromState(&s)
+	if client.accessToken != "syt_tok" {
+		t.Errorf("token: got %q", client.accessToken)
+	}
+	if client.nextBatch != "s5" {
+		t.Errorf("next_batch: got %q", client.nextBatch)
+	}
+	if client.userID != "@u:example.com" {
+		t.Errorf("user: got %q", client.userID)
+	}
+}
+
+func TestTokenRefresh(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			w.Write([]byte(`{"user_id":"@test:example.com","access_token":"syt_old","refresh_token":"v2_ref","device_id":"DEV"}`))
+		case "/_matrix/client/v3/versions":
+			w.Write([]byte(`{"unstable_features":{}}`))
+		case "/_matrix/client/v1/refresh":
+			w.Write([]byte(`{"access_token":"syt_new","refresh_token":"v2_new_ref","expires_in_ms":86400000}`))
+		default:
+			t.Logf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	c, err := Login(srv.URL, "@test:example.com", "pass")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if c.refreshToken != "v2_ref" {
+		t.Errorf("refresh_token: got %q", c.refreshToken)
+	}
+	if err := c.TokenRefresh(); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if c.accessToken != "syt_new" {
+		t.Errorf("access_token after refresh: got %q", c.accessToken)
+	}
+	if c.refreshToken != "v2_new_ref" {
+		t.Errorf("refresh_token after refresh: got %q", c.refreshToken)
+	}
+}
+
+func TestLoginWithRefreshToken(t *testing.T) {
+	gotRefreshTok := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			var body struct {
+				RefreshTok bool `json:"refresh_token"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			gotRefreshTok = body.RefreshTok
+			w.Write([]byte(`{"user_id":"@test:example.com","access_token":"syt_tok","refresh_token":"v2_ref","device_id":"DEV"}`))
+		case "/_matrix/client/v3/versions":
+			w.Write([]byte(`{"unstable_features":{}}`))
+		default:
+			t.Logf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	c, err := Login(srv.URL, "@test:example.com", "pass")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !gotRefreshTok {
+		t.Error("login request missing refresh_token field")
+	}
+	if c.accessToken != "syt_tok" {
+		t.Errorf("token: got %q", c.accessToken)
+	}
+	if c.refreshToken != "v2_ref" {
+		t.Errorf("refresh_token: got %q", c.refreshToken)
 	}
 }

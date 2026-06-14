@@ -15,15 +15,16 @@ import (
 const slidingSyncEndpoint = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
 
 type Client struct {
-	baseURL     string
-	accessToken string
-	userID      string
-	deviceID    string
-	nextBatch   string
-	slidingPos  string
-	useSliding  bool
-	txnID       int64
-	hc          *http.Client
+	baseURL      string
+	accessToken  string
+	refreshToken string
+	userID       string
+	deviceID     string
+	nextBatch    string
+	slidingPos   string
+	useSliding   bool
+	txnID        int64
+	hc           *http.Client
 }
 
 func Login(server, user, password string) (*Client, error) {
@@ -49,12 +50,14 @@ type loginReq struct {
 	User       string `json:"user"`
 	Password   string `json:"password"`
 	DeviceName string `json:"initial_device_display_name,omitempty"`
+	RefreshTok bool   `json:"refresh_token,omitempty"`
 }
 
 type loginResp struct {
-	UserID      string `json:"user_id"`
-	AccessToken string `json:"access_token"`
-	DeviceID    string `json:"device_id"`
+	UserID       string `json:"user_id"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	DeviceID     string `json:"device_id"`
 }
 
 func (c *Client) doLogin(user, password string) error {
@@ -63,6 +66,7 @@ func (c *Client) doLogin(user, password string) error {
 		User:       user,
 		Password:   password,
 		DeviceName: "fedlet-bridge",
+		RefreshTok: true,
 	})
 	resp, err := c.doRequest(http.MethodPost, "/_matrix/client/v3/login", body)
 	if err != nil {
@@ -79,8 +83,68 @@ func (c *Client) doLogin(user, password string) error {
 		return fmt.Errorf("login: no access_token: %s", string(raw))
 	}
 	c.accessToken = lr.AccessToken
+	c.refreshToken = lr.RefreshToken
 	c.userID = lr.UserID
 	c.deviceID = lr.DeviceID
+	return nil
+}
+
+func (c *Client) RestoreFromState(s *State) {
+	c.accessToken = s.AccessToken
+	c.refreshToken = s.RefreshToken
+	c.userID = s.UserID
+	c.deviceID = s.DeviceID
+	c.nextBatch = s.NextBatch
+	c.slidingPos = s.SlidingPos
+	c.useSliding = s.UseSliding
+}
+
+func (c *Client) SaveSyncState(s *State) {
+	s.AccessToken = c.accessToken
+	s.RefreshToken = c.refreshToken
+	s.UserID = c.userID
+	s.DeviceID = c.deviceID
+	s.UseSliding = c.useSliding
+	if c.useSliding {
+		s.SlidingPos = c.slidingPos
+	} else {
+		s.NextBatch = c.nextBatch
+	}
+}
+
+type refreshReq struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+type refreshResp struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresInMS  int    `json:"expires_in_ms"`
+}
+
+func (c *Client) TokenRefresh() error {
+	if c.refreshToken == "" {
+		return fmt.Errorf("no refresh_token available")
+	}
+	body, _ := json.Marshal(refreshReq{RefreshToken: c.refreshToken})
+	resp, err := c.doRequest(http.MethodPost, "/_matrix/client/v1/refresh", body)
+	if err != nil {
+		return fmt.Errorf("refresh: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var rr refreshResp
+	if err := json.Unmarshal(raw, &rr); err != nil {
+		return fmt.Errorf("refresh decode: %w: %s", err, string(raw))
+	}
+	if rr.AccessToken == "" {
+		return fmt.Errorf("refresh: no access_token: %s", string(raw))
+	}
+	c.accessToken = rr.AccessToken
+	if rr.RefreshToken != "" {
+		c.refreshToken = rr.RefreshToken
+	}
 	return nil
 }
 
