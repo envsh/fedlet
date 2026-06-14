@@ -40,6 +40,7 @@ func main() {
 	p2putFs.VisitAll(func(f *flag.Flag) {
 		flag.Var(f.Value, f.Name, f.Usage)
 	})
+	flag.IntVar(&usepeer, "peerno", usepeer, "use which peerno as tunnel dest")
 	flag.Parse()
 
 	for _, fn := range starters {
@@ -71,6 +72,14 @@ func main() {
 
 func tunloop() {
 	peerid := peerid2
+	switch usepeer {
+		case 3:
+			peerid = peerid3
+		case 2:
+			peerid = peerid0
+		case 1:
+			peerid = peerid1
+	}
 
 	srv := pbtunnel.NewDriftServer(peerid)
 	log.Println("Listen on :9339 =>", peerid)
@@ -79,9 +88,11 @@ func tunloop() {
 	select{}
 }
 
+var usepeer = 0 // default
 var peerid0 = "12D3KooWHXjoE8cMhPPD7JaUGHHiXCNLHQcbgUQrXFc788oq6ahm"
 var peerid1 = "12D3KooWDVExaeKp1YzYvhS7E6oZDdDnEB3HENS9VrYp3vKME7m1"
 var peerid2 = "12D3KooWSgyQhqayreZ6UequLq3ZGxJm1WG4tyszD29ps8zNtYLT"
+var peerid3 = "12D3KooWQve1nD9X7ENnCPRFwJsXD9YvRWuPSbBBR9bxb3mdBNWS"
 
 func echoLoop() {
 	peerid := peerid1
