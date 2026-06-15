@@ -15,6 +15,7 @@ import (
 	"github.com/envsh/libp2px/pbtunnel"
 )
 
+// plugin flag processors
 var starters []func()
 
 var publishViaHTTP bool = true
@@ -47,8 +48,8 @@ func main() {
 		fn()
 	}
 
-	go p2put.MainLibp2p(*cfg)
 	p2put.InstallRestHandler("/p2pin", nil)
+	go p2put.MainLibp2p(*cfg)
 
 	// go poll_toxrest()
 	go poll_demopub()
@@ -85,9 +86,13 @@ func tunloop() {
 	log.Println("Listen on :9339 =>", peerid)
 	err := srv.Listen(":9339")
 	log.Println(err)
+	if err == nil {
+		driftsrv = srv
+	}
 	select{}
 }
 
+var driftsrv *pbtunnel.DriftServer
 var usepeer = 0 // default
 var peerid0 = "12D3KooWHXjoE8cMhPPD7JaUGHHiXCNLHQcbgUQrXFc788oq6ahm"
 var peerid1 = "12D3KooWDVExaeKp1YzYvhS7E6oZDdDnEB3HENS9VrYp3vKME7m1"
