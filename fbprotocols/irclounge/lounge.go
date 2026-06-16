@@ -1,9 +1,11 @@
 package irclounge
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,6 +13,8 @@ import (
 var pubfn_ func([]byte) error
 var muLounge sync.Mutex
 var ircloungeClient *Client
+var joinedMu sync.Mutex
+var joinedSet = make(map[string]bool)
 
 func SetPublishInfo(pubfn func([]byte) error) { pubfn_ = pubfn }
 
@@ -30,9 +34,11 @@ func split2(s, sep string) []string {
 	return nil
 }
 
-func Start(server, auth string) { go pollLounge(server, auth) }
+func Start(server, auth, joinChannels, networkCfg string) {
+	go pollLounge(server, auth, joinChannels, networkCfg)
+}
 
-func pollLounge(server, auth string) {
+func pollLounge(server, auth, joinChannels, networkCfg string) {
 	user, password := "", ""
 	if auth != "" {
 		parts := split2(auth, ":")
@@ -41,6 +47,23 @@ func pollLounge(server, auth string) {
 		}
 	}
 	log.Printf("irclounge: server=%s user=%s", server, user)
+
+	defNet := DefaultNetwork()
+	requestedName := defNet.Name
+	requestedHost := defNet.Host
+	requestedPort := defNet.Port
+	if networkCfg != "" {
+		var netCfg NetworkConfig
+		if err := json.Unmarshal([]byte(networkCfg), &netCfg); err == nil {
+			if netCfg.Name != "" {
+				requestedName = netCfg.Name
+			}
+			if netCfg.Host != "" {
+				requestedHost = netCfg.Host
+			}
+			requestedPort = netCfg.Port
+		}
+	}
 
 	for {
 		client, err := Connect(server, user, password)
@@ -57,25 +80,103 @@ func pollLounge(server, auth string) {
 		for event := range client.Events {
 			switch event.Type {
 			case "msg":
-				msg, err := ParseMsgEvent(event.Data)
-				if err != nil {
-					log.Printf("irclounge: parse msg error: %v", err)
+				msg, parseErr := ParseMsgEvent(event.Data)
+				if parseErr != nil {
+					log.Printf("irclounge: parse msg error: %v", parseErr)
 				} else {
 					from := ""
 					if msg.From != nil {
 						from = msg.From.Nick
 					}
 					log.Printf("irclounge: <%s> %s", from, msg.Text)
+					if from == "" && strings.HasPrefix(msg.Text, "Network created, connecting to ") {
+						rest := strings.TrimPrefix(msg.Text, "Network created, connecting to ")
+						rest = strings.TrimRight(rest, ".")
+						host, portStr, ok := strings.Cut(rest, ":")
+						if ok {
+							port, err := strconv.Atoi(strings.TrimRight(portStr, "."))
+							if err == nil && (host != requestedHost || port != requestedPort) {
+								log.Printf("irclounge: WARNING: server connected to %s:%d instead of requested %s:%d; settings may have been overridden (lockNetwork)", host, port, requestedHost, requestedPort)
+							}
+						}
+					}
 				}
 				if err := publish(event.Data); err != nil {
 					log.Printf("irclounge: publish error: %v", err)
 				}
 
 			case "init":
-				log.Println("irclounge: initial state loaded")
+				log.Println("irclounge: initial state loaded, parsing...")
+				var initData InitData
+				if err := json.Unmarshal(event.Data, &initData); err != nil {
+					log.Printf("irclounge: init parse error: %v", err)
+				} else if len(initData.Networks) == 0 {
+					log.Println("irclounge: no networks configured")
+					cfg := DefaultNetwork()
+					if networkCfg != "" {
+						if err := json.Unmarshal([]byte(networkCfg), &cfg); err != nil {
+							log.Printf("irclounge: invalid network config: %v", err)
+						}
+					}
+					if joinChannels != "" {
+						if cfg.Join != "" {
+							cfg.Join += ","
+						}
+						cfg.Join += joinChannels
+					}
+					log.Printf("irclounge: creating network %s (%s)", cfg.Name, cfg.Host)
+
+					if err := client.CreateNetwork(cfg); err != nil {
+						log.Printf("irclounge: create network error: %v", err)
+					}
+				} else {
+					for _, net := range initData.Networks {
+						log.Printf("irclounge: network=%s nick=%s connected=%v secure=%v",
+							net.Name, net.Nick, net.Status.Connected, net.Status.Secure)
+						if net.Name != requestedName {
+							log.Printf("irclounge: WARNING: requested network name %q but server reports %q; settings (host/port/tls) may have been overridden (built-in name mapping or lockNetwork)", requestedName, net.Name)
+						}
+						for _, ch := range net.Channels {
+							log.Printf("irclounge:   channel %s (id=%d)", ch.Name, ch.ID)
+							joinedMu.Lock()
+							joinedSet[ch.Name] = true
+							joinedMu.Unlock()
+						}
+					}
+					if joinChannels != "" {
+						wanted := strings.Split(joinChannels, ",")
+						for _, ch := range wanted {
+							ch = strings.TrimSpace(ch)
+							if ch == "" {
+								continue
+							}
+							joinedMu.Lock()
+							already := joinedSet[ch]
+							joinedMu.Unlock()
+							if !already {
+								log.Printf("irclounge: joining channel %s", ch)
+								if err := client.Join(ch); err != nil {
+									log.Printf("irclounge: join %s error: %v", ch, err)
+								}
+								joinedMu.Lock()
+								joinedSet[ch] = true
+								joinedMu.Unlock()
+							}
+						}
+					}
+				}
 
 			case "network:status", "network", "network:name":
-				log.Printf("irclounge: network event %s", event.Type)
+				if event.Type == "network" {
+					var wrap struct {
+						Network Network `json:"network"`
+					}
+					if err := json.Unmarshal(event.Data, &wrap); err == nil && wrap.Network.Name != "" {
+						if wrap.Network.Name != requestedName {
+							log.Printf("irclounge: WARNING: requested network name %q but server reports %q; settings (host/port/tls) may have been overridden", requestedName, wrap.Network.Name)
+						}
+					}
+				}
 
 			case "join", "part", "quit", "nick", "topic":
 				log.Printf("irclounge: %s %s", event.Type, string(event.Data))

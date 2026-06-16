@@ -97,3 +97,33 @@ type Event struct {
 	Type string
 	Data []byte
 }
+
+type InitData struct {
+	Active   int       `json:"active"`
+	Networks []Network `json:"networks"`
+}
+
+type NetworkConfig struct {
+	Name              string `json:"name"`
+	Host              string `json:"host"`
+	Port              int    `json:"port"`
+	TLS               bool   `json:"tls"`
+	Nick              string `json:"nick"`
+	Username          string `json:"username"`
+	Realname          string `json:"realname"`
+	Password          string `json:"password,omitempty"`
+	RejectUnauthorized bool  `json:"rejectUnauthorized"`
+	SASL              string `json:"sasl,omitempty"`
+	SASLAccount       string `json:"saslAccount,omitempty"`
+	SASLPassword      string `json:"saslPassword,omitempty"`
+	Join              string `json:"join,omitempty"`
+}
+
+func DefaultNetwork() NetworkConfig {
+	return NetworkConfig{
+		Name: "IRC (fedlet)", Host: "irc.oftc.net",
+		Port: 6697, TLS: true,
+		Nick: "fedlet", Username: "fedlet",
+		Realname: "Fedlet Bridge", RejectUnauthorized: true,
+	}
+}

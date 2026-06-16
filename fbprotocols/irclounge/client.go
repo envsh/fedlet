@@ -129,6 +129,17 @@ func (c *Client) RunCommand(channelID int, text string) error {
 	return c.SendMessage(channelID, text)
 }
 
+func (c *Client) Join(channel string) error {
+	return c.sio.Emit("input", map[string]interface{}{
+		"target": nil,
+		"text":   "/join " + channel,
+	})
+}
+
+func (c *Client) CreateNetwork(cfg NetworkConfig) error {
+	return c.sio.Emit("network:new", cfg)
+}
+
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
