@@ -111,6 +111,11 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q event_id=%d",
 		chatType, idStr, message, e.ID)
 
+	log.Printf("toxrestsim: dispatching type=%q id=%q message=%q", chatType, idStr, message)
+	if err := DispatchSend(chatType, idStr, message, ""); err != nil {
+		log.Printf("toxrestsim: dispatch error: %v", err)
+	}
+
 	writeJSON(w, map[string]interface{}{"message_id": e.ID})
 }
 

@@ -24,10 +24,13 @@ func publish(data []byte) error {
 }
 
 var (
-	pubfn_    func([]byte) error
-	muGomuks  sync.Mutex
+	pubfn_     func([]byte) error
+	muGomuks   sync.Mutex
 	gomuksConn *websocket.Conn
 	gomuksSeq  int
+
+	pendingMu    sync.Mutex
+	pendingSends = map[int]chan error{}
 )
 
 func SetPublishInfo(pubfn func([]byte) error) {
@@ -158,6 +161,26 @@ func gomuksEventLoop(c *websocket.Conn) {
 			if !ok {
 				return
 			}
+			var resp struct {
+				Command   string          `json:"command"`
+				RequestID int             `json:"request_id"`
+				Data      json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(msg, &resp) == nil {
+				pendingMu.Lock()
+				ch, ok := pendingSends[resp.RequestID]
+				pendingMu.Unlock()
+				if ok {
+					if resp.Command == "error" {
+						var errStr string
+						json.Unmarshal(resp.Data, &errStr)
+						ch <- fmt.Errorf("gomuks: %s", errStr)
+					} else {
+						ch <- nil
+					}
+					continue
+				}
+			}
 			if err := publish(msg); err != nil {
 				log.Println("publish error:", err)
 			}
@@ -181,6 +204,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 }
 
 func Send(roomID, msg, msgType string) error {
+	log.Printf("gomuks: Send roomID=%q msg=%q msgType=%q", roomID, msg, msgType)
 	if roomID == "" || msg == "" {
 		return fmt.Errorf("gomuks: empty roomID or message")
 	}
@@ -204,5 +228,25 @@ func Send(roomID, msg, msgType string) error {
 	if err != nil {
 		return fmt.Errorf("gomuks: marshal error: %w", err)
 	}
-	return conn.WriteMessage(websocket.TextMessage, data)
+
+	ch := make(chan error, 1)
+	pendingMu.Lock()
+	pendingSends[seq] = ch
+	pendingMu.Unlock()
+	defer func() {
+		pendingMu.Lock()
+		delete(pendingSends, seq)
+		pendingMu.Unlock()
+	}()
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return err
+	}
+
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("gomuks: send timeout")
+	}
 }

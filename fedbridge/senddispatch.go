@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 var senders = make(map[string]func(to, msg, msgType string) error)
 
@@ -10,10 +13,13 @@ func RegisterSender(key string, fn func(to, msg, msgType string) error) {
 
 func DispatchSend(ctype, to, msg, msgType string) error {
 	fn, ok := senders[ctype]
+	log.Printf("senddispatch: ctype=%q to=%q msg=%q sender_ok=%v", ctype, to, msg, ok)
 	if !ok {
 		return fmt.Errorf("senddispatch: unknown contact type %q", ctype)
 	}
-	return fn(to, msg, msgType)
+	err := fn(to, msg, msgType)
+	log.Printf("senddispatch: ctype=%q result=%v", ctype, err)
+	return err
 }
 
 // 联系人类型常量（与 toxhttpd/qltox/eventpoller.cpp 定义一致）
