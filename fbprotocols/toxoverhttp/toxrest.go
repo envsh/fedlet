@@ -2,13 +2,14 @@ package toxoverhttp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
-	"fmt"
 )
 
 /////
@@ -142,4 +143,29 @@ func poll_toxrest() {
 			// log.Println("published", published, "/", len(events))
 		}
 	}
+}
+
+func Send(to, msg, msgType string) error {
+	if to == "" || msg == "" {
+		return fmt.Errorf("toxoverhttp: empty to or message")
+	}
+	if toxrest_url == "" {
+		return fmt.Errorf("toxoverhttp: server URL not configured")
+	}
+	v := url.Values{"type": {msgType}, "id": {to}, "message": {msg}}
+	resp, err := http.PostForm(toxrest_url+"/api/messages/send", v)
+	if err != nil {
+		return fmt.Errorf("toxoverhttp: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("toxoverhttp: status %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct{ Error string `json:"error"` }
+	if json.Unmarshal(body, &result) == nil && result.Error != "" {
+		return fmt.Errorf("toxoverhttp: %s", result.Error)
+	}
+	return nil
 }

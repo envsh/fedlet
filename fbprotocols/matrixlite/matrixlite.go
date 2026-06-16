@@ -2,12 +2,18 @@ package matrixlite
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
-var pubfn_ func([]byte) error
+var (
+	pubfn_   func([]byte) error
+	muClient sync.Mutex
+	curClient *Client
+)
 
 func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
@@ -69,6 +75,9 @@ func pollLoop(info string) {
 			time.Sleep(10 * time.Second)
 			continue
 		}
+		muClient.Lock()
+		curClient = client
+		muClient.Unlock()
 
 		state.Server = cfg.Server
 		client.SaveSyncState(&state)
@@ -137,4 +146,17 @@ func loginOrRestore(cfg *Config, state *State) *Client {
 	}
 	log.Printf("matrixlite: logged in as %s (sliding=%v)", c.userID, c.useSliding)
 	return c
+}
+
+func Send(roomID, msg, msgType string) error {
+	if roomID == "" || msg == "" {
+		return fmt.Errorf("matrixlite: empty roomID or message")
+	}
+	muClient.Lock()
+	c := curClient
+	muClient.Unlock()
+	if c == nil {
+		return fmt.Errorf("matrixlite: no active session")
+	}
+	return c.SendMessage(roomID, msg)
 }

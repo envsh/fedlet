@@ -1,6 +1,7 @@
 package emailimap
 
 import (
+	"bytes"
 	"encoding/xml"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/smtp"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -35,6 +38,8 @@ type Config struct {
 	Auth   string `json:"auth"`
 	Dir    string `json:"dir"`
 	Server string `json:"server"`
+	SMTP   string `json:"smtp"`
+	From   string `json:"from"`
 }
 
 type messageData struct {
@@ -53,7 +58,14 @@ type stateData struct {
 	Folders map[string]uint32 `json:"folders"`
 }
 
-var publishFn func([]byte) error
+var (
+	publishFn func([]byte) error
+	muSend    sync.Mutex
+	smtpAddr  string
+	smtpUser  string
+	smtpPass  string
+	mailFrom  string
+)
 
 func SetPublishInfo(fn func([]byte) error) {
 	publishFn = fn
@@ -89,6 +101,22 @@ func Start(info string) {
 	if !strings.Contains(server, ":") {
 		server += ":993"
 	}
+
+	smtpSrv := cfg.SMTP
+	if smtpSrv == "" {
+		smtpSrv = deriveSMTPServer(server)
+	}
+	from := cfg.From
+	if from == "" {
+		from = deriveFrom(username)
+	}
+
+	muSend.Lock()
+	smtpAddr = smtpSrv
+	smtpUser = username
+	smtpPass = password
+	mailFrom = from
+	muSend.Unlock()
 
 	go poll(username, password, server, dirs)
 }
@@ -630,4 +658,80 @@ func dialIMAP(addr string) bool {
 	}
 	conn.Close()
 	return true
+}
+
+func deriveSMTPServer(imapServer string) string {
+	host, portStr, err := net.SplitHostPort(imapServer)
+	if err != nil {
+		return "smtp." + imapServer + ":587"
+	}
+	host = strings.Replace(host, "imap.", "smtp.", 1)
+	newPort := "587"
+	if portStr == "143" {
+		newPort = "25"
+	}
+	return net.JoinHostPort(host, newPort)
+}
+
+func deriveFrom(username string) string {
+	if strings.Contains(username, "@") {
+		return username
+	}
+	return username + "@unknown"
+}
+
+func Send(to, msg, msgType string) error {
+	if to == "" || msg == "" {
+		return fmt.Errorf("emailimap: empty to or message")
+	}
+	muSend.Lock()
+	addr := smtpAddr
+	user := smtpUser
+	pass := smtpPass
+	from := mailFrom
+	muSend.Unlock()
+
+	if addr == "" {
+		return fmt.Errorf("emailimap: SMTP not configured")
+	}
+	if from == "" {
+		return fmt.Errorf("emailimap: from address not configured")
+	}
+
+	var recipients []string
+	for _, r := range strings.Split(to, ",") {
+		r = strings.TrimSpace(r)
+		if strings.Contains(r, "@") {
+			recipients = append(recipients, r)
+		}
+	}
+	if len(recipients) == 0 {
+		return fmt.Errorf("emailimap: no valid recipients")
+	}
+
+	subject := msgType
+	if subject == "" {
+		subject = "Message from fedlet"
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(fmt.Sprintf("From: %s\r\n", from))
+	buf.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(recipients, ", ")))
+	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+	buf.WriteString("Content-Transfer-Encoding: 8bit\r\n")
+	buf.WriteString("\r\n")
+	buf.WriteString(msg)
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("emailimap: invalid SMTP addr %q: %w", addr, err)
+	}
+
+	auth := smtp.PlainAuth("", user, pass, host)
+	if err := smtp.SendMail(addr, auth, from, recipients, buf.Bytes()); err != nil {
+		return fmt.Errorf("emailimap: %w", err)
+	}
+	return nil
 }

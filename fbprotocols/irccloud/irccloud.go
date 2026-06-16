@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,7 +19,12 @@ func publish(data []byte) error {
 	return pubfn_(data)
 }
 
-var pubfn_ func([]byte) error
+var (
+	pubfn_  func([]byte) error
+	muIrc   sync.Mutex
+	ircClient    *Client
+	ircSessionKey string
+)
 
 func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
@@ -392,6 +399,9 @@ func poll_irccloud(info string) {
 	}
 
 	cl := NewClient()
+	muIrc.Lock()
+	ircClient = cl
+	muIrc.Unlock()
 	state := &streamState{
 		serverMap:    make(map[string]int),
 		pendingJoins: make(map[int][]string),
@@ -407,6 +417,9 @@ func poll_irccloud(info string) {
 				continue
 			}
 			state.sessionKey = sk
+			muIrc.Lock()
+			ircSessionKey = sk
+			muIrc.Unlock()
 			log.Println("IRCCloud authenticated in", time.Since(t0))
 		}
 
@@ -422,10 +435,16 @@ func poll_irccloud(info string) {
 				log.Println("IRCCloud shard redirect:", sh.APIHost)
 				cl.SetBaseURL(sh.APIHost)
 				state.sessionKey = sh.Cookie
+				muIrc.Lock()
+				ircSessionKey = sh.Cookie
+				muIrc.Unlock()
 				continue
 			}
 			log.Println("IRCCloud stream error:", err)
 			state.sessionKey = ""
+			muIrc.Lock()
+			ircSessionKey = ""
+			muIrc.Unlock()
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -438,4 +457,29 @@ func poll_irccloud(info string) {
 		log.Println("IRCCloud stream disconnected after", time.Since(connStart))
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func Send(to, msg, msgType string) error {
+	if to == "" || msg == "" {
+		return fmt.Errorf("irccloud: empty to or message")
+	}
+	muIrc.Lock()
+	cl := ircClient
+	sk := ircSessionKey
+	muIrc.Unlock()
+	if cl == nil {
+		return fmt.Errorf("irccloud: not connected")
+	}
+	if sk == "" {
+		return fmt.Errorf("irccloud: no session key")
+	}
+	parts := strings.SplitN(to, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("irccloud: invalid target %q (need cid:channel)", to)
+	}
+	cid, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("irccloud: invalid cid %q: %w", parts[0], err)
+	}
+	return cl.Say(sk, cid, parts[1], msg)
 }
