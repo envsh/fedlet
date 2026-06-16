@@ -11,6 +11,11 @@ func RegisterSender(key string, fn func(to, msg, msgType string) error) {
 	senders[key] = fn
 }
 
+// DispatchSend 按联系人类型分发消息。
+//   ctype:    联系人类型常量（如 "unktox_conference"），用于查找到哪个后端 sender
+//   to:       目标标识（friend ID / room ID 等）
+//   msg:      消息正文
+//   msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
 func DispatchSend(ctype, to, msg, msgType string) error {
 	fn, ok := senders[ctype]
 	log.Printf("senddispatch: ctype=%q to=%q msg=%q sender_ok=%v", ctype, to, msg, ok)

@@ -145,6 +145,39 @@ func poll_toxrest() {
 	}
 }
 
+func sendToOldAPI(to, msg, msgType string) (int, []byte, error) {
+	var target string
+	var v url.Values
+	switch msgType {
+	case "unktox_friend":
+		target = toxrest_url + "/api/messages"
+		v = url.Values{"friend_id": {to}, "message": {msg}}
+	case "unktox_conference":
+		target = toxrest_url + "/api/conference_messages"
+		v = url.Values{"conference_id": {to}, "message": {msg}}
+	case "unktox_group":
+		target = toxrest_url + "/api/group_messages"
+		v = url.Values{"group_number": {to}, "message_type": {""}, "message": {msg}}
+	default:
+		return 0, nil, fmt.Errorf("no old API fallback for type %q", msgType)
+	}
+	log.Printf("toxoverhttp: FALLBACK POST %s %v", target, v)
+	resp, err := http.PostForm(target, v)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	log.Printf("toxoverhttp: FALLBACK response status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	return resp.StatusCode, body, nil
+}
+
+// Send 发送消息到 toxhttpd。
+//   to:      好友/会议/群组数字 ID
+//   msg:     消息正文
+//   msgType: 联系人类型常量（"unktox_friend"/"unktox_conference"/"unktox_group"），
+//            新 API 直接 POST /api/messages/send?type={msgType}&id={to}&message={msg}，
+//            404 时 fallback 到旧 API，按 msgType 映射到不同端点和参数名
 func Send(to, msg, msgType string) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("toxoverhttp: empty to or message")
@@ -153,12 +186,32 @@ func Send(to, msg, msgType string) error {
 		return fmt.Errorf("toxoverhttp: server URL not configured")
 	}
 	v := url.Values{"type": {msgType}, "id": {to}, "message": {msg}}
-	resp, err := http.PostForm(toxrest_url+"/api/messages/send", v)
+	target := toxrest_url + "/api/messages/send"
+	log.Printf("toxoverhttp: POST %s type=%q id=%q msg=%q", target, msgType, to, msg)
+	resp, err := http.PostForm(target, v)
 	if err != nil {
 		return fmt.Errorf("toxoverhttp: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	log.Printf("toxoverhttp: response status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+
+	if resp.StatusCode == http.StatusNotFound {
+		code, fbBody, fbErr := sendToOldAPI(to, msg, msgType)
+		if fbErr != nil {
+			return fmt.Errorf("toxoverhttp: fallback: %w", fbErr)
+		}
+		if code != http.StatusOK {
+			return fmt.Errorf("toxoverhttp: fallback status %d: %s",
+				code, strings.TrimSpace(string(fbBody)))
+		}
+		var fbResult struct{ Error string `json:"error"` }
+		if json.Unmarshal(fbBody, &fbResult) == nil && fbResult.Error != "" {
+			return fmt.Errorf("toxoverhttp: fallback: %s", fbResult.Error)
+		}
+		return nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("toxoverhttp: status %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))

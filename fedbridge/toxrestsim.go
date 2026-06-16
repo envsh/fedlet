@@ -112,7 +112,7 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		chatType, idStr, message, e.ID)
 
 	log.Printf("toxrestsim: dispatching type=%q id=%q message=%q", chatType, idStr, message)
-	if err := DispatchSend(chatType, idStr, message, ""); err != nil {
+	if err := DispatchSend(chatType, idStr, message, chatType); err != nil {
 		log.Printf("toxrestsim: dispatch error: %v", err)
 	}
 
