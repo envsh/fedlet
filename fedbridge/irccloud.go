@@ -34,7 +34,7 @@ func init() {
 		irccloud.SetPublishInfo(func(data []byte) error {
 			return publish(channel_name, data)
 		})
-		RegisterSender("irc", irccloud.Send)
+		RegisterSender(TypeIRCCloud, irccloud.Send)
 		irccloud.Start(info)
 	})
 }

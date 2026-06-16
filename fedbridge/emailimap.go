@@ -34,7 +34,7 @@ func init() {
 		emailimap.SetPublishInfo(func(data []byte) error {
 			return publish(channel_name, data)
 		})
-		RegisterSender("email", emailimap.Send)
+		RegisterSender(TypeImapMail, emailimap.Send)
 		emailimap.Start(string(b))
 	})
 }
