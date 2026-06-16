@@ -1,4 +1,4 @@
-package lounge
+package irclounge
 
 type MessageType string
 

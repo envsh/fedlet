@@ -27,6 +27,6 @@ const (
 	TypeTopic         = "topic"
 	TypeUnknown       = "unknown"
 	TypeIRCCloud      = "irccloud"
-	TypeLounge        = "lounge"
+	TypeLounge        = "irclounge"
 	TypeMatrix        = "matrix"
 )

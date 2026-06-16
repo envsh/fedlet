@@ -1,0 +1,21 @@
+//go:build irclounge
+package main
+
+import (
+	"flag"
+
+	"github.com/envsh/fedlet/fbprotocols/irclounge"
+)
+
+var ircloungeServer string
+
+func init() {
+	irclounge.SetPublishInfo(func(data []byte) error {
+		return publish(channel_name, data)
+	})
+	RegisterSender(TypeLounge, irclounge.Send)
+	flag.StringVar(&ircloungeServer, "irclounge", "http://localhost:9000", "The Lounge server URL")
+	starters = append(starters, func() {
+		irclounge.Start(ircloungeServer)
+	})
+}

@@ -1,4 +1,4 @@
-package lounge
+package irclounge
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 var (
 	pubfn_      func([]byte) error
 	muLounge    sync.Mutex
-	loungeClient *Client
+	ircloungeClient *Client
 )
 
 func SetPublishInfo(pubfn func([]byte) error) {
@@ -77,58 +77,58 @@ func Start(info string) {
 
 func pollLounge(info string) {
 	cfg := parseConfig(info)
-	log.Printf("lounge: server=%s user=%s", cfg.Server, cfg.User)
+	log.Printf("irclounge: server=%s user=%s", cfg.Server, cfg.User)
 
 	for {
 		client, err := Connect(cfg.Server, cfg.User, cfg.Password)
 		if err != nil {
-			log.Printf("lounge: connect error: %v", err)
+			log.Printf("irclounge: connect error: %v", err)
 			time.Sleep(10 * time.Second)
 			continue
 		}
 		muLounge.Lock()
-		loungeClient = client
+		ircloungeClient = client
 		muLounge.Unlock()
-		log.Println("lounge: connected")
+		log.Println("irclounge: connected")
 
 		for event := range client.Events {
 			switch event.Type {
 			case "msg":
 				msg, err := ParseMsgEvent(event.Data)
 				if err != nil {
-					log.Printf("lounge: parse msg error: %v", err)
+					log.Printf("irclounge: parse msg error: %v", err)
 				} else {
 					from := ""
 					if msg.From != nil {
 						from = msg.From.Nick
 					}
-					log.Printf("lounge: <%s> %s", from, msg.Text)
+					log.Printf("irclounge: <%s> %s", from, msg.Text)
 				}
 				if err := publish(event.Data); err != nil {
-					log.Printf("lounge: publish error: %v", err)
+					log.Printf("irclounge: publish error: %v", err)
 				}
 
 			case "init":
-				log.Println("lounge: initial state loaded")
+				log.Println("irclounge: initial state loaded")
 
 			case "network:status", "network", "network:name":
-				log.Printf("lounge: network event %s", event.Type)
+				log.Printf("irclounge: network event %s", event.Type)
 
 			case "join", "part", "quit", "nick", "topic":
-				log.Printf("lounge: %s %s", event.Type, string(event.Data))
+				log.Printf("irclounge: %s %s", event.Type, string(event.Data))
 
 			case "channel:state", "names", "users":
-				log.Printf("lounge: channel event %s", event.Type)
+				log.Printf("irclounge: channel event %s", event.Type)
 
 			default:
-				log.Printf("lounge: event %s", event.Type)
+				log.Printf("irclounge: event %s", event.Type)
 			}
 		}
 
 		muLounge.Lock()
-		loungeClient = nil
+		ircloungeClient = nil
 		muLounge.Unlock()
-		log.Println("lounge: disconnected, reconnecting in 5s")
+		log.Println("irclounge: disconnected, reconnecting in 5s")
 		client.Close()
 		time.Sleep(5 * time.Second)
 	}
@@ -136,17 +136,17 @@ func pollLounge(info string) {
 
 func Send(to, msg, msgType string) error {
 	if to == "" || msg == "" {
-		return fmt.Errorf("lounge: empty target or message")
+		return fmt.Errorf("irclounge: empty target or message")
 	}
 	muLounge.Lock()
-	cl := loungeClient
+	cl := ircloungeClient
 	muLounge.Unlock()
 	if cl == nil {
-		return fmt.Errorf("lounge: not connected")
+		return fmt.Errorf("irclounge: not connected")
 	}
 	channelID, err := strconv.Atoi(to)
 	if err != nil {
-		return fmt.Errorf("lounge: invalid channel ID %q: %w", to, err)
+		return fmt.Errorf("irclounge: invalid channel ID %q: %w", to, err)
 	}
 	return cl.SendMessage(channelID, msg)
 }

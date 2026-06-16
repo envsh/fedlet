@@ -1,4 +1,4 @@
-# lounge — The Lounge IRC 桥接协议
+# irclounge — The Lounge IRC 桥接协议
 
 Go 实现的 [The Lounge](https://thelounge.chat/) 客户端协议，基于 Engine.IO v4 HTTP polling 和 Socket.IO v4，用于 fedlet 联邦消息桥。
 
@@ -49,7 +49,7 @@ private 模式：auth:start → Emit("auth:perform", {user, password}) → auth:
 - `auth:success` 返回后启动 `readLoop` 协程，事件推入 `client.Events`
 - 消息发送：`SendMessage(channelID, text)` → `Emit("input", {target, text})`
 
-### Lounge 顶层 (lounge.go)
+### irclounge 顶层 (lounge.go)
 
 - `Start(info)` → goroutine `pollLounge` 循环
 - 配置格式：JSON `{"server":"...", "user":"...", "password":"..."}` 或 `user:password` 格式，默认 server `http://localhost:9000`
@@ -67,7 +67,7 @@ private 模式：auth:start → Emit("auth:perform", {user, password}) → auth:
 ## 测试
 
 ```
-go test -v -timeout 60s ./fbprotocols/lounge/
+go test -v -timeout 60s ./fbprotocols/irclounge/
 ```
 
 - 单元测试 20 项（JSON 编解码、包编码/解码、SIO 事件解析、配置解析、枚举常量）
@@ -78,6 +78,6 @@ go test -v -timeout 60s ./fbprotocols/lounge/
 
 ## 待办
 
-- 注册 `fedbridge/` 入口（`//go:build lounge` + `init()` 追加到 `starters`）
+- 注册 `fedbridge/` 入口（`//go:build irclounge` + `init()` 追加到 `starters`）
 - private 模式认证集成测试（需本地 Lounge 实例）
 - 消息类型扩展解析（join/part/quit/nick/topic/channel:state/names 等）

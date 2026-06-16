@@ -1,4 +1,4 @@
-package lounge
+package irclounge
 
 import (
 	"encoding/json"
@@ -71,7 +71,7 @@ func (c *Client) auth(user, password string) error {
 			return fmt.Errorf("authentication failed")
 
 		default:
-			log.Printf("lounge auth phase event: %s", ev.Name)
+			log.Printf("irclounge auth phase event: %s", ev.Name)
 		}
 	}
 }
@@ -87,7 +87,7 @@ func (c *Client) readLoop() {
 			if closed {
 				return
 			}
-			log.Printf("lounge read error: %v", err)
+			log.Printf("irclounge read error: %v", err)
 			return
 		}
 		select {
