@@ -44,6 +44,8 @@ func main() {
 	flag.IntVar(&usepeer, "peerno", usepeer, "use which peerno as tunnel dest")
 	flag.Parse()
 
+	initVirTun()
+
 	for _, fn := range starters {
 		fn()
 	}
