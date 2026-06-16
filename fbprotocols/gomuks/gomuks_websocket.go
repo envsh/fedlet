@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,7 +23,12 @@ func publish(data []byte) error {
 	return pubfn_(data)
 }
 
-var pubfn_ func([]byte) error
+var (
+	pubfn_    func([]byte) error
+	muGomuks  sync.Mutex
+	gomuksConn *websocket.Conn
+	gomuksSeq  int
+)
 
 func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
@@ -75,6 +81,9 @@ func poll_gomuks() {
 			log.Println("ws dial: http status=", resp.Status)
 		}
 
+		muGomuks.Lock()
+		gomuksConn = c
+		muGomuks.Unlock()
 		log.Println("ws connected")
 		gomuksEventLoop(c)
 		log.Println("ws disconnected, reconnecting...")
@@ -117,7 +126,12 @@ func doGomuksAuth(authHeader string) string {
 }
 
 func gomuksEventLoop(c *websocket.Conn) {
-	defer c.Close()
+	defer func() {
+		muGomuks.Lock()
+		gomuksConn = nil
+		muGomuks.Unlock()
+		c.Close()
+	}()
 
 	var lastReceivedID int
 	var seq int
@@ -164,4 +178,31 @@ func gomuksEventLoop(c *websocket.Conn) {
 			}
 		}
 	}
+}
+
+func Send(roomID, msg, msgType string) error {
+	if roomID == "" || msg == "" {
+		return fmt.Errorf("gomuks: empty roomID or message")
+	}
+	muGomuks.Lock()
+	conn := gomuksConn
+	gomuksSeq++
+	seq := gomuksSeq
+	muGomuks.Unlock()
+	if conn == nil {
+		return fmt.Errorf("gomuks: not connected")
+	}
+	cmd := map[string]any{
+		"command":    "send_message",
+		"request_id": seq,
+		"data": map[string]any{
+			"room_id": roomID,
+			"text":    msg,
+		},
+	}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("gomuks: marshal error: %w", err)
+	}
+	return conn.WriteMessage(websocket.TextMessage, data)
 }

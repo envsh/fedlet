@@ -2,11 +2,18 @@ package lounge
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"strconv"
+	"sync"
 	"time"
 )
 
-var pubfn_ func([]byte) error
+var (
+	pubfn_      func([]byte) error
+	muLounge    sync.Mutex
+	loungeClient *Client
+)
 
 func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
@@ -79,6 +86,9 @@ func pollLounge(info string) {
 			time.Sleep(10 * time.Second)
 			continue
 		}
+		muLounge.Lock()
+		loungeClient = client
+		muLounge.Unlock()
 		log.Println("lounge: connected")
 
 		for event := range client.Events {
@@ -115,8 +125,28 @@ func pollLounge(info string) {
 			}
 		}
 
+		muLounge.Lock()
+		loungeClient = nil
+		muLounge.Unlock()
 		log.Println("lounge: disconnected, reconnecting in 5s")
 		client.Close()
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func Send(to, msg, msgType string) error {
+	if to == "" || msg == "" {
+		return fmt.Errorf("lounge: empty target or message")
+	}
+	muLounge.Lock()
+	cl := loungeClient
+	muLounge.Unlock()
+	if cl == nil {
+		return fmt.Errorf("lounge: not connected")
+	}
+	channelID, err := strconv.Atoi(to)
+	if err != nil {
+		return fmt.Errorf("lounge: invalid channel ID %q: %w", to, err)
+	}
+	return cl.SendMessage(channelID, msg)
 }
