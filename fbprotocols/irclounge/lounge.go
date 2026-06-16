@@ -1,7 +1,6 @@
 package irclounge
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -9,57 +8,17 @@ import (
 	"time"
 )
 
-var (
-	pubfn_      func([]byte) error
-	muLounge    sync.Mutex
-	ircloungeClient *Client
-)
+var pubfn_ func([]byte) error
+var muLounge sync.Mutex
+var ircloungeClient *Client
 
-func SetPublishInfo(pubfn func([]byte) error) {
-	pubfn_ = pubfn
-}
+func SetPublishInfo(pubfn func([]byte) error) { pubfn_ = pubfn }
 
 func publish(data []byte) error {
 	if pubfn_ == nil {
 		return nil
 	}
 	return pubfn_(data)
-}
-
-type Config struct {
-	Server   string `json:"server"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-}
-
-func parseConfig(info string) *Config {
-	cfg := &Config{
-		Server: "http://localhost:9000",
-	}
-	if info == "" {
-		return cfg
-	}
-	if info[0] == '{' {
-		var c Config
-		if err := json.Unmarshal([]byte(info), &c); err == nil {
-			if c.Server != "" {
-				cfg.Server = c.Server
-			}
-			if c.User != "" {
-				cfg.User = c.User
-			}
-			if c.Password != "" {
-				cfg.Password = c.Password
-			}
-			return cfg
-		}
-	}
-	parts := split2(info, ":")
-	if len(parts) >= 2 {
-		cfg.User = parts[0]
-		cfg.Password = parts[1]
-	}
-	return cfg
 }
 
 func split2(s, sep string) []string {
@@ -71,16 +30,20 @@ func split2(s, sep string) []string {
 	return nil
 }
 
-func Start(info string) {
-	go pollLounge(info)
-}
+func Start(server, auth string) { go pollLounge(server, auth) }
 
-func pollLounge(info string) {
-	cfg := parseConfig(info)
-	log.Printf("irclounge: server=%s user=%s", cfg.Server, cfg.User)
+func pollLounge(server, auth string) {
+	user, password := "", ""
+	if auth != "" {
+		parts := split2(auth, ":")
+		if len(parts) >= 2 {
+			user, password = parts[0], parts[1]
+		}
+	}
+	log.Printf("irclounge: server=%s user=%s", server, user)
 
 	for {
-		client, err := Connect(cfg.Server, cfg.User, cfg.Password)
+		client, err := Connect(server, user, password)
 		if err != nil {
 			log.Printf("irclounge: connect error: %v", err)
 			time.Sleep(10 * time.Second)

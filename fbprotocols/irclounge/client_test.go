@@ -100,54 +100,8 @@ func TestParseMsgNotice(t *testing.T) {
 	}
 }
 
-func TestParseConfigJSON(t *testing.T) {
-	raw := `{"server":"http://lounge.local:8080","user":"alice","password":"secret123"}`
-	cfg := parseConfig(raw)
-
-	if cfg.Server != "http://lounge.local:8080" {
-		t.Errorf("expected server http://lounge.local:8080, got %s", cfg.Server)
-	}
-	if cfg.User != "alice" {
-		t.Errorf("expected user alice, got %s", cfg.User)
-	}
-	if cfg.Password != "secret123" {
-		t.Errorf("expected password secret123, got %s", cfg.Password)
-	}
-}
-
-func TestParseConfigUserPass(t *testing.T) {
-	raw := "alice:secret123"
-	cfg := parseConfig(raw)
-
-	if cfg.Server != "http://localhost:9000" {
-		t.Errorf("expected default server, got %s", cfg.Server)
-	}
-	if cfg.User != "alice" {
-		t.Errorf("expected user alice, got %s", cfg.User)
-	}
-	if cfg.Password != "secret123" {
-		t.Errorf("expected password secret123, got %s", cfg.Password)
-	}
-}
-
-func TestParseConfigEmpty(t *testing.T) {
-	cfg := parseConfig("")
-	if cfg.Server != "http://localhost:9000" {
-		t.Errorf("expected default server, got %s", cfg.Server)
-	}
-}
-
-func TestParseConfigPartialJSON(t *testing.T) {
-	raw := `{"server":"https://irc.example.com"}`
-	cfg := parseConfig(raw)
-
-	if cfg.Server != "https://irc.example.com" {
-		t.Errorf("expected server https://irc.example.com, got %s", cfg.Server)
-	}
-	if cfg.User != "" {
-		t.Errorf("expected empty user, got %s", cfg.User)
-	}
-}
+// parseConfig 已移除。解析逻辑移至 fedbridge/irclounge.go，
+// 使用 split2 + flag 分离 server/auth。
 
 func TestEioPacketEncode(t *testing.T) {
 	tests := []struct {

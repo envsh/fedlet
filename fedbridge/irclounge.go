@@ -7,7 +7,7 @@ import (
 	"github.com/envsh/fedlet/fbprotocols/irclounge"
 )
 
-var ircloungeServer string
+var ircloungeServer, ircloungeAuth string
 
 func init() {
 	irclounge.SetPublishInfo(func(data []byte) error {
@@ -15,7 +15,8 @@ func init() {
 	})
 	RegisterSender(TypeLounge, irclounge.Send)
 	flag.StringVar(&ircloungeServer, "irclounge", "http://localhost:9000", "The Lounge server URL")
+	flag.StringVar(&ircloungeAuth, "irclounge-auth", "", "Lounge user:password (omit for public mode)")
 	starters = append(starters, func() {
-		irclounge.Start(ircloungeServer)
+		irclounge.Start(ircloungeServer, ircloungeAuth)
 	})
 }

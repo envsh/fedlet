@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 type Client struct {
@@ -49,7 +50,15 @@ func (c *Client) auth(user, password string) error {
 		return fmt.Errorf("socket.io connect: %w", err)
 	}
 
+	timeout := time.After(30 * time.Second)
+
 	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("auth timeout")
+		default:
+		}
+
 		ev, err := c.sio.ReadEvent()
 		if err != nil {
 			return fmt.Errorf("read event during auth: %w", err)
@@ -68,7 +77,17 @@ func (c *Client) auth(user, password string) error {
 			return nil
 
 		case "auth:failed":
-			return fmt.Errorf("authentication failed")
+			var detail struct {
+				Error string `json:"error"`
+			}
+			if len(ev.Data) > 0 {
+				json.Unmarshal(ev.Data, &detail)
+			}
+			msg := "authentication failed"
+			if detail.Error != "" {
+				msg += ": " + detail.Error
+			}
+			return fmt.Errorf(msg)
 
 		default:
 			log.Printf("irclounge auth phase event: %s", ev.Name)
