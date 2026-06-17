@@ -76,6 +76,8 @@ func main() {
 func tunloop() {
 	peerid := peerid2
 	switch usepeer {
+		case 4:
+			peerid = peerid4
 		case 3:
 			peerid = peerid3
 		case 2:
@@ -100,6 +102,7 @@ var peerid0 = "12D3KooWHXjoE8cMhPPD7JaUGHHiXCNLHQcbgUQrXFc788oq6ahm"
 var peerid1 = "12D3KooWDVExaeKp1YzYvhS7E6oZDdDnEB3HENS9VrYp3vKME7m1"
 var peerid2 = "12D3KooWSgyQhqayreZ6UequLq3ZGxJm1WG4tyszD29ps8zNtYLT"
 var peerid3 = "12D3KooWQve1nD9X7ENnCPRFwJsXD9YvRWuPSbBBR9bxb3mdBNWS"
+var peerid4 = "12D3KooWQH1nRGEwBGBtjSbRDpsStcFuoo22KtrzgnbLH7JZNGfu"
 
 func echoLoop() {
 	peerid := peerid1
