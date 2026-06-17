@@ -40,4 +40,5 @@ const (
 	TypeIRCCloud      = "irccloud"
 	TypeLounge        = "irclounge"
 	TypeMatrix        = "matrix"
+	TypeMisskeyNote   = "misskey_note"
 )
