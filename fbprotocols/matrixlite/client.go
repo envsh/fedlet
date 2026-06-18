@@ -361,6 +361,9 @@ func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
 	}
 	c.nextBatch = nr.NextBatch
 	log.Printf("matrixlite: normal sync since -> %s", c.nextBatch)
+	diff := compactSyncDiff(prevNormalNextBatch, c.nextBatch)
+	prevNormalNextBatch = c.nextBatch
+	log.Printf("matrixlite: sync diff: %s", diff)
 
 	var events []Event
 	for rid, room := range nr.Rooms.Join {
@@ -393,8 +396,57 @@ var (
 	ErrWellKnownNetwork   = errors.New("well-known: network error")
 	ErrTokenExpired       = errors.New("matrixlite: token expired")
 
-	wellKnownHC *http.Client
+	wellKnownHC          *http.Client
+	prevNormalNextBatch string
 )
+
+func compactSyncDiff(prev, curr string) string {
+	labels := []string{"stream", "presence", "receipt", "account", "to_device", "device", "groups", "typing"}
+
+	if prev == curr {
+		p := strings.TrimPrefix(curr, "s")
+		if idx := strings.Index(p, "_"); idx > 0 {
+			p = p[:idx]
+		}
+		return "no changes (stream=" + p + ")"
+	}
+
+	// Synapse multi-column: sN_N_N...
+	if strings.HasPrefix(curr, "s") && strings.Contains(curr, "_") {
+		prevP := strings.Split(strings.TrimPrefix(prev, "s"), "_")
+		currP := strings.Split(strings.TrimPrefix(curr, "s"), "_")
+
+		var parts []string
+		for i, l := range labels {
+			if i >= len(prevP) || i >= len(currP) {
+				break
+			}
+			pv, _ := strconv.ParseInt(prevP[i], 10, 64)
+			cv, _ := strconv.ParseInt(currP[i], 10, 64)
+			if pv != cv {
+				parts = append(parts, fmt.Sprintf("%s %+d", l, cv-pv))
+			}
+		}
+		if prev == "" {
+			return "stream=" + currP[0]
+		}
+		return strings.Join(parts, "  ")
+	}
+
+	// sN or plain number
+	label := "since"
+	prevS := strings.TrimPrefix(prev, "s")
+	currS := strings.TrimPrefix(curr, "s")
+	if strings.HasPrefix(curr, "s") {
+		label = "stream"
+	}
+	pv, _ := strconv.ParseInt(prevS, 10, 64)
+	cv, _ := strconv.ParseInt(currS, 10, 64)
+	if prev == "" || pv == 0 {
+		return fmt.Sprintf("%s=%d", label, cv)
+	}
+	return fmt.Sprintf("%s %+d", label, cv-pv)
+}
 
 func getWellKnownHC() *http.Client {
 	if wellKnownHC != nil {
@@ -502,6 +554,32 @@ func (c *Client) SendMessage(roomID, text string) error {
 		return fmt.Errorf("send: status %d: %s", resp.StatusCode, string(raw))
 	}
 	return nil
+}
+
+type whoamiResp struct {
+	UserID string `json:"user_id"`
+}
+
+func (c *Client) whoami() (string, error) {
+	resp, err := c.doRequest(http.MethodGet, "/_matrix/client/v3/account/whoami", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return "", ErrTokenExpired
+	}
+
+	var wr whoamiResp
+	if err := json.Unmarshal(raw, &wr); err != nil {
+		return "", fmt.Errorf("whoami decode: %w: %s", err, string(raw))
+	}
+	if wr.UserID == "" {
+		return "", fmt.Errorf("whoami: empty user_id: %s", string(raw))
+	}
+	return wr.UserID, nil
 }
 
 func (c *Client) setAuth(req *http.Request) {

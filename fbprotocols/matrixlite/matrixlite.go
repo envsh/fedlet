@@ -124,22 +124,30 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 
 	if state.Valid() && state.Server == baseURL {
 		c.RestoreFromState(state)
-		_, restoreErr := c.Sync(0)
-		if restoreErr == nil {
-			log.Printf("matrixlite: [cache] restored session for %s (sliding=%v)", c.userID, c.useSliding)
-			return c, nil
-		}
-		if errors.Is(restoreErr, ErrTokenExpired) && c.refreshToken != "" {
-			if rerr := c.TokenRefresh(); rerr == nil {
-				log.Printf("matrixlite: [cache] token refreshed for %s", c.userID)
-				c.SaveSyncState(state)
-				state.Save()
-				if _, err := c.Sync(0); err == nil {
-					return c, nil
+		whoms, whoErr := c.whoami()
+		if whoErr == nil && state.UserID != "" && whoms != state.UserID {
+			log.Printf("matrixlite: [cache] account switched: %s → %s, re-logging in", state.UserID, whoms)
+			state.AccessToken = ""
+			state.RefreshToken = ""
+			state.Save()
+		} else {
+			_, restoreErr := c.Sync(0)
+			if restoreErr == nil {
+				log.Printf("matrixlite: [cache] restored session for %s (sliding=%v)", c.userID, c.useSliding)
+				return c, nil
+			}
+			if errors.Is(restoreErr, ErrTokenExpired) && c.refreshToken != "" {
+				if rerr := c.TokenRefresh(); rerr == nil {
+					log.Printf("matrixlite: [cache] token refreshed for %s", c.userID)
+					c.SaveSyncState(state)
+					state.Save()
+					if _, err := c.Sync(0); err == nil {
+						return c, nil
+					}
 				}
 			}
+			log.Printf("matrixlite: [cache] session expired, re-logging in")
 		}
-		log.Printf("matrixlite: [cache] session expired, re-logging in")
 	}
 
 	if token != "" {
