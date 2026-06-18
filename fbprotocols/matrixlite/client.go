@@ -88,16 +88,31 @@ func (c *Client) doLogin(user, password string) error {
 		DeviceName: "fedlet-bridge",
 		RefreshTok: true,
 	})
-	resp, err := c.doRequest(http.MethodPost, "/_matrix/client/v3/login", body)
+	loginURL := c.baseURL + "/_matrix/client/v3/login"
+	resp, err := c.doRequest(http.MethodPost, loginURL, body)
 	if err != nil {
-		return fmt.Errorf("login: %w", err)
+		return fmt.Errorf("login %s: %w", loginURL, err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
+	bodyStr := string(raw)
+	if len(bodyStr) > 0 && bodyStr[0] == '<' {
+		return fmt.Errorf(
+			"login %s: server returned HTML — "+
+				"the URL appears to be a web interface (like Element Web), "+
+				"not a Matrix homeserver API endpoint\n"+
+				"  Correct:  -matrix-url matrix.example.com\n"+
+				"  Wrong:    -matrix-url chat.example.com", loginURL)
+	}
+
 	var lr loginResp
 	if err := json.Unmarshal(raw, &lr); err != nil {
-		return fmt.Errorf("login decode: %w", err)
+		bodySnippet := string(raw)
+		if len(bodySnippet) > 500 {
+			bodySnippet = bodySnippet[:500] + "..."
+		}
+		return fmt.Errorf("login decode %s: %w: %s", loginURL, err, bodySnippet)
 	}
 	if lr.AccessToken == "" {
 		return fmt.Errorf("login: no access_token: %s", string(raw))
@@ -169,6 +184,7 @@ func (c *Client) TokenRefresh() error {
 }
 
 type versionsResp struct {
+	Versions         []string          `json:"versions"`
 	UnstableFeatures map[string]bool `json:"unstable_features"`
 }
 
@@ -181,11 +197,19 @@ func (c *Client) detectSlidingSync() {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
-	var vr versionsResp
-	if json.Unmarshal(raw, &vr) != nil {
-		log.Printf("matrixlite: sliding sync: cannot parse versions response")
+	if len(raw) > 0 && raw[0] == '<' {
+		log.Printf("matrixlite: sliding sync: server returned HTML — check URL is a Matrix homeserver API endpoint")
 		return
 	}
+
+	var vr versionsResp
+	if err := json.Unmarshal(raw, &vr); err != nil {
+		log.Printf("matrixlite: sliding sync: cannot parse versions response: %v", err)
+		return
+	}
+
+	log.Printf("matrixlite: server spec versions: %s", strings.Join(vr.Versions, ", "))
+
 	c.useSliding = vr.UnstableFeatures["org.matrix.simplified_msc3575"]
 	if c.useSliding {
 		log.Printf("matrixlite: server supports Sliding Sync (MSC4186)")
@@ -274,6 +298,7 @@ func (c *Client) slidingSync(timeout time.Duration) ([]Event, error) {
 		return nil, fmt.Errorf("sliding sync: no pos: %s", string(raw))
 	}
 	c.slidingPos = sr.Pos
+	log.Printf("matrixlite: sliding sync pos -> %s", c.slidingPos)
 
 	var events []Event
 	for rid, room := range sr.Rooms {
@@ -335,6 +360,7 @@ func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
 		return nil, fmt.Errorf("sync: no next_batch: %s", string(raw))
 	}
 	c.nextBatch = nr.NextBatch
+	log.Printf("matrixlite: normal sync since -> %s", c.nextBatch)
 
 	var events []Event
 	for rid, room := range nr.Rooms.Join {
@@ -390,15 +416,19 @@ func DiscoverBaseURL(input string) (string, error) {
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		rawURL = strings.TrimRight(rawURL, "/")
 		return rawURL, fmt.Errorf("well-known: %w: invalid URL %q", ErrWellKnownMalformed, input)
 	}
 	if u.Host == "" {
+		rawURL = strings.TrimRight(rawURL, "/")
 		return rawURL, fmt.Errorf("well-known: %w: no host in %q", ErrWellKnownNotFound, input)
 	}
 	discovered, err := fetchWellKnown(u.Host)
 	if err != nil {
+		rawURL = strings.TrimRight(rawURL, "/")
 		return rawURL, err
 	}
+	discovered = strings.TrimRight(discovered, "/")
 	return discovered, nil
 }
 
@@ -491,14 +521,18 @@ func (c *Client) doRequest(method, fullURL string, body []byte) (*http.Response,
 
 	req, err := http.NewRequest(method, u, reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s %s: %w", method, u, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	c.setAuth(req)
 
-	return c.hc.Do(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, req.URL.String(), err)
+	}
+	return resp, nil
 }
 
 

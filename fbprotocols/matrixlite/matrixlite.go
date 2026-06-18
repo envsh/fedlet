@@ -48,7 +48,7 @@ func Start(server, auth string) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrWellKnownNotFound):
-			log.Printf("matrixlite: no well-known for %s, using as-is", server)
+			log.Printf("matrixlite: no well-known for %s, using as-is (if you see HTML errors, this may be a web UI like Element Web; use the homeserver domain instead)", server)
 		default:
 			log.Printf("matrixlite: well-known discovery for %s: %v; using as-is", server, err)
 		}
@@ -124,13 +124,14 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 
 	if state.Valid() && state.Server == baseURL {
 		c.RestoreFromState(state)
-		if _, err := c.Sync(0); err == nil {
-			log.Printf("matrixlite: restored session for %s (sliding=%v)", c.userID, c.useSliding)
+		_, restoreErr := c.Sync(0)
+		if restoreErr == nil {
+			log.Printf("matrixlite: [cache] restored session for %s (sliding=%v)", c.userID, c.useSliding)
 			return c, nil
 		}
-		if c.refreshToken != "" {
+		if errors.Is(restoreErr, ErrTokenExpired) && c.refreshToken != "" {
 			if rerr := c.TokenRefresh(); rerr == nil {
-				log.Printf("matrixlite: token refreshed for %s", c.userID)
+				log.Printf("matrixlite: [cache] token refreshed for %s", c.userID)
 				c.SaveSyncState(state)
 				state.Save()
 				if _, err := c.Sync(0); err == nil {
@@ -138,26 +139,26 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 				}
 			}
 		}
-		log.Printf("matrixlite: session expired, re-logging in")
+		log.Printf("matrixlite: [cache] session expired, re-logging in")
 	}
 
 	if token != "" {
 		client, err := ClientFromToken(baseURL, token)
 		if err != nil {
-			log.Printf("matrixlite: token login error: %v", err)
+			log.Printf("matrixlite: [auth] token login error: %v", err)
 			return nil, err
 		}
-		log.Printf("matrixlite: logged in with token (sliding=%v)", client.useSliding)
+		log.Printf("matrixlite: [auth] logged in with token (sliding=%v)", client.useSliding)
 		return client, nil
 	}
 
 	var err error
 	c, err = Login(baseURL, user, password)
 	if err != nil {
-		log.Printf("matrixlite: login error: %v", err)
+		log.Printf("matrixlite: [auth] login error: %v", err)
 		return nil, err
 	}
-	log.Printf("matrixlite: logged in as %s (sliding=%v)", c.userID, c.useSliding)
+	log.Printf("matrixlite: [auth] logged in as %s (sliding=%v)", c.userID, c.useSliding)
 	return c, nil
 }
 
