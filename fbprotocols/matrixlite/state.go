@@ -15,6 +15,7 @@ type State struct {
 	NextBatch    string `json:"next_batch,omitempty"`
 	SlidingPos   string `json:"sliding_pos,omitempty"`
 	UseSliding   bool   `json:"use_sliding"`
+	LoginToken   string `json:"login_token,omitempty"`
 }
 
 func (s *State) Valid() bool {

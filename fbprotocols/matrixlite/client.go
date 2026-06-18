@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -174,6 +175,7 @@ type versionsResp struct {
 func (c *Client) detectSlidingSync() {
 	resp, err := c.doRequest(http.MethodGet, "/_matrix/client/v3/versions", nil)
 	if err != nil {
+		log.Printf("matrixlite: sliding sync detection failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -181,9 +183,15 @@ func (c *Client) detectSlidingSync() {
 
 	var vr versionsResp
 	if json.Unmarshal(raw, &vr) != nil {
+		log.Printf("matrixlite: sliding sync: cannot parse versions response")
 		return
 	}
 	c.useSliding = vr.UnstableFeatures["org.matrix.simplified_msc3575"]
+	if c.useSliding {
+		log.Printf("matrixlite: server supports Sliding Sync (MSC4186)")
+	} else {
+		log.Printf("matrixlite: server does not support Sliding Sync, using normal sync")
+	}
 }
 
 func (c *Client) Sync(timeout time.Duration) ([]Event, error) {
@@ -254,6 +262,10 @@ func (c *Client) slidingSync(timeout time.Duration) ([]Event, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, ErrTokenExpired
+	}
+
 	var sr slidingResp
 	if err := json.Unmarshal(raw, &sr); err != nil {
 		return nil, fmt.Errorf("sliding sync decode: %w: %s", err, string(raw))
@@ -311,6 +323,10 @@ func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, ErrTokenExpired
+	}
+
 	var nr normalResp
 	if err := json.Unmarshal(raw, &nr); err != nil {
 		return nil, fmt.Errorf("sync decode: %w: %s", err, string(raw))
@@ -349,6 +365,7 @@ var (
 	ErrWellKnownNotFound  = errors.New("well-known: not found")
 	ErrWellKnownMalformed = errors.New("well-known: malformed response")
 	ErrWellKnownNetwork   = errors.New("well-known: network error")
+	ErrTokenExpired       = errors.New("matrixlite: token expired")
 
 	wellKnownHC *http.Client
 )

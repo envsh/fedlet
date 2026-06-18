@@ -65,7 +65,10 @@ func pollLoop(baseURL, token, user, password string) {
 	state.Load()
 
 	for {
-		client := loginOrRestore(baseURL, token, user, password, &state)
+		client, err := loginOrRestore(baseURL, token, user, password, &state)
+		if errors.Is(err, ErrTokenExpired) {
+			log.Fatalf("matrixlite: token expired, restart with fresh credentials")
+		}
 		if client == nil {
 			time.Sleep(10 * time.Second)
 			continue
@@ -75,6 +78,7 @@ func pollLoop(baseURL, token, user, password string) {
 		muClient.Unlock()
 
 		state.Server = baseURL
+		state.LoginToken = token
 		client.SaveSyncState(&state)
 		state.Save()
 
@@ -104,7 +108,7 @@ func pollLoop(baseURL, token, user, password string) {
 	}
 }
 
-func loginOrRestore(baseURL, token, user, password string, state *State) *Client {
+func loginOrRestore(baseURL, token, user, password string, state *State) (*Client, error) {
 	c := &Client{
 		baseURL: baseURL,
 		hc: &http.Client{
@@ -114,11 +118,15 @@ func loginOrRestore(baseURL, token, user, password string, state *State) *Client
 		},
 	}
 
+	if token == "" && state.LoginToken != "" {
+		token = state.LoginToken
+	}
+
 	if state.Valid() && state.Server == baseURL {
 		c.RestoreFromState(state)
 		if _, err := c.Sync(0); err == nil {
 			log.Printf("matrixlite: restored session for %s (sliding=%v)", c.userID, c.useSliding)
-			return c
+			return c, nil
 		}
 		if c.refreshToken != "" {
 			if rerr := c.TokenRefresh(); rerr == nil {
@@ -126,7 +134,7 @@ func loginOrRestore(baseURL, token, user, password string, state *State) *Client
 				c.SaveSyncState(state)
 				state.Save()
 				if _, err := c.Sync(0); err == nil {
-					return c
+					return c, nil
 				}
 			}
 		}
@@ -134,23 +142,23 @@ func loginOrRestore(baseURL, token, user, password string, state *State) *Client
 	}
 
 	if token != "" {
-		c, err := ClientFromToken(baseURL, token)
+		client, err := ClientFromToken(baseURL, token)
 		if err != nil {
 			log.Printf("matrixlite: token login error: %v", err)
-			return nil
+			return nil, err
 		}
-		log.Printf("matrixlite: logged in with token (sliding=%v)", c.useSliding)
-		return c
+		log.Printf("matrixlite: logged in with token (sliding=%v)", client.useSliding)
+		return client, nil
 	}
 
 	var err error
 	c, err = Login(baseURL, user, password)
 	if err != nil {
 		log.Printf("matrixlite: login error: %v", err)
-		return nil
+		return nil, err
 	}
 	log.Printf("matrixlite: logged in as %s (sliding=%v)", c.userID, c.useSliding)
-	return c
+	return c, nil
 }
 
 func Send(roomID, msg, msgType string) error {
