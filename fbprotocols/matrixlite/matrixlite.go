@@ -85,6 +85,14 @@ func pollLoop(baseURL, token, user, password string) {
 		for {
 			events, err := client.Sync(30 * time.Second)
 			if err != nil {
+				if errors.Is(err, ErrTokenExpired) && client.refreshToken != "" {
+					if rerr := client.TokenRefresh(); rerr == nil {
+						log.Printf("matrixlite: sync: token refreshed")
+						client.SaveSyncState(&state)
+						state.Save()
+						continue
+					}
+				}
 				log.Printf("matrixlite: sync error: %v", err)
 				break
 			}
