@@ -2,9 +2,11 @@ package matrixlite
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,51 +28,44 @@ func publish(data []byte) error {
 	return pubfn_(data)
 }
 
-func parseConfig(info string) *Config {
-	cfg := &Config{
-		Server: "http://localhost:8008",
+func parseAuth(auth string) (token, user, password string) {
+	if auth == "" {
+		return "", "", ""
 	}
-	if info == "" {
-		return cfg
+	if !strings.Contains(auth, ":") {
+		return auth, "", ""
 	}
-	if info[0] == '{' {
-		var c Config
-		if err := json.Unmarshal([]byte(info), &c); err == nil {
-			if c.Server != "" {
-				cfg.Server = c.Server
-			}
-			if c.User != "" {
-				cfg.User = c.User
-			}
-			if c.Password != "" {
-				cfg.Password = c.Password
-			}
-			return cfg
+	for i := len(auth) - 1; i >= 0; i-- {
+		if auth[i] == ':' {
+			return "", auth[:i], auth[i+1:]
 		}
 	}
-	for i := len(info) - 1; i >= 0; i-- {
-		if info[i] == ':' {
-			cfg.User = info[:i]
-			cfg.Password = info[i+1:]
-			break
+	return "", "", ""
+}
+
+func Start(server, auth string) {
+	baseURL, err := DiscoverBaseURL(server)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrWellKnownNotFound):
+			log.Printf("matrixlite: no well-known for %s, using as-is", server)
+		default:
+			log.Printf("matrixlite: well-known discovery for %s: %v; using as-is", server, err)
 		}
 	}
-	return cfg
+	log.Printf("matrixlite: using base URL %s (from %s)", baseURL, server)
+	token, user, password := parseAuth(auth)
+	go pollLoop(baseURL, token, user, password)
 }
 
-func Start(info string) {
-	go pollLoop(info)
-}
-
-func pollLoop(info string) {
-	cfg := parseConfig(info)
-	log.Printf("matrixlite: server=%s user=%s", cfg.Server, cfg.User)
+func pollLoop(baseURL, token, user, password string) {
+	log.Printf("matrixlite: server=%s user=%s", baseURL, user)
 
 	var state State
 	state.Load()
 
 	for {
-		client := loginOrRestore(cfg, &state)
+		client := loginOrRestore(baseURL, token, user, password, &state)
 		if client == nil {
 			time.Sleep(10 * time.Second)
 			continue
@@ -79,7 +74,7 @@ func pollLoop(info string) {
 		curClient = client
 		muClient.Unlock()
 
-		state.Server = cfg.Server
+		state.Server = baseURL
 		client.SaveSyncState(&state)
 		state.Save()
 
@@ -109,9 +104,9 @@ func pollLoop(info string) {
 	}
 }
 
-func loginOrRestore(cfg *Config, state *State) *Client {
+func loginOrRestore(baseURL, token, user, password string, state *State) *Client {
 	c := &Client{
-		baseURL: cfg.Server,
+		baseURL: baseURL,
 		hc: &http.Client{
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
@@ -119,7 +114,7 @@ func loginOrRestore(cfg *Config, state *State) *Client {
 		},
 	}
 
-	if state.Valid() && state.Server == cfg.Server {
+	if state.Valid() && state.Server == baseURL {
 		c.RestoreFromState(state)
 		if _, err := c.Sync(0); err == nil {
 			log.Printf("matrixlite: restored session for %s (sliding=%v)", c.userID, c.useSliding)
@@ -138,8 +133,18 @@ func loginOrRestore(cfg *Config, state *State) *Client {
 		log.Printf("matrixlite: session expired, re-logging in")
 	}
 
+	if token != "" {
+		c, err := ClientFromToken(baseURL, token)
+		if err != nil {
+			log.Printf("matrixlite: token login error: %v", err)
+			return nil
+		}
+		log.Printf("matrixlite: logged in with token (sliding=%v)", c.useSliding)
+		return c
+	}
+
 	var err error
-	c, err = Login(cfg.Server, cfg.User, cfg.Password)
+	c, err = Login(baseURL, user, password)
 	if err != nil {
 		log.Printf("matrixlite: login error: %v", err)
 		return nil

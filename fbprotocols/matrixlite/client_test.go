@@ -2,41 +2,55 @@ package matrixlite
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestParseConfigJSON(t *testing.T) {
-	raw := `{"server":"https://matrix.example.com","user":"@alice:example.com","password":"secret"}`
-	cfg := parseConfig(raw)
-	if cfg.Server != "https://matrix.example.com" {
-		t.Errorf("server: got %q", cfg.Server)
+func TestParseAuthToken(t *testing.T) {
+	tok, u, p := parseAuth("syt_dXNlcg")
+	if tok != "syt_dXNlcg" {
+		t.Errorf("token: got %q", tok)
 	}
-	if cfg.User != "@alice:example.com" {
-		t.Errorf("user: got %q", cfg.User)
-	}
-	if cfg.Password != "secret" {
-		t.Errorf("password: got %q", cfg.Password)
+	if u != "" || p != "" {
+		t.Errorf("expected empty user/pass, got %q %q", u, p)
 	}
 }
 
-func TestParseConfigDefault(t *testing.T) {
-	cfg := parseConfig("")
-	if cfg.Server != "http://localhost:8008" {
-		t.Errorf("expected default server, got %q", cfg.Server)
+func TestParseAuthUserPass(t *testing.T) {
+	tok, u, p := parseAuth("@user:example.com:hunter2")
+	if tok != "" {
+		t.Errorf("expected empty token, got %q", tok)
+	}
+	if u != "@user:example.com" {
+		t.Errorf("user: got %q", u)
+	}
+	if p != "hunter2" {
+		t.Errorf("password: got %q", p)
 	}
 }
 
-func TestParseConfigUserPass(t *testing.T) {
-	cfg := parseConfig("@user:example.com:hunter2")
-	if cfg.User != "@user:example.com" {
-		t.Errorf("user: got %q", cfg.User)
+func TestParseAuthEmpty(t *testing.T) {
+	tok, u, p := parseAuth("")
+	if tok != "" || u != "" || p != "" {
+		t.Errorf("expected empty, got %q %q %q", tok, u, p)
 	}
-	if cfg.Password != "hunter2" {
-		t.Errorf("password: got %q", cfg.Password)
+}
+
+func TestParseAuthTrailingColon(t *testing.T) {
+	tok, u, p := parseAuth("@user:example.com:pass:word")
+	if tok != "" {
+		t.Errorf("expected empty token, got %q", tok)
+	}
+	if u != "@user:example.com:pass" {
+		t.Errorf("user: got %q", u)
+	}
+	if p != "word" {
+		t.Errorf("password: got %q", p)
 	}
 }
 
@@ -433,5 +447,121 @@ func TestLoginWithRefreshToken(t *testing.T) {
 	}
 	if c.refreshToken != "v2_ref" {
 		t.Errorf("refresh_token: got %q", c.refreshToken)
+	}
+}
+
+func TestDiscoverBaseURLBareHostname(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/matrix/client" {
+			w.Write([]byte(`{"m.homeserver":{"base_url":"https://matrix.example.com"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	wellKnownHC = srv.Client()
+	defer func() { wellKnownHC = nil }()
+
+	u, _ := url.Parse(srv.URL)
+	baseURL, err := DiscoverBaseURL(u.Host)
+	if err != nil {
+		t.Fatalf("DiscoverBaseURL: %v", err)
+	}
+	if baseURL != "https://matrix.example.com" {
+		t.Errorf("expected discovered URL, got %q", baseURL)
+	}
+}
+
+func TestDiscoverBaseURLFullURL(t *testing.T) {
+	baseURL, err := DiscoverBaseURL("https://matrix.example.com")
+	if errors.Is(err, ErrWellKnownNotFound) || errors.Is(err, ErrWellKnownNetwork) {
+		if baseURL != "https://matrix.example.com" {
+			t.Errorf("expected fallback to input, got %q", baseURL)
+		}
+	} else if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else {
+		t.Logf("unexpected success: %s", baseURL)
+	}
+}
+
+func TestDiscoverBaseURLNotFound(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	wellKnownHC = srv.Client()
+	defer func() { wellKnownHC = nil }()
+
+	u, _ := url.Parse(srv.URL)
+	baseURL, err := DiscoverBaseURL(u.Host)
+	if !errors.Is(err, ErrWellKnownNotFound) {
+		t.Fatalf("expected ErrWellKnownNotFound, got %v", err)
+	}
+	if baseURL != "https://"+u.Host {
+		t.Errorf("expected fallback https://%s, got %q", u.Host, baseURL)
+	}
+}
+
+func TestDiscoverBaseURLMalformedJSON(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/matrix/client" {
+			w.Write([]byte(`not json`))
+		}
+	}))
+	defer srv.Close()
+
+	wellKnownHC = srv.Client()
+	defer func() { wellKnownHC = nil }()
+
+	u, _ := url.Parse(srv.URL)
+	baseURL, err := DiscoverBaseURL(u.Host)
+	if !errors.Is(err, ErrWellKnownMalformed) {
+		t.Fatalf("expected ErrWellKnownMalformed, got %v", err)
+	}
+	if baseURL != "https://"+u.Host {
+		t.Errorf("expected fallback https://%s, got %q", u.Host, baseURL)
+	}
+}
+
+func TestDiscoverBaseURLEmptyBaseURL(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/matrix/client" {
+			w.Write([]byte(`{"m.homeserver":{"base_url":""}}`))
+		}
+	}))
+	defer srv.Close()
+
+	wellKnownHC = srv.Client()
+	defer func() { wellKnownHC = nil }()
+
+	u, _ := url.Parse(srv.URL)
+	baseURL, err := DiscoverBaseURL(u.Host)
+	if !errors.Is(err, ErrWellKnownMalformed) {
+		t.Fatalf("expected ErrWellKnownMalformed, got %v", err)
+	}
+	if baseURL != "https://"+u.Host {
+		t.Errorf("expected fallback https://%s, got %q", u.Host, baseURL)
+	}
+}
+
+func TestDiscoverBaseURLAlreadyHasScheme(t *testing.T) {
+	baseURL, err := DiscoverBaseURL("https://matrix.example.com:8448")
+	if errors.Is(err, ErrWellKnownNotFound) || errors.Is(err, ErrWellKnownNetwork) {
+		if baseURL != "https://matrix.example.com:8448" {
+			t.Errorf("expected fallback to input, got %q", baseURL)
+		}
+	} else if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDiscoverBaseURLInvalidInput(t *testing.T) {
+	baseURL, err := DiscoverBaseURL("://bad")
+	if err == nil {
+		t.Error("expected error for invalid URL")
+	}
+	if baseURL != "://bad" {
+		t.Errorf("expected fallback %q, got %q", "://bad", baseURL)
 	}
 }

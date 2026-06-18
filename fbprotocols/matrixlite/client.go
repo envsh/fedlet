@@ -3,11 +3,13 @@ package matrixlite
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -42,6 +44,23 @@ func Login(server, user, password string) (*Client, error) {
 	}
 	c.detectSlidingSync()
 
+	return c, nil
+}
+
+func ClientFromToken(baseURL, accessToken string) (*Client, error) {
+	c := &Client{
+		baseURL:     baseURL,
+		accessToken: accessToken,
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
+	}
+	c.detectSlidingSync()
+	if _, err := c.Sync(0); err != nil {
+		return nil, fmt.Errorf("token validation: %w", err)
+	}
 	return c, nil
 }
 
@@ -324,6 +343,77 @@ type rawEvent struct {
 	Content rawContent `json:"content,omitempty"`
 	EventID string     `json:"event_id,omitempty"`
 	TS      int64      `json:"origin_server_ts,omitempty"`
+}
+
+var (
+	ErrWellKnownNotFound  = errors.New("well-known: not found")
+	ErrWellKnownMalformed = errors.New("well-known: malformed response")
+	ErrWellKnownNetwork   = errors.New("well-known: network error")
+
+	wellKnownHC *http.Client
+)
+
+func getWellKnownHC() *http.Client {
+	if wellKnownHC != nil {
+		return wellKnownHC
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+type wellKnownResp struct {
+	Homeserver struct {
+		BaseURL string `json:"base_url"`
+	} `json:"m.homeserver"`
+}
+
+func DiscoverBaseURL(input string) (string, error) {
+	rawURL := input
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL, fmt.Errorf("well-known: %w: invalid URL %q", ErrWellKnownMalformed, input)
+	}
+	if u.Host == "" {
+		return rawURL, fmt.Errorf("well-known: %w: no host in %q", ErrWellKnownNotFound, input)
+	}
+	discovered, err := fetchWellKnown(u.Host)
+	if err != nil {
+		return rawURL, err
+	}
+	return discovered, nil
+}
+
+func fetchWellKnown(host string) (string, error) {
+	u := "https://" + host + "/.well-known/matrix/client"
+	hc := getWellKnownHC()
+	resp, err := hc.Get(u)
+	if err != nil {
+		return "", fmt.Errorf("well-known: %w for %s: %w", ErrWellKnownNetwork, host, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return "", fmt.Errorf("well-known: %w: HTTP %d", ErrWellKnownNotFound, resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("well-known: %w: HTTP %d for %s", ErrWellKnownNotFound, resp.StatusCode, host)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("well-known: %w: read: %w", ErrWellKnownNetwork, err)
+	}
+
+	var wk wellKnownResp
+	if err := json.Unmarshal(raw, &wk); err != nil {
+		return "", fmt.Errorf("well-known: %w: decode: %w", ErrWellKnownMalformed, err)
+	}
+	if wk.Homeserver.BaseURL == "" {
+		return "", fmt.Errorf("well-known: %w: empty m.homeserver.base_url", ErrWellKnownMalformed)
+	}
+	return wk.Homeserver.BaseURL, nil
 }
 
 func extractMessageEvent(roomID string, raw json.RawMessage) *Event {
