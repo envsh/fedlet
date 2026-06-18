@@ -31,6 +31,10 @@ type Client struct {
 }
 
 func Login(server, user, password string) (*Client, error) {
+	return LoginWithDeviceID(server, user, password, "")
+}
+
+func LoginWithDeviceID(server, user, password, deviceID string) (*Client, error) {
 	c := &Client{
 		baseURL: server,
 		hc: &http.Client{
@@ -40,7 +44,7 @@ func Login(server, user, password string) (*Client, error) {
 		},
 	}
 
-	if err := c.doLogin(user, password); err != nil {
+	if err := c.doLogin(user, password, deviceID); err != nil {
 		return nil, err
 	}
 	c.detectSlidingSync()
@@ -59,7 +63,7 @@ func ClientFromToken(baseURL, accessToken string) (*Client, error) {
 		},
 	}
 	c.detectSlidingSync()
-	if _, err := c.Sync(0); err != nil {
+	if _, err := c.whoami(); err != nil {
 		return nil, fmt.Errorf("token validation: %w", err)
 	}
 	return c, nil
@@ -70,6 +74,7 @@ type loginReq struct {
 	User       string `json:"user"`
 	Password   string `json:"password"`
 	DeviceName string `json:"initial_device_display_name,omitempty"`
+	DeviceID   string `json:"device_id,omitempty"`
 	RefreshTok bool   `json:"refresh_token,omitempty"`
 }
 
@@ -80,12 +85,13 @@ type loginResp struct {
 	DeviceID     string `json:"device_id"`
 }
 
-func (c *Client) doLogin(user, password string) error {
+func (c *Client) doLogin(user, password, deviceID string) error {
 	body, _ := json.Marshal(loginReq{
 		Type:       "m.login.password",
 		User:       user,
 		Password:   password,
 		DeviceName: "fedlet-bridge",
+		DeviceID:   deviceID,
 		RefreshTok: true,
 	})
 	loginURL := c.baseURL + "/_matrix/client/v3/login"
@@ -168,6 +174,11 @@ func (c *Client) TokenRefresh() error {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
+
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		c.accessToken = ""
+		return err
+	}
 
 	var rr refreshResp
 	if err := json.Unmarshal(raw, &rr); err != nil {
@@ -286,8 +297,8 @@ func (c *Client) slidingSync(timeout time.Duration) ([]Event, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, ErrTokenExpired
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return nil, err
 	}
 
 	var sr slidingResp
@@ -348,8 +359,8 @@ func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, ErrTokenExpired
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return nil, err
 	}
 
 	var nr normalResp
@@ -395,7 +406,9 @@ var (
 	ErrWellKnownMalformed = errors.New("well-known: malformed response")
 	ErrWellKnownNetwork   = errors.New("well-known: network error")
 	ErrTokenExpired       = errors.New("matrixlite: token expired")
-
+	ErrSessionInvalidated = errors.New("matrixlite: session invalidated")
+	ErrUserDeactivated    = errors.New("matrixlite: user deactivated")
+ 
 	wellKnownHC          *http.Client
 	prevNormalNextBatch string
 )
@@ -568,8 +581,8 @@ func (c *Client) whoami() (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", ErrTokenExpired
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return "", err
 	}
 
 	var wr whoamiResp
@@ -611,6 +624,30 @@ func (c *Client) doRequest(method, fullURL string, body []byte) (*http.Response,
 		return nil, fmt.Errorf("%s %s: %w", method, req.URL.String(), err)
 	}
 	return resp, nil
+}
+
+func authErrorFromResponse(resp *http.Response, body []byte) error {
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		return nil
+	}
+	var errResp struct {
+		ErrCode    string `json:"errcode"`
+		SoftLogout *bool  `json:"soft_logout,omitempty"`
+	}
+	json.Unmarshal(body, &errResp)
+	switch errResp.ErrCode {
+	case "M_USER_DEACTIVATED":
+		return ErrUserDeactivated
+	case "M_UNKNOWN_TOKEN":
+		if errResp.SoftLogout != nil && *errResp.SoftLogout {
+			return ErrTokenExpired
+		}
+		return ErrSessionInvalidated
+	case "M_MISSING_TOKEN", "M_FORBIDDEN":
+		return ErrSessionInvalidated
+	default:
+		return ErrTokenExpired
+	}
 }
 
 

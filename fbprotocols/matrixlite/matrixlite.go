@@ -65,14 +65,21 @@ func pollLoop(baseURL, token, user, password string) {
 	state.Load()
 
 	for {
+		// ═══ RESTORE ═══
 		client, err := loginOrRestore(baseURL, token, user, password, &state)
-		if errors.Is(err, ErrTokenExpired) {
-			log.Fatalf("matrixlite: token expired, restart with fresh credentials")
-		}
-		if client == nil {
+		switch {
+		case errors.Is(err, ErrUserDeactivated):
+			log.Printf("matrixlite: user deactivated, stopping")
+			return
+		case err != nil:
+			log.Printf("matrixlite: %v, retrying in 5s", err)
+			time.Sleep(5 * time.Second)
+			continue
+		case client == nil:
 			time.Sleep(10 * time.Second)
 			continue
 		}
+
 		muClient.Lock()
 		curClient = client
 		muClient.Unlock()
@@ -82,36 +89,84 @@ func pollLoop(baseURL, token, user, password string) {
 		client.SaveSyncState(&state)
 		state.Save()
 
+		// ═══ SYNC ═══
+		var lastErr error
 		for {
 			events, err := client.Sync(30 * time.Second)
-			if err != nil {
-				if errors.Is(err, ErrTokenExpired) && client.refreshToken != "" {
-					if rerr := client.TokenRefresh(); rerr == nil {
-						log.Printf("matrixlite: sync: token refreshed")
+			if err == nil {
+				client.SaveSyncState(&state)
+				state.Save()
+				for _, ev := range events {
+					var msg Message
+					if json.Unmarshal(ev.Data, &msg) == nil && msg.Body != "" {
+						log.Printf("matrixlite: <%s> %s: %s", msg.RoomID, msg.Sender, msg.Body)
+					}
+					if err := publish(ev.Data); err != nil {
+						log.Printf("matrixlite: publish error: %v", err)
+					}
+				}
+				continue
+			}
+
+			lastErr = err
+			switch {
+			case errors.Is(err, ErrUserDeactivated):
+				log.Printf("matrixlite: sync: user deactivated, stopping")
+				return
+
+			case errors.Is(err, ErrTokenExpired):
+				if client.refreshToken == "" {
+					break // → RECONNECT
+				}
+				switch rerr := client.TokenRefresh(); {
+				case rerr == nil:
+					log.Printf("matrixlite: sync: token refreshed")
+					client.SaveSyncState(&state)
+					state.Save()
+					continue
+				case errors.Is(rerr, ErrUserDeactivated):
+					return
+				case errors.Is(rerr, ErrTokenExpired),
+					errors.Is(rerr, ErrSessionInvalidated):
+					break // → RECONNECT
+				default:
+					log.Printf("matrixlite: sync: refresh transient error, retrying sync: %v", rerr)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+
+			case errors.Is(err, ErrSessionInvalidated):
+				if client.refreshToken != "" {
+					switch rerr := client.TokenRefresh(); {
+					case rerr == nil:
+						log.Printf("matrixlite: sync: token refreshed after session error")
 						client.SaveSyncState(&state)
 						state.Save()
 						continue
+					case errors.Is(rerr, ErrUserDeactivated):
+						return
+					case errors.Is(rerr, ErrTokenExpired),
+						errors.Is(rerr, ErrSessionInvalidated):
+						break // → RECONNECT
+					default:
+						log.Printf("matrixlite: sync: refresh transient error, retrying sync: %v", rerr)
+						time.Sleep(5 * time.Second)
+						continue
 					}
 				}
-				log.Printf("matrixlite: sync error: %v", err)
-				break
+				break // → RECONNECT
+
+			default:
+				log.Printf("matrixlite: sync error (transient): %v, retrying in 5s", err)
+				time.Sleep(5 * time.Second)
+				continue
 			}
 
-			client.SaveSyncState(&state)
-			state.Save()
-
-			for _, ev := range events {
-				var msg Message
-				if json.Unmarshal(ev.Data, &msg) == nil && msg.Body != "" {
-					log.Printf("matrixlite: <%s> %s: %s", msg.RoomID, msg.Sender, msg.Body)
-				}
-				if err := publish(ev.Data); err != nil {
-					log.Printf("matrixlite: publish error: %v", err)
-				}
-			}
+			break
 		}
 
-		log.Println("matrixlite: disconnected, reconnecting in 5s")
+		// ═══ RECONNECT ═══
+		log.Printf("matrixlite: session lost, reconnecting in 5s (reason: %v)", lastErr)
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -134,27 +189,42 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 		c.RestoreFromState(state)
 		whoms, whoErr := c.whoami()
 		if whoErr == nil && state.UserID != "" && whoms != state.UserID {
-			log.Printf("matrixlite: [cache] account switched: %s → %s, re-logging in", state.UserID, whoms)
+			log.Printf("matrixlite: [cache] account switched: %s → %s", state.UserID, whoms)
 			state.AccessToken = ""
 			state.RefreshToken = ""
 			state.Save()
-		} else {
-			_, restoreErr := c.Sync(0)
-			if restoreErr == nil {
-				log.Printf("matrixlite: [cache] restored session for %s (sliding=%v)", c.userID, c.useSliding)
-				return c, nil
-			}
-			if errors.Is(restoreErr, ErrTokenExpired) && c.refreshToken != "" {
-				if rerr := c.TokenRefresh(); rerr == nil {
-					log.Printf("matrixlite: [cache] token refreshed for %s", c.userID)
-					c.SaveSyncState(state)
-					state.Save()
-					if _, err := c.Sync(0); err == nil {
-						return c, nil
-					}
+		}
+
+		if whoErr == nil {
+			log.Printf("matrixlite: [cache] restored session for %s (sliding=%v)", c.userID, c.useSliding)
+			return c, nil
+		}
+
+		log.Printf("matrixlite: [cache] whoami failed: %v", whoErr)
+		if c.refreshToken != "" && (errors.Is(whoErr, ErrTokenExpired) || errors.Is(whoErr, ErrSessionInvalidated)) {
+			if rerr := c.TokenRefresh(); rerr == nil {
+				log.Printf("matrixlite: [cache] token refreshed for %s", c.userID)
+				c.SaveSyncState(state)
+				state.Save()
+				if _, err := c.whoami(); err == nil {
+					return c, nil
 				}
+			} else if errors.Is(rerr, ErrUserDeactivated) {
+				return nil, ErrUserDeactivated
 			}
+		}
+
+		if errors.Is(whoErr, ErrUserDeactivated) {
+			return nil, ErrUserDeactivated
+		}
+
+		if errors.Is(whoErr, ErrTokenExpired) || errors.Is(whoErr, ErrSessionInvalidated) {
+			state.AccessToken = ""
+			state.RefreshToken = ""
+			state.Save()
 			log.Printf("matrixlite: [cache] session expired, re-logging in")
+		} else {
+			return nil, fmt.Errorf("whoami: %w", whoErr)
 		}
 	}
 
@@ -169,7 +239,11 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 	}
 
 	var err error
-	c, err = Login(baseURL, user, password)
+	if state.DeviceID != "" {
+		c, err = LoginWithDeviceID(baseURL, user, password, state.DeviceID)
+	} else {
+		c, err = Login(baseURL, user, password)
+	}
 	if err != nil {
 		log.Printf("matrixlite: [auth] login error: %v", err)
 		return nil, err
