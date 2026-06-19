@@ -14,7 +14,7 @@ func init() {
 		return publish(channel_name, data)
 	})
 	RegisterSender(TypeGomuksRoom, gomuks.Send)
-	flag.StringVar(&gomuksInfo, "gomuks", "", "gomuks info default 127.0.0.1:29325")
+	flag.StringVar(&gomuksInfo, "gomuks", "127.0.0.1:29325", "gomuks info")
 	starters = append(starters, func() {
 		gomuks.Start(gomuksInfo)
 	})

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fedlet Bridge</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;padding:20px;font-size:14px}
+h1{color:#58a6ff;font-size:20px;display:flex;align-items:center;gap:12px;margin-bottom:20px}
+h1 a{font-size:13px;color:#58a6ff;text-decoration:none;margin-left:auto}
+h1 a:hover{text-decoration:underline}
+h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin-bottom:20px}
+.protocol-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.proto-item{padding:10px 14px;border-radius:6px;background:#0d1117;border:1px solid #30363d;font-size:13px}
+.proto-head{display:flex;align-items:center;gap:10px}
+.proto-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;background:#3fb950}
+.proto-name{color:#c9d1d9}
+.proto-label{color:#8b949e;font-size:12px;margin-left:auto}
+.proto-params{margin-top:6px;padding-left:20px;font-size:12px;color:#8b949e}
+.proto-params div{line-height:1.6}
+.proto-params .key{color:#8b949e}
+.proto-params .val{color:#c9d1d9;font-family:'SF Mono','Consolas','Liberation Mono',monospace}
+.peer-list{display:grid;gap:6px}
+.peer-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:6px;background:#0d1117;border:1px solid #30363d;cursor:pointer;transition:border-color 0.15s}
+.peer-item:hover{border-color:#58a6ff}
+.peer-item.active{border-color:#1f6feb;background:#161b22}
+.peer-radio{width:16px;height:16px;border-radius:50%;border:2px solid #666;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.peer-item.active .peer-radio{border-color:#58a6ff}
+.peer-item.active .peer-radio::after{content:'';width:8px;height:8px;border-radius:50%;background:#58a6ff}
+.peer-id{font-family:'SF Mono','Consolas','Liberation Mono',monospace;font-size:13px;color:#c9d1d9;word-break:break-all}
+.peer-num{color:#8b949e;font-size:13px;min-width:48px}
+.current-peer{margin-bottom:12px;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:13px;color:#8b949e}
+.current-peer span{color:#58a6ff;font-family:'SF Mono','Consolas','Liberation Mono',monospace}
+.error-toast{background:#21262d;border:1px solid #f85149;color:#f85149;padding:10px 14px;border-radius:6px;margin-top:12px;display:none}
+.error-toast.show{display:block}
+</style>
+</head>
+<body>
+
+<h1>
+  Fedlet Bridge
+  <a href="/p2pin/index">p2put Dashboard &rarr;</a>
+</h1>
+
+<div class="card">
+  <h2>Protocols</h2>
+  <div class="protocol-grid" id="protoList"><div style="color:#666;font-size:0.9rem">loading...</div></div>
+</div>
+
+<div class="card">
+  <h2>Drift Tunnel Peer</h2>
+  <div class="current-peer" id="currentPeer">Current: <span>—</span></div>
+  <div class="peer-list" id="peerList"><div style="color:#666;font-size:0.9rem">loading...</div></div>
+</div>
+
+<div id="errorToast" class="error-toast"></div>
+
+<script>
+async function loadProtocols() {
+  try {
+    const r = await fetch('/api/protocols')
+    const list = await r.json()
+    const html = list.map(p => {
+      const sub = p.params.length ? p.params.map(kv => {
+        const v = kv.hide ? '<span class="val">******</span>' : `<span class="val">${esc(kv.value)}</span>`
+        return `<div><span class="key">${esc(kv.key)}</span> ${v}</div>`
+      }).join('') : ''
+      return `<div class="proto-item"><div class="proto-head"><div class="proto-dot"></div><span class="proto-name">${esc(p.name)}</span><span class="proto-label">${esc(p.label)}</span></div>${sub ? '<div class="proto-params">'+sub+'</div>' : ''}</div>`
+    }).join('')
+    document.getElementById('protoList').innerHTML = html || '<div style="color:#888">no protocols registered</div>'
+  } catch(e) {
+    document.getElementById('protoList').innerHTML = '<div style="color:#c55">failed to load</div>'
+  }
+}
+function esc(s) { return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]}) }
+
+async function loadPeers() {
+  try {
+    const r = await fetch('/api/peer')
+    const data = await r.json()
+    document.getElementById('currentPeer').innerHTML = `Current: <span>${data.peer ? data.peer.substring(0,20)+'...' : '—'}</span>`
+    const list = document.getElementById('peerList')
+    list.innerHTML = data.peers.map(p => {
+      const active = p.no === data.peerno
+      return `<div class="peer-item${active?' active':''}" data-no="${p.no}" onclick="switchPeer(${p.no})"><div class="peer-radio"></div><span class="peer-num">Peer ${p.no}</span><span class="peer-id">${p.id}</span></div>`
+    }).join('')
+  } catch(e) {
+    document.getElementById('peerList').innerHTML = '<div style="color:#c55">failed to load</div>'
+  }
+}
+
+async function switchPeer(n) {
+  if (!confirm('Switch to Peer '+n+'?')) return
+  const toast = document.getElementById('errorToast')
+  toast.classList.remove('show')
+  try {
+    const r = await fetch('/api/peer', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'peerno='+n })
+    if (!r.ok) throw new Error('HTTP '+r.status)
+    await loadPeers()
+  } catch(e) {
+    toast.textContent = 'switch failed: '+e.message
+    toast.classList.add('show')
+  }
+}
+
+loadProtocols()
+loadPeers()
+</script>
+</body>
+</html>
