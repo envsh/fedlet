@@ -4,7 +4,7 @@ go 1.22.1
 
 // require github.com/envsh/toxera/p2put v0.0.0
 
-// replace github.com/envsh/libp2px => ../libp2px
+replace github.com/envsh/libp2px => ../../libp2px
 
 // require github.com/envsh/toxera/fedkey v0.0.0 // indirect
 
@@ -16,7 +16,10 @@ replace github.com/envsh/fedlet => ../
 
 require github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77 // indirect
 
-require github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc
+require (
+	github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc
+	golang.zx2c4.com/wireguard v0.0.0-20230223181233-21636207a675
+)
 
 // github.com/envsh/libp2px v0.0.0
 require github.com/gorilla/websocket v1.5.3 // indirect
@@ -37,6 +40,7 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/elastic/gosigar v0.14.3 // indirect
 	github.com/emersion/go-imap v1.2.1 // indirect
+	github.com/emersion/go-imap-id v0.0.0-20190926060100-f94a56b9ecde // indirect
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
@@ -163,7 +167,6 @@ require (
 	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/tools v0.24.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20211104114900-415007cec224 // indirect
-	golang.zx2c4.com/wireguard v0.0.0-20230223181233-21636207a675 // indirect
 	gonum.org/v1/gonum v0.15.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

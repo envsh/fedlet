@@ -6,7 +6,10 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
+
+	"github.com/envsh/libp2px/p2put"
 )
 
 //go:embed fedlet.html
@@ -18,30 +21,19 @@ type peerEntry struct {
 	Name string `json:"name"`
 }
 
-var peerList = []peerEntry{
-	{0, peerid0, "peer0"},
-	{1, peerid1, "peer1"},
-	{2, peerid2, "peer2"},
-	{3, peerid3, "peer3"},
-	{4, peerid4, "peer4"},
-}
-
 var currentPeerID string
 
-func init() {
-	switch usepeer {
-	case 4:
-		currentPeerID = peerid4
-	case 3:
-		currentPeerID = peerid3
-	case 2:
-		currentPeerID = peerid0
-	case 1:
-		currentPeerID = peerid1
-	default:
-		currentPeerID = peerid2
+func getPeerList() []peerEntry {
+	ids := p2put.GetClusterPeers()
+	sort.Strings(ids)
+	out := make([]peerEntry, 0, len(ids))
+	for i, id := range ids {
+		out = append(out, peerEntry{No: i, ID: id, Name: id})
 	}
+	return out
+}
 
+func init() {
 	http.HandleFunc("/fedlet/index", handleFedletIndex)
 	http.HandleFunc("/api/protocols", handleProtocols)
 	http.HandleFunc("/api/peer", handlePeer)
@@ -166,15 +158,16 @@ func handleProtocols(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePeer(w http.ResponseWriter, r *http.Request) {
+	pl := getPeerList()
 	if r.Method == http.MethodPost {
 		r.ParseForm()
 		if p := r.FormValue("peerno"); p != "" {
-			if n, err := strconv.Atoi(p); err == nil && n >= 0 && n < len(peerList) {
+			if n, err := strconv.Atoi(p); err == nil && n >= 0 && n < len(pl) {
 				if driftsrv != nil {
-					driftsrv.SwitchPeer(peerList[n].ID)
+					driftsrv.SwitchPeer(pl[n].ID)
 				}
-				currentPeerID = peerList[n].ID
-				log.Printf("fedlet: switched to peer %d (%s)", n, peerList[n].ID)
+				currentPeerID = pl[n].ID
+				log.Printf("fedlet: switched to peer %d (%s)", n, pl[n].ID)
 			}
 		} else if p := r.FormValue("peer"); p != "" {
 			if driftsrv != nil {
@@ -186,7 +179,7 @@ func handlePeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	peerno := -1
-	for i, p := range peerList {
+	for i, p := range pl {
 		if p.ID == currentPeerID {
 			peerno = i
 			break
@@ -197,6 +190,6 @@ func handlePeer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"peerno": peerno,
 		"peer":   currentPeerID,
-		"peers":  peerList,
+		"peers":  pl,
 	})
 }
