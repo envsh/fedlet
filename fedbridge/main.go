@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 	"context"
+	"strings"
 
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbecho"
@@ -41,7 +42,7 @@ func main() {
 	p2putFs.VisitAll(func(f *flag.Flag) {
 		flag.Var(f.Value, f.Name, f.Usage)
 	})
-	flag.IntVar(&usepeer, "peerno", usepeer, "use which peerno as tunnel dest")
+	flag.StringVar(&usepeer, "peerno", usepeer, "use which peer as tunnel dest, suffix 5 chars")
 	flag.Parse()
 
 	initVirTun()
@@ -75,25 +76,37 @@ func main() {
 
 func tunloop() {
 	var peerid string
-	if usepeer >= 0 {
-		pl := getPeerList()
-		if usepeer < len(pl) {
-			peerid = pl[usepeer].ID
-		}
-	}
 
 	srv := pbtunnel.NewDriftServer(peerid)
+	driftsrv = srv
+	go waitPeerCome(srv, peerid)
 	log.Println("Listen on :9339 =>", peerid)
 	err := srv.Listen(":9339")
 	log.Println(err)
 	if err == nil {
-		driftsrv = srv
 	}
 	select{}
 }
 
+func waitPeerCome(srv *pbtunnel.DriftServer, peerid string) {
+	btime := time.Now()
+	for peerid == "" && usepeer != "" {
+		time.Sleep(2*time.Second)
+		pl := getPeerList()
+		for _, p := range pl {
+			if strings.HasSuffix(p.ID, usepeer) {
+				peerid = p.ID
+				srv.SwitchPeer(peerid)
+				currentPeerID = peerid
+				log.Println("swito peered ", peerid, time.Since(btime))
+				break
+			}
+		}
+	}
+}
+
 var driftsrv *pbtunnel.DriftServer
-var usepeer = -1 // default; index into dynamic PeerDB list
+var usepeer = "NtYLT" // default; index into dynamic PeerDB list
 
 func echoLoop() {
 	peerid := ""
