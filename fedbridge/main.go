@@ -59,6 +59,7 @@ func main() {
 	// go poll_gomuks()
 	// go echoLoop()
 	go tunloop()
+	go clipWaitProc()
 
 	// proxy := pbtunnel.NewHTTPProxy()
 	// go func() {
