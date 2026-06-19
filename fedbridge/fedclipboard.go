@@ -17,6 +17,9 @@ func init() {
 		log.Println(err)
 	}
 	clip_ierr = err
+	if err == nil {
+		go clipWaitProc()
+	}
 }
 
 func clipWaitProc() {
