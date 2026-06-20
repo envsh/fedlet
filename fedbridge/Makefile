@@ -1,8 +1,9 @@
 BINARY = main
 TAGS = gomuks,toxoverhttp,emailimap,matrixlite
 
+# clipboard need CGO
 all:
-	go build -v -tags $(TAGS) -o $(BINARY)
+	CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
 	@case "$$(uname -s)" in \
 		Linux) \
 			echo "==> setcap cap_net_admin+eip on $(BINARY)"; \
