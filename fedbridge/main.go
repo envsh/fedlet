@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"io"
 	"net/http"
 	"time"
 	"context"
@@ -23,13 +24,27 @@ var publishViaHTTP bool = true
 var channel_name = "reddit"
 
 func publish(channel string, data []byte) error {
+	btime := time.Now()
+	err := publish2(channel, data)
+	if err != nil {
+		log.Println(channel, len(data), time.Since(btime), err)
+	}
+	// log.Println(channel, len(data), time.Since(btime), err)
+	return err
+}
+func publish2(channel string, data []byte) error {
 	if publishViaHTTP {
 		url := fmt.Sprintf("http://127.0.0.1:4004/p2pin/send?topic=%s", channel)
 		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
+		bcc, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		// log.Println(resp.StatusCode, url)
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("%v %v", resp.StatusCode, string(bcc))
+		}
 		return nil
 	}
 	return p2put.PublishTopic(channel, data)
@@ -43,6 +58,7 @@ func main() {
 		flag.Var(f.Value, f.Name, f.Usage)
 	})
 	flag.StringVar(&usepeer, "peerno", usepeer, "use which peer as tunnel dest, suffix 5 chars")
+	flag.StringVar(&vlanpfx, "vlan", vlanpfx, "tun vlan ip prefix")
 	flag.Parse()
 
 	initVirTun()
@@ -107,6 +123,7 @@ func waitPeerCome(srv *pbtunnel.DriftServer, peerid string) {
 
 var driftsrv *pbtunnel.DriftServer
 var usepeer = "NtYLT" // default; index into dynamic PeerDB list
+var vlanpfx = "10.0.0."
 
 func echoLoop() {
 	peerid := ""

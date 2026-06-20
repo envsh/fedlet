@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"context"
+	"net/http"
 	"time"
 
 	"golang.design/x/clipboard"
@@ -36,15 +43,46 @@ func clipWaitProc() {
 				return
 			}
 			scc := string(data)
-            log.Println("text:", len(scc), scc)
+			log.Println("text:", len(scc), scc)
+			publish(channel_name, marshalClipEvent("text", "", scc, 0, 0, 0))
 		case data, ok := <-chImage:
 			if !ok {
 				log.Println("clip watch failed", clipboard.FmtText)
 				return
 			}
-            log.Println("image:", len(data), clipboard.FmtImage)
+			log.Println("image:", len(data), clipboard.FmtImage)
+			mime := http.DetectContentType(data)
+			cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+			w, h := 0, 0
+			if err == nil {
+				w, h = cfg.Width, cfg.Height
+			} else {
+				log.Printf("clipboard: decode image config: %v", err)
+			}
+			publish(channel_name, marshalClipEvent("image", mime, "", len(data), w, h))
 		}
 	}
+}
+
+func marshalClipEvent(format, mime, text string, size, width, height int) []byte {
+	b, _ := json.Marshal(struct {
+		Type   string `json:"type"`
+		Format string `json:"format"`
+		MIME   string `json:"mime,omitempty"`
+		Data   string `json:"data,omitempty"`
+		Size   int    `json:"size,omitempty"`
+		Width  int    `json:"width,omitempty"`
+		Height int    `json:"height,omitempty"`
+	}{
+		Type:   "clipboard",
+		Format: format,
+		MIME:   mime,
+		Data:   text,
+		Size:   size,
+		Width:  width,
+		Height: height,
+	})
+	return b
 }
 
 // func clipWaitProcV8() {
