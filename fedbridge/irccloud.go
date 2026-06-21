@@ -11,13 +11,21 @@ import (
 
 var ircInfo, ircJoin string
 
-var _ = RegisterProtocol("irccloud", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
+var ircStatusFn = func() ProtocolStatus {
 	return ProtocolStatus{
 		Running:        irccloud.IsRunning(),
 		LastErrs:       irccloud.LastErrs(),
 		ConnectedSince: irccloud.ConnectedSince(),
 		ReconnTimes:    irccloud.ReconnTimes(),
 	}
+}
+
+var _ = RegisterProtocol(&ProtocolInfo{
+	Name:       "irccloud",
+	Ctypes:     []string{TypeIRCCloud},
+	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
+	SendFn:     irccloud.Send,
+	statusFn:   ircStatusFn,
 })
 
 func init() {
@@ -43,7 +51,6 @@ func init() {
 		irccloud.SetPublishInfo(func(data []byte) error {
 			return publish(channel_name, data)
 		})
-		RegisterSender(TypeIRCCloud, irccloud.Send)
 		irccloud.Start(info)
 	})
 }

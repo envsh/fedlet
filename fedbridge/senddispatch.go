@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 )
 
-var senders = make(map[string]func(to, msg, msgType string) error)
-
-func RegisterSender(key string, fn func(to, msg, msgType string) error) {
-	senders[key] = fn
+type forwardReq struct {
+	Cmd     string `json:"__cmd__"`
+	Ctype   string `json:"ctype"`
+	To      string `json:"to"`
+	Msg     string `json:"msg"`
+	MsgType string `json:"msgType"`
 }
 
 // DispatchSend 按联系人类型分发消息。
@@ -17,12 +20,21 @@ func RegisterSender(key string, fn func(to, msg, msgType string) error) {
 //   msg:      消息正文
 //   msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
 func DispatchSend(ctype, to, msg, msgType string) error {
-	fn, ok := senders[ctype]
-	log.Printf("senddispatch: ctype=%q to=%q msg=%q sender_ok=%v", ctype, to, msg, ok)
+	info, ok := ctypeRegistry[ctype]
+	log.Printf("senddispatch: ctype=%q to=%q msg=%q ok=%v canSend=%v",
+		ctype, to, msg, ok, ok && info.Capacities.CanSend)
 	if !ok {
-		return fmt.Errorf("senddispatch: unknown contact type %q", ctype)
+		req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType}
+		data, _ := json.Marshal(req)
+		log.Printf("senddispatch: forwardReq=%s", data)
+		return fmt.Errorf("senddispatch: no local sender for %q", ctype)
 	}
-	err := fn(to, msg, msgType)
+	if info.statusFn != nil {
+		st := info.Status()
+		log.Printf("senddispatch: protocol=%q running=%v reconn=%d errs=%d",
+			info.Name, st.Running, st.ReconnTimes, len(st.LastErrs))
+	}
+	err := info.SendFn(to, msg, msgType)
 	log.Printf("senddispatch: ctype=%q result=%v", ctype, err)
 	return err
 }
@@ -41,4 +53,5 @@ const (
 	TypeLounge        = "irclounge"
 	TypeMatrix        = "matrix"
 	TypeMisskeyNote   = "misskey_note"
+	TypeOutlookEvent  = "outlook_event"
 )

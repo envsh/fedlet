@@ -16,13 +16,19 @@ var (
 	emailImapServer string
 )
 
-var _ = RegisterProtocol("emailimap", ProtocolCapacities{CanReceive: true}, func() ProtocolStatus {
-	return ProtocolStatus{
-		Running:        emailimap.IsRunning(),
-		LastErrs:       emailimap.LastErrs(),
-		ConnectedSince: emailimap.ConnectedSince(),
-		ReconnTimes:    emailimap.ReconnTimes(),
-	}
+var _ = RegisterProtocol(&ProtocolInfo{
+	Name:       "emailimap",
+	Ctypes:     []string{TypeImapMail},
+	Capacities: ProtocolCapacities{CanReceive: true},
+	SendFn:     emailimap.Send,
+	statusFn: func() ProtocolStatus {
+		return ProtocolStatus{
+			Running:        emailimap.IsRunning(),
+			LastErrs:       emailimap.LastErrs(),
+			ConnectedSince: emailimap.ConnectedSince(),
+			ReconnTimes:    emailimap.ReconnTimes(),
+		}
+	},
 })
 
 func init() {
@@ -43,7 +49,6 @@ func init() {
 		emailimap.SetPublishInfo(func(data []byte) error {
 			return publish(channel_name, data)
 		})
-		RegisterSender(TypeImapMail, emailimap.Send)
 		emailimap.Start(string(b))
 	})
 }

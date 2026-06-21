@@ -13,20 +13,25 @@ var (
 	misskeyTimeline string
 )
 
-var _ = RegisterProtocol("misskey", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
-	return ProtocolStatus{
-		Running:        misskey.IsRunning(),
-		LastErrs:       misskey.LastErrs(),
-		ConnectedSince: misskey.ConnectedSince(),
-		ReconnTimes:    misskey.ReconnTimes(),
-	}
+var _ = RegisterProtocol(&ProtocolInfo{
+	Name:       "misskey",
+	Ctypes:     []string{TypeMisskeyNote},
+	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
+	SendFn:     misskey.Send,
+	statusFn: func() ProtocolStatus {
+		return ProtocolStatus{
+			Running:        misskey.IsRunning(),
+			LastErrs:       misskey.LastErrs(),
+			ConnectedSince: misskey.ConnectedSince(),
+			ReconnTimes:    misskey.ReconnTimes(),
+		}
+	},
 })
 
 func init() {
 	misskey.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)
 	})
-	RegisterSender(TypeMisskeyNote, misskey.Send)
 	flag.StringVar(&misskeyHost, "misskey", "", "Misskey instance URL")
 	flag.StringVar(&misskeyToken, "misskey-token", "", "Misskey API token")
 	flag.StringVar(&misskeyTimeline, "misskey-timeline", "home", "Timeline: home/local/hybrid/global")

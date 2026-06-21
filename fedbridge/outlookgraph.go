@@ -10,13 +10,18 @@ import (
 
 var outlookClientID string
 
-var _ = RegisterProtocol("outlookgraph", ProtocolCapacities{CanReceive: true}, func() ProtocolStatus {
-	return ProtocolStatus{
-		Running:        outlookgraph.IsRunning(),
-		LastErrs:       outlookgraph.LastErrs(),
-		ConnectedSince: outlookgraph.ConnectedSince(),
-		ReconnTimes:    outlookgraph.ReconnTimes(),
-	}
+var _ = RegisterProtocol(&ProtocolInfo{
+	Name:       "outlookgraph",
+	Ctypes:     []string{TypeOutlookEvent},
+	Capacities: ProtocolCapacities{CanReceive: true},
+	statusFn: func() ProtocolStatus {
+		return ProtocolStatus{
+			Running:        outlookgraph.IsRunning(),
+			LastErrs:       outlookgraph.LastErrs(),
+			ConnectedSince: outlookgraph.ConnectedSince(),
+			ReconnTimes:    outlookgraph.ReconnTimes(),
+		}
+	},
 })
 
 func init() {
