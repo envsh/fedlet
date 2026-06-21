@@ -31,8 +31,15 @@ func DispatchSend(ctype, to, msg, msgType string) error {
 	}
 	if info.statusFn != nil {
 		st := info.Status()
-		log.Printf("senddispatch: protocol=%q running=%v reconn=%d errs=%d",
-			info.Name, st.Running, st.ReconnTimes, len(st.LastErrs))
+		log.Printf("senddispatch: protocol=%q running=%v connected=%v reconn=%d errs=%d",
+			info.Name, st.Running, st.ConnectedSince, st.ReconnTimes, len(st.LastErrs))
+		if !st.Running || (st.Running && st.ConnectedSince.IsZero()) {
+			req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType}
+			data, _ := json.Marshal(req)
+			log.Printf("senddispatch: backend %q not ready (running=%v connected=%v), forwardReq=%s",
+				info.Name, st.Running, st.ConnectedSince, data)
+			return fmt.Errorf("senddispatch: backend %q not ready", ctype)
+		}
 	}
 	err := info.SendFn(to, msg, msgType)
 	log.Printf("senddispatch: ctype=%q result=%v", ctype, err)

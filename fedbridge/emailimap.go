@@ -21,21 +21,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeImapMail},
 	Capacities: ProtocolCapacities{CanReceive: true},
 	SendFn:     emailimap.Send,
-	statusFn: func() ProtocolStatus {
-		return ProtocolStatus{
-			Running:        emailimap.IsRunning(),
-			LastErrs:       emailimap.LastErrs(),
-			ConnectedSince: emailimap.ConnectedSince(),
-			ReconnTimes:    emailimap.ReconnTimes(),
-		}
-	},
-})
-
-func init() {
-	flag.StringVar(&emailAuth, "emailauth", "", "IMAP user:password (or EMAILAUTH env var)")
-	flag.StringVar(&emailImapDir, "imapdir", "INBOX,Sent", "IMAP folders (comma-separated)")
-	flag.StringVar(&emailImapServer, "imapserver", "outlook.office365.com:993", "IMAP server (host[:port])")
-	starters = append(starters, func() {
+	StartFn: func() {
 		auth := emailAuth
 		if auth == "" {
 			auth = os.Getenv("EMAILAUTH")
@@ -50,5 +36,19 @@ func init() {
 			return publish(channel_name, data)
 		})
 		emailimap.Start(string(b))
-	})
+	},
+	statusFn: func() ProtocolStatus {
+		return ProtocolStatus{
+			Running:        emailimap.IsRunning(),
+			LastErrs:       emailimap.LastErrs(),
+			ConnectedSince: emailimap.ConnectedSince(),
+			ReconnTimes:    emailimap.ReconnTimes(),
+		}
+	},
+})
+
+func init() {
+	flag.StringVar(&emailAuth, "emailauth", "", "IMAP user:password (or EMAILAUTH env var)")
+	flag.StringVar(&emailImapDir, "imapdir", "INBOX,Sent", "IMAP folders (comma-separated)")
+	flag.StringVar(&emailImapServer, "imapserver", "outlook.office365.com:993", "IMAP server (host[:port])")
 }

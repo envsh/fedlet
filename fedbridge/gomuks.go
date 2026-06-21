@@ -14,6 +14,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeGomuksRoom},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     gomuks.Send,
+	StartFn:    func() { gomuks.Start(gomuksInfo) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        gomuks.IsRunning(),
@@ -29,7 +30,4 @@ func init() {
 		return publish(channel_name, data)
 	})
 	flag.StringVar(&gomuksInfo, "gomuks", "127.0.0.1:29325", "gomuks info")
-	starters = append(starters, func() {
-		gomuks.Start(gomuksInfo)
-	})
 }

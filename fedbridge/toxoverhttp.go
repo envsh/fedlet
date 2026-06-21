@@ -14,6 +14,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeToxFriend, TypeToxConference, TypeToxGroup},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     toxoverhttp.Send,
+	StartFn:    func() { toxoverhttp.Start(toxhsURL) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        toxoverhttp.IsRunning(),
@@ -29,7 +30,4 @@ func init() {
 		return publish(channel_name, data)
 	})
 	flag.StringVar(&toxhsURL, "toxhs", "http://127.0.0.1:8181", "toxoverhttp REST URL")
-	starters = append(starters, func() {
-		toxoverhttp.Start(toxhsURL)
-	})
 }

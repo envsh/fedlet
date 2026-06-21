@@ -26,7 +26,12 @@ type syncWatch struct {
 
 func init() {
 	flag.StringVar(&syncDir, "sync-dir", "", "enable file sync: watch directory for changes")
-	starters = append(starters, startFilesync)
+	go func() {
+		for !flag.Parsed() {
+			time.Sleep(5 * time.Millisecond)
+		}
+		startFilesync()
+	}()
 }
 
 func startFilesync() {

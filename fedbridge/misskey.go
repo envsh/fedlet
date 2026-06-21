@@ -18,6 +18,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeMisskeyNote},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     misskey.Send,
+	StartFn:    func() { misskey.Start(misskeyHost, misskeyToken, misskeyTimeline) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        misskey.IsRunning(),
@@ -35,7 +36,4 @@ func init() {
 	flag.StringVar(&misskeyHost, "misskey", "", "Misskey instance URL")
 	flag.StringVar(&misskeyToken, "misskey-token", "", "Misskey API token")
 	flag.StringVar(&misskeyTimeline, "misskey-timeline", "home", "Timeline: home/local/hybrid/global")
-	starters = append(starters, func() {
-		misskey.Start(misskeyHost, misskeyToken, misskeyTimeline)
-	})
 }

@@ -21,6 +21,8 @@ type ProtocolInfo struct {
 	Ctypes     []string
 	Capacities ProtocolCapacities
 	SendFn     func(to, msg, msgType string) error
+	StartFn    func()
+	StopFn     func()
 	statusFn   func() ProtocolStatus
 }
 

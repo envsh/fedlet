@@ -17,8 +17,6 @@ import (
 	"github.com/envsh/libp2px/pbtunnel"
 )
 
-// plugin flag processors
-var starters []func()
 var svccaps = serviceCapacities{}
 type serviceCapacities struct {
 	sendMessage bool
@@ -77,8 +75,10 @@ func main() {
 
 	initVirTun()
 
-	for _, fn := range starters {
-		fn()
+	for _, info := range ProtocolStatuses() {
+		if info.StartFn != nil {
+			info.StartFn()
+		}
 	}
 
 	p2put.InstallRestHandler("/p2pin", nil)

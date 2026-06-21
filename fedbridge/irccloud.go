@@ -25,13 +25,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeIRCCloud},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     irccloud.Send,
-	statusFn:   ircStatusFn,
-})
-
-func init() {
-	flag.StringVar(&ircInfo,    "irc",        "", "IRCCloud email:password")
-	flag.StringVar(&ircJoin,    "irc-join",   "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")
-	starters = append(starters, func() {
+	StartFn: func() {
 		info := ircInfo
 		if ircJoin != "" {
 			var cfg irccloud.AppConfig
@@ -52,7 +46,13 @@ func init() {
 			return publish(channel_name, data)
 		})
 		irccloud.Start(info)
-	})
+	},
+	statusFn:   ircStatusFn,
+})
+
+func init() {
+	flag.StringVar(&ircInfo,    "irc",        "", "IRCCloud email:password")
+	flag.StringVar(&ircJoin,    "irc-join",   "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")
 }
 
 func splitTrim(s, sep string) []string {

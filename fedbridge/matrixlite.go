@@ -14,6 +14,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeMatrix},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     matrixlite.Send,
+	StartFn:    func() { matrixlite.Start(matrixURL, matrixAuth) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        matrixlite.IsRunning(),
@@ -30,7 +31,4 @@ func init() {
 	})
 	flag.StringVar(&matrixURL, "matrix-url", "", "Matrix server URL or domain (e.g. https://matrix.example.com or matrix.example.com)")
 	flag.StringVar(&matrixAuth, "matrix-auth", "", "Matrix session token, or user:password (e.g. @user:example.com:pass)")
-	starters = append(starters, func() {
-		matrixlite.Start(matrixURL, matrixAuth)
-	})
 }
