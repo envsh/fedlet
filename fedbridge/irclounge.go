@@ -7,7 +7,16 @@ import (
 	"github.com/envsh/fedlet/fbprotocols/irclounge"
 )
 
-	var ircloungeServer, ircloungeAuth, ircloungeJoin, ircloungeNetwork string
+var ircloungeServer, ircloungeAuth, ircloungeJoin, ircloungeNetwork string
+
+var _ = RegisterProtocol("irclounge", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        irclounge.IsRunning(),
+		LastErrs:       irclounge.LastErrs(),
+		ConnectedSince: irclounge.ConnectedSince(),
+		ReconnTimes:    irclounge.ReconnTimes(),
+	}
+})
 
 func init() {
 	irclounge.SetPublishInfo(func(data []byte) error {

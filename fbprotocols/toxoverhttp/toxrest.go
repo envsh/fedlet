@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +48,9 @@ type Event struct {
 }
 
 func poll_toxrest() {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
 	// var channel_name = "reddit"
 
 	after := uint64(0)
@@ -61,6 +66,7 @@ func poll_toxrest() {
 		u, err := url.Parse(toxrest_url)
 		if err != nil {
 			log.Println("url parse error:", err)
+			pushError(err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -73,6 +79,7 @@ func poll_toxrest() {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			log.Println("create request error:", err)
+			pushError(err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -81,6 +88,7 @@ func poll_toxrest() {
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Println("toxproto GET error:", err)
+			pushError(err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -112,6 +120,7 @@ func poll_toxrest() {
 				log.Println("decode error:", err)
 			}
 			log.Println("toxproto error", err)
+			pushError(err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -221,4 +230,38 @@ func Send(to, msg, msgType string) error {
 		return fmt.Errorf("toxoverhttp: %s", result.Error)
 	}
 	return nil
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }

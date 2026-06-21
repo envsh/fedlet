@@ -10,6 +10,15 @@ import (
 
 var outlookClientID string
 
+var _ = RegisterProtocol("outlookgraph", ProtocolCapacities{CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        outlookgraph.IsRunning(),
+		LastErrs:       outlookgraph.LastErrs(),
+		ConnectedSince: outlookgraph.ConnectedSince(),
+		ReconnTimes:    outlookgraph.ReconnTimes(),
+	}
+})
+
 func init() {
 	flag.StringVar(&outlookClientID, "outlook-client-id", "", "Azure AD app client ID (required)")
 	starters = append(starters, func() {

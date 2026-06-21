@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -417,6 +418,10 @@ func Start(info string) {
 }
 
 func poll(cfg Config) {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
+
 	cred := newOAuthCred(cfg.ClientID)
 	cred.load()
 	ctx := context.Background()
@@ -424,6 +429,7 @@ func poll(cfg Config) {
 	token, err := cred.getToken(ctx)
 	if err != nil {
 		log.Println("outlook: auth error:", err)
+		pushError(err)
 		return
 	}
 	log.Printf("Token saved to %s", tokenFilePath())
@@ -431,6 +437,7 @@ func poll(cfg Config) {
 	folders, err := enumerateFolders(ctx, token)
 	if err != nil {
 		log.Println("outlook: enumerate folders error:", err)
+		pushError(err)
 		return
 	}
 	log.Printf("outlook: found %d folders", len(folders))
@@ -439,6 +446,7 @@ func poll(cfg Config) {
 		dl, err := initDeltaSync(ctx, token, folders[i].ID)
 		if err != nil {
 			log.Printf("outlook: init delta for %s: %v", folders[i].Name, err)
+			pushError(err)
 			continue
 		}
 		folders[i].DeltaLink = dl
@@ -450,6 +458,7 @@ func poll(cfg Config) {
 		token, err := cred.getToken(ctx)
 		if err != nil {
 			log.Println("outlook: get token:", err)
+			pushError(err)
 			continue
 		}
 		for i := range folders {
@@ -459,6 +468,7 @@ func poll(cfg Config) {
 			msgs, newDL, err := pollDelta(ctx, token, folders[i].DeltaLink)
 			if err != nil {
 				log.Printf("outlook: poll %s: %v", folders[i].Name, err)
+				pushError(err)
 				continue
 			}
 			folders[i].DeltaLink = newDL
@@ -475,4 +485,38 @@ func poll(cfg Config) {
 			}
 		}
 	}
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }

@@ -9,6 +9,15 @@ import (
 
 var toxhsURL string
 
+var _ = RegisterProtocol("toxoverhttp", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        toxoverhttp.IsRunning(),
+		LastErrs:       toxoverhttp.LastErrs(),
+		ConnectedSince: toxoverhttp.ConnectedSince(),
+		ReconnTimes:    toxoverhttp.ReconnTimes(),
+	}
+})
+
 func init() {
 	toxoverhttp.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)

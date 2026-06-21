@@ -11,6 +11,15 @@ import (
 
 var ircInfo, ircJoin string
 
+var _ = RegisterProtocol("irccloud", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        irccloud.IsRunning(),
+		LastErrs:       irccloud.LastErrs(),
+		ConnectedSince: irccloud.ConnectedSince(),
+		ReconnTimes:    irccloud.ReconnTimes(),
+	}
+})
+
 func init() {
 	flag.StringVar(&ircInfo,    "irc",        "", "IRCCloud email:password")
 	flag.StringVar(&ircJoin,    "irc-join",   "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")

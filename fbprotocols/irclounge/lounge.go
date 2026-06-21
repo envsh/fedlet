@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,6 +41,10 @@ func Start(server, auth, joinChannels, networkCfg string) {
 
 func pollLounge(server, auth, joinChannels, networkCfg string) {
 	user, password := "", ""
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
+	statusReconnTimes.Add(1)
 	if auth != "" {
 		parts := split2(auth, ":")
 		if len(parts) >= 2 {
@@ -69,6 +74,7 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 		client, err := Connect(server, user, password)
 		if err != nil {
 			log.Printf("irclounge: connect error: %v", err)
+			pushError(err)
 			time.Sleep(10 * time.Second)
 			continue
 		}
@@ -83,6 +89,7 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 				msg, parseErr := ParseMsgEvent(event.Data)
 				if parseErr != nil {
 					log.Printf("irclounge: parse msg error: %v", parseErr)
+					pushError(parseErr)
 				} else {
 					from := ""
 					if msg.From != nil {
@@ -101,21 +108,24 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 						}
 					}
 				}
-				if err := publish(event.Data); err != nil {
-					log.Printf("irclounge: publish error: %v", err)
-				}
+			if err := publish(event.Data); err != nil {
+				log.Printf("irclounge: publish error: %v", err)
+				pushError(err)
+			}
 
 			case "init":
 				log.Println("irclounge: initial state loaded, parsing...")
 				var initData InitData
 				if err := json.Unmarshal(event.Data, &initData); err != nil {
 					log.Printf("irclounge: init parse error: %v", err)
+					pushError(err)
 				} else if len(initData.Networks) == 0 {
 					log.Println("irclounge: no networks configured")
 					cfg := DefaultNetwork()
 					if networkCfg != "" {
 						if err := json.Unmarshal([]byte(networkCfg), &cfg); err != nil {
 							log.Printf("irclounge: invalid network config: %v", err)
+							pushError(err)
 						}
 					}
 					if joinChannels != "" {
@@ -128,6 +138,7 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 
 					if err := client.CreateNetwork(cfg); err != nil {
 						log.Printf("irclounge: create network error: %v", err)
+						pushError(err)
 					}
 				} else {
 					for _, net := range initData.Networks {
@@ -155,9 +166,10 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 							joinedMu.Unlock()
 							if !already {
 								log.Printf("irclounge: joining channel %s", ch)
-								if err := client.Join(ch); err != nil {
-									log.Printf("irclounge: join %s error: %v", ch, err)
-								}
+							if err := client.Join(ch); err != nil {
+								log.Printf("irclounge: join %s error: %v", ch, err)
+								pushError(err)
+							}
 								joinedMu.Lock()
 								joinedSet[ch] = true
 								joinedMu.Unlock()
@@ -213,4 +225,38 @@ func Send(to, msg, msgType string) error {
 		return fmt.Errorf("irclounge: invalid channel ID %q: %w", to, err)
 	}
 	return cl.SendMessage(channelID, msg)
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }

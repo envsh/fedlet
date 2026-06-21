@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,6 +60,10 @@ func Start(server, auth string) {
 }
 
 func pollLoop(baseURL, token, user, password string) {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
+
 	log.Printf("matrixlite: server=%s user=%s", baseURL, user)
 
 	var state State
@@ -69,9 +74,11 @@ func pollLoop(baseURL, token, user, password string) {
 		client, err := loginOrRestore(baseURL, token, user, password, &state)
 		switch {
 		case errors.Is(err, ErrUserDeactivated):
+			pushError(err)
 			log.Printf("matrixlite: user deactivated, stopping")
 			return
 		case err != nil:
+			pushError(err)
 			log.Printf("matrixlite: %v, retrying in 5s", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -109,8 +116,10 @@ func pollLoop(baseURL, token, user, password string) {
 			}
 
 			lastErr = err
+			pushError(err)
 			switch {
 			case errors.Is(err, ErrUserDeactivated):
+				pushError(err)
 				log.Printf("matrixlite: sync: user deactivated, stopping")
 				return
 
@@ -125,11 +134,13 @@ func pollLoop(baseURL, token, user, password string) {
 					state.Save()
 					continue
 				case errors.Is(rerr, ErrUserDeactivated):
+					pushError(rerr)
 					return
 				case errors.Is(rerr, ErrTokenExpired),
 					errors.Is(rerr, ErrSessionInvalidated):
 					break // → RECONNECT
 				default:
+					pushError(rerr)
 					log.Printf("matrixlite: sync: refresh transient error, retrying sync: %v", rerr)
 					time.Sleep(5 * time.Second)
 					continue
@@ -144,11 +155,13 @@ func pollLoop(baseURL, token, user, password string) {
 						state.Save()
 						continue
 					case errors.Is(rerr, ErrUserDeactivated):
+						pushError(rerr)
 						return
 					case errors.Is(rerr, ErrTokenExpired),
 						errors.Is(rerr, ErrSessionInvalidated):
 						break // → RECONNECT
 					default:
+						pushError(rerr)
 						log.Printf("matrixlite: sync: refresh transient error, retrying sync: %v", rerr)
 						time.Sleep(5 * time.Second)
 						continue
@@ -157,6 +170,7 @@ func pollLoop(baseURL, token, user, password string) {
 				break // → RECONNECT
 
 			default:
+				pushError(err)
 				log.Printf("matrixlite: sync error (transient): %v, retrying in 5s", err)
 				time.Sleep(5 * time.Second)
 				continue
@@ -250,6 +264,40 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 	}
 	log.Printf("matrixlite: [auth] logged in as %s (sliding=%v)", c.userID, c.useSliding)
 	return c, nil
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }
 
 func Send(roomID, msg, msgType string) error {

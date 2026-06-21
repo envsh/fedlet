@@ -16,6 +16,15 @@ var (
 	emailImapServer string
 )
 
+var _ = RegisterProtocol("emailimap", ProtocolCapacities{CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        emailimap.IsRunning(),
+		LastErrs:       emailimap.LastErrs(),
+		ConnectedSince: emailimap.ConnectedSince(),
+		ReconnTimes:    emailimap.ReconnTimes(),
+	}
+})
+
 func init() {
 	flag.StringVar(&emailAuth, "emailauth", "", "IMAP user:password (or EMAILAUTH env var)")
 	flag.StringVar(&emailImapDir, "imapdir", "INBOX,Sent", "IMAP folders (comma-separated)")

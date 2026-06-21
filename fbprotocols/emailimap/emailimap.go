@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -311,11 +312,15 @@ func loginWithFallback(c *client.Client, username, password string) error {
 }
 
 func poll(username, password, server string, dirs []string) {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
 	log.Printf("emailimap: connecting to %s", server)
 
 	c, err := client.DialTLS(server, nil)
 	if err != nil {
 		log.Println("emailimap: dial:", err)
+		pushError(err)
 		return
 	}
 	defer c.Logout()
@@ -326,6 +331,7 @@ func poll(username, password, server string, dirs []string) {
 
 	if err := loginWithFallback(c, username, password); err != nil {
 		log.Println("emailimap: login failed:", err)
+		pushError(err)
 		c.Logout()
 		return
 	}
@@ -412,11 +418,13 @@ func poll(username, password, server string, dirs []string) {
 			c2, err := client.DialTLS(server, nil)
 			if err != nil {
 				log.Println("emailimap: reconnect dial:", err)
+				pushError(err)
 				continue
 			}
 			sendClientID(c2)
 			if err := loginWithFallback(c2, username, password); err != nil {
 				log.Println("emailimap: reconnect login:", err)
+				pushError(err)
 				c2.Logout()
 				continue
 			}
@@ -734,4 +742,38 @@ func Send(to, msg, msgType string) error {
 		return fmt.Errorf("emailimap: %w", err)
 	}
 	return nil
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error // ring buffer, [0]=newest
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }

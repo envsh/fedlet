@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -308,10 +309,12 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 							Realname: real,
 						})
 						if err != nil {
+							pushError(err)
 							log.Println("add-server error after redirect:", err)
 							continue
 						}
 					} else {
+						pushError(err)
 						log.Println("add-server error:", err)
 						continue
 					}
@@ -360,6 +363,7 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 			st.sessionKey = sh.Cookie
 			cid, err = addServer()
 			if err != nil {
+				pushError(err)
 				log.Println("add-server error after redirect:", err)
 				return
 			}
@@ -374,15 +378,18 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 					st.sessionKey = sh2.Cookie
 					cid, err = cl.AddDefaultServer(st.sessionKey, "fedlet", "fedlet")
 					if err != nil {
+						pushError(err)
 						log.Println("add-default-server error after redirect:", err)
 						return
 					}
 				} else {
+					pushError(err)
 					log.Println("add-default-server error:", err)
 					return
 				}
 			}
 		} else {
+			pushError(err)
 			log.Println("add-server error:", err)
 			return
 		}
@@ -397,6 +404,9 @@ func poll_irccloud(info string) {
 		log.Println("IRCCloud: IRC_USER/IRC_PASS not set")
 		return
 	}
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
 
 	cl := NewClient()
 	muIrc.Lock()
@@ -412,6 +422,7 @@ func poll_irccloud(info string) {
 			t0 := time.Now()
 			sk, err := cl.Authenticate(Config{Email: cfg.Email, Password: cfg.Password})
 			if err != nil {
+				pushError(err)
 				log.Println("IRCCloud auth error:", err)
 				time.Sleep(10 * time.Second)
 				continue
@@ -440,6 +451,7 @@ func poll_irccloud(info string) {
 				muIrc.Unlock()
 				continue
 			}
+			pushError(err)
 			log.Println("IRCCloud stream error:", err)
 			state.sessionKey = ""
 			muIrc.Lock()
@@ -457,6 +469,40 @@ func poll_irccloud(info string) {
 		log.Println("IRCCloud stream disconnected after", time.Since(connStart))
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }
 
 func Send(to, msg, msgType string) error {

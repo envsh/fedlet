@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,9 @@ func Start(host, token, timeline string) {
 }
 
 func pollLoop() {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
 	log.Printf("misskey: polling %s timeline every 30s", curTL)
 
 	statePath := stateFilePath()
@@ -76,6 +80,7 @@ func pollLoop() {
 		notes, err := FetchTimeline(host, token, tl, state.SinceID)
 		if err != nil {
 			log.Printf("misskey: poll error: %v", err)
+			pushError(err)
 			time.Sleep(30 * time.Second)
 			continue
 		}
@@ -170,6 +175,40 @@ func saveState(path string, s *stateData) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		log.Printf("misskey: save state write error: %v", err)
 	}
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }
 
 func truncate(s string, n int) string {

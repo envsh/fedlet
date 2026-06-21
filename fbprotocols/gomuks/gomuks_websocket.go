@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -50,12 +51,17 @@ func init() {
 const gomuksHost = "127.0.0.1:29325"
 
 func poll_gomuks() {
+	statusRunning.Store(true)
+	statusConnectedSince.Store(time.Now())
+	defer statusRunning.Store(false)
+
 	for {
 		username := os.Getenv("GOMUKS_USER")
 		password := os.Getenv("GOMUKS_PASS")
 		if username == "" || password == "" {
 			log.Println("GOMUKS_USER/GOMUKS_PASS not set, retry in 30s")
 			time.Sleep(30 * time.Second)
+			pushError(fmt.Errorf("GOMUKS_USER/GOMUKS_PASS not set"))
 			continue
 		}
 
@@ -74,8 +80,10 @@ func poll_gomuks() {
 		if err != nil {
 			if resp != nil {
 				log.Println("ws dial error: status=", resp.Status, ", err=", err)
+				pushError(err)
 			} else {
 				log.Println("ws dial error:", err)
+				pushError(err)
 			}
 			time.Sleep(5 * time.Second)
 			continue
@@ -99,6 +107,7 @@ func doGomuksAuth(authHeader string) string {
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
 		log.Println("auth request error:", err)
+		pushError(err)
 		return ""
 	}
 	req.Header.Set("Authorization", authHeader)
@@ -106,6 +115,7 @@ func doGomuksAuth(authHeader string) string {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Println("auth error:", err)
+		pushError(err)
 		return ""
 	}
 	defer resp.Body.Close()
@@ -117,12 +127,14 @@ func doGomuksAuth(authHeader string) string {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		log.Println("auth failed:", resp.Status, string(body))
+		pushError(fmt.Errorf("auth failed: %s %s", resp.Status, string(body)))
 		return ""
 	}
 
 	var ar struct{ Token string `json:"token"` }
 	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
 		log.Println("auth decode error:", err)
+		pushError(err)
 		return ""
 	}
 	return ar.Token
@@ -148,6 +160,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 			_, msg, err := c.ReadMessage()
 			if err != nil {
 				log.Println("ws read error:", err)
+				pushError(err)
 				close(msgCh)
 				return
 			}
@@ -197,6 +210,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 			data, _ := json.Marshal(ping)
 			if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
 				log.Println("ping error:", err)
+				pushError(err)
 				return
 			}
 		}
@@ -249,4 +263,38 @@ func Send(roomID, msg, msgType string) error {
 	case <-time.After(10 * time.Second):
 		return fmt.Errorf("gomuks: send timeout")
 	}
+}
+
+// protocol status
+var (
+	statusRunning        atomic.Bool
+	statusConnectedSince atomic.Value // time.Time
+	statusReconnTimes    atomic.Int64
+	statusLastErrsMu     sync.Mutex
+	statusLastErrs       [3]error
+)
+
+func pushError(err error) {
+	statusLastErrsMu.Lock()
+	statusLastErrs[2] = statusLastErrs[1]
+	statusLastErrs[1] = statusLastErrs[0]
+	statusLastErrs[0] = err
+	statusLastErrsMu.Unlock()
+}
+
+func IsRunning() bool         { return statusRunning.Load() }
+func ConnectedSince() time.Time {
+	v := statusConnectedSince.Load()
+	if v == nil { return time.Time{} }
+	return v.(time.Time)
+}
+func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func LastErrs() []error {
+	statusLastErrsMu.Lock()
+	defer statusLastErrsMu.Unlock()
+	var out []error
+	for _, e := range statusLastErrs {
+		if e != nil { out = append(out, e) }
+	}
+	return out
 }

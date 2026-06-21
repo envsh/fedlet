@@ -13,6 +13,15 @@ var (
 	misskeyTimeline string
 )
 
+var _ = RegisterProtocol("misskey", ProtocolCapacities{CanSend: true, CanReceive: true}, func() ProtocolStatus {
+	return ProtocolStatus{
+		Running:        misskey.IsRunning(),
+		LastErrs:       misskey.LastErrs(),
+		ConnectedSince: misskey.ConnectedSince(),
+		ReconnTimes:    misskey.ReconnTimes(),
+	}
+})
+
 func init() {
 	misskey.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)
