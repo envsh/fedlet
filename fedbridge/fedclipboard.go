@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"hash/crc64"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"golang.design/x/clipboard"
@@ -29,6 +31,41 @@ func init() {
 	}
 }
 
+const clipDedupInterval = 2 * time.Second
+
+var (
+	lastClipText   string
+	lastClipTextAt time.Time
+	lastClipImgKey uint64
+	lastClipImgAt  time.Time
+	clipMu         sync.Mutex
+)
+
+func clipDedupText(s string) bool {
+	clipMu.Lock()
+	defer clipMu.Unlock()
+	now := time.Now()
+	if s == lastClipText && now.Sub(lastClipTextAt) < clipDedupInterval {
+		return false
+	}
+	lastClipText = s
+	lastClipTextAt = now
+	return true
+}
+
+func clipDedupImage(data []byte) bool {
+	clipMu.Lock()
+	defer clipMu.Unlock()
+	now := time.Now()
+	k := crc64.Checksum(data, crc64.MakeTable(crc64.ISO))
+	if k == lastClipImgKey && now.Sub(lastClipImgAt) < clipDedupInterval {
+		return false
+	}
+	lastClipImgKey = k
+	lastClipImgAt = now
+	return true
+}
+
 func clipWaitProc() {
 	chText := clipboard.Watch(context.TODO(), clipboard.FmtText)
 	chImage := clipboard.Watch(context.TODO(), clipboard.FmtImage)
@@ -44,7 +81,11 @@ func clipWaitProc() {
 			}
 			scc := string(data)
 			log.Println("text:", len(scc), scc)
-			publish(channel_name, marshalClipEvent("text", "", scc, 0, 0, 0))
+			if !clipDedupText(scc) {
+				log.Printf("clipboard: dedup text %q within 2s, skip", scc)
+			} else {
+				publish(channel_name, marshalClipEvent("text", "", scc, 0, 0, 0))
+			}
 		case data, ok := <-chImage:
 			if !ok {
 				log.Println("clip watch failed", clipboard.FmtText)
@@ -59,7 +100,11 @@ func clipWaitProc() {
 			} else {
 				log.Printf("clipboard: decode image config: %v", err)
 			}
-			publish(channel_name, marshalClipEvent("image", mime, "", len(data), w, h))
+			if !clipDedupImage(data) {
+				log.Printf("clipboard: dedup image within 2s, skip")
+			} else {
+				publish(channel_name, marshalClipEvent("image", mime, "", len(data), w, h))
+			}
 		}
 	}
 }

@@ -19,6 +19,20 @@ import (
 
 // plugin flag processors
 var starters []func()
+var svccaps = serviceCapacities{}
+type serviceCapacities struct {
+	sendMessage bool
+	bookmark  bool
+	clipboard bool
+	sqliteStore bool
+	joplinInstance bool
+	filesyncPoint bool
+	forignProxy bool
+	hasDE bool
+	langServer bool
+	aiagentServer bool
+	ocrServer bool
+}
 
 var publishViaHTTP bool = true
 var channel_name = "reddit"
