@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/kitech/touse/oai"
 )
 
 type selfInfo struct {
@@ -41,6 +44,47 @@ func init() {
 	http.HandleFunc("/api/self", handleSelf)
 	http.HandleFunc("/api/switchpeer", handleSwitchPeer)
 	http.HandleFunc("/api/messages/send", handleMessageSend)
+	http.HandleFunc("/api/translate", handleTranslate)
+}
+
+func handleTranslate(w http.ResponseWriter, r *http.Request) {
+	type translateResponse struct {
+		TranslatedText string `json:"translated_text,omitempty"`
+		Error          string `json:"error,omitempty"`
+		Code           string `json:"code,omitempty"`
+	}
+	writeTranslationErr := func(code, msg string, status int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(translateResponse{Error: msg, Code: code})
+	}
+	if r.Method != http.MethodPost {
+		writeTranslationErr("INVALID_METHOD", "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeTranslationErr("INVALID_JSON", fmt.Sprintf("invalid json: %s", err), http.StatusBadRequest)
+		return
+	}
+	if req.Text == "" || req.To == "" {
+		writeTranslationErr("MISSING_FIELDS", "text and to required", http.StatusBadRequest)
+		return
+	}
+	results, err := oai.MsetTranFull(req.To, "", req.Text)
+	if err != nil {
+		writeTranslationErr("TRANSLATE_FAILED", err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(results) == 0 {
+		writeTranslationErr("TRANSLATE_FAILED", "translation returned empty result", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(translateResponse{TranslatedText: results[0]})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
