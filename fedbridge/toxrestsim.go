@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,12 +43,18 @@ var (
 	simNextID uint64 = 1
 )
 
+var (
+	wellKnownMu    sync.Mutex
+	wellKnownCache = map[string]string{} // server → base_url
+)
+
 func init() {
 	log.Println("toxrestsim: registering /api/* stub handlers")
 	http.HandleFunc("/api/self", handleSelf)
 	http.HandleFunc("/api/switchpeer", handleSwitchPeer)
 	http.HandleFunc("/api/messages/send", handleMessageSend)
 	http.HandleFunc("/api/translate", handleTranslate)
+	http.HandleFunc("/api/media_download", handleMediaDownload)
 }
 
 func handleTranslate(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +95,144 @@ func handleTranslate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(translateResponse{TranslatedText: results[0]})
+}
+
+func cachedWellKnownBaseURL(server string) (string, bool) {
+	wellKnownMu.Lock()
+	defer wellKnownMu.Unlock()
+	base, ok := wellKnownCache[server]
+	return base, ok
+}
+
+func cacheWellKnownBaseURL(server, baseURL string) {
+	wellKnownMu.Lock()
+	defer wellKnownMu.Unlock()
+	wellKnownCache[server] = baseURL
+}
+
+func discoverBaseURL(server string) (string, error) {
+	wkURL := fmt.Sprintf("https://%s/.well-known/matrix/client", server)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wkURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Fedlet/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf(".well-known returned %d", resp.StatusCode)
+	}
+	var wk struct {
+		Homeserver struct {
+			BaseURL string `json:"base_url"`
+		} `json:"m.homeserver"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wk); err != nil {
+		return "", err
+	}
+	if wk.Homeserver.BaseURL == "" {
+		return "", fmt.Errorf(".well-known missing m.homeserver.base_url")
+	}
+	log.Printf("toxrestsim: .well-known resolved base_url=%q", wk.Homeserver.BaseURL)
+	return wk.Homeserver.BaseURL, nil
+}
+
+func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := r.FormValue("url")
+	if raw == "" {
+		writeErr(w, "missing url parameter", http.StatusBadRequest)
+		return
+	}
+	const prefix = "mxc://"
+	if !strings.HasPrefix(raw, prefix) {
+		writeErr(w, "invalid mxc url", http.StatusBadRequest)
+		return
+	}
+	rest := raw[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		writeErr(w, "invalid mxc url format", http.StatusBadRequest)
+		return
+	}
+	server, mediaID := parts[0], parts[1]
+	httpURL := fmt.Sprintf("https://%s/_matrix/media/v3/download/%s/%s", server, server, mediaID)
+
+	if baseURL, ok := cachedWellKnownBaseURL(server); ok {
+		httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s",
+			strings.TrimRight(baseURL, "/"), server, mediaID)
+		log.Printf("toxrestsim: media_download (cached) mxc=%q → http=%q", raw, httpURL)
+	} else {
+		log.Printf("toxrestsim: media_download mxc=%q → http=%q", raw, httpURL)
+	}
+
+	ctx := r.Context()
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
+	if err != nil {
+		writeErr(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
+
+	client := &http.Client{Timeout: 130 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		writeErr(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		baseURL, err := discoverBaseURL(server)
+		if err != nil {
+			writeErr(w, "media not found", http.StatusNotFound)
+			return
+		}
+		cacheWellKnownBaseURL(server, baseURL)
+		httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s",
+			strings.TrimRight(baseURL, "/"), server, mediaID)
+		log.Printf("toxrestsim: media_download retry mxc=%q → http=%q", raw, httpURL)
+
+		proxyReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
+		proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
+		resp, err = client.Do(proxyReq)
+		if err != nil {
+			writeErr(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		ct := resp.Header.Get("Content-Type")
+		if strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if strings.Contains(string(bodyBytes), "authentication is required") {
+				log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+	}
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
