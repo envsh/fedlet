@@ -209,23 +209,30 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if isAuthRequired(resp) {
+		resp.Body.Close()
 		log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		ct := resp.Header.Get("Content-Type")
-		if strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if strings.Contains(string(bodyBytes), "authentication is required") {
-				log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
+		for _, ctype := range []string{TypeMatrix, TypeGomuksRoom} {
+			info := ctypeRegistry[ctype]
+			if info == nil || info.DlMediaFn == nil {
+				continue
 			}
-			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			rc, ct, err := info.DlMediaFn(raw)
+			if err != nil {
+				log.Printf("toxrestsim: DlMediaFn %s: %v", info.Name, err)
+				continue
+			}
+			defer rc.Close()
+			w.Header().Set("Content-Type", ct)
+			w.WriteHeader(http.StatusOK)
+			io.Copy(w, rc)
+			return
 		}
+		writeErr(w, "media not accessible", http.StatusNotFound)
+		return
 	}
 
+	defer resp.Body.Close()
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
@@ -233,6 +240,27 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func isAuthRequired(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return true
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		return false
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "text/plain") {
+		return false
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "authentication is required") {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return true
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
