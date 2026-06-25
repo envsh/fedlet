@@ -14,6 +14,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeGomuksRoom},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     gomuks.Send,
+	DlMediaFn:  gomuks.DownloadMedia,
 	StartFn:    func() { gomuks.Start(gomuksInfo) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
