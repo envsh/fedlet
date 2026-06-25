@@ -43,9 +43,17 @@ var (
 	simNextID uint64 = 1
 )
 
+type ServerInfo struct {
+	BaseURL       string
+	MSC3916Stable bool
+	Versions      []string
+	Features      map[string]bool
+	LastChecked   time.Time
+}
+
 var (
-	wellKnownMu    sync.Mutex
-	wellKnownCache = map[string]string{} // server → base_url
+	serverCapsMu sync.Mutex
+	serverCaps   = map[string]ServerInfo{}
 )
 
 func init() {
@@ -97,49 +105,75 @@ func handleTranslate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(translateResponse{TranslatedText: results[0]})
 }
 
-func cachedWellKnownBaseURL(server string) (string, bool) {
-	wellKnownMu.Lock()
-	defer wellKnownMu.Unlock()
-	base, ok := wellKnownCache[server]
-	return base, ok
-}
-
-func cacheWellKnownBaseURL(server, baseURL string) {
-	wellKnownMu.Lock()
-	defer wellKnownMu.Unlock()
-	wellKnownCache[server] = baseURL
-}
-
-func discoverBaseURL(server string) (string, error) {
-	wkURL := fmt.Sprintf("https://%s/.well-known/matrix/client", server)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func discoverServerInfo(server string) *ServerInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wkURL, nil)
-	if err != nil {
-		return "", err
+
+	type wkResp struct{ baseURL string }
+	type vrResp struct {
+		versions []string
+		features map[string]bool
 	}
-	req.Header.Set("User-Agent", "Fedlet/1.0")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
+	chWK := make(chan wkResp, 1)
+	chVR := make(chan vrResp, 1)
+
+	go func() {
+		u := fmt.Sprintf("https://%s/.well-known/matrix/client", server)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		req.Header.Set("User-Agent", "Fedlet/1.0")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			chWK <- wkResp{}
+			return
+		}
+		defer resp.Body.Close()
+		var wk struct {
+			Homeserver struct{ BaseURL string } `json:"m.homeserver"`
+		}
+		json.NewDecoder(resp.Body).Decode(&wk)
+		chWK <- wkResp{baseURL: strings.TrimRight(wk.Homeserver.BaseURL, "/")}
+	}()
+
+	go func() {
+		u := fmt.Sprintf("https://%s/_matrix/client/versions", server)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		req.Header.Set("User-Agent", "Fedlet/1.0")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			chVR <- vrResp{}
+			return
+		}
+		defer resp.Body.Close()
+		var data struct {
+			Versions []string        `json:"versions"`
+			Features map[string]bool `json:"unstable_features"`
+		}
+		json.NewDecoder(resp.Body).Decode(&data)
+		chVR <- vrResp{versions: data.Versions, features: data.Features}
+	}()
+
+	wk := <-chWK
+	vr := <-chVR
+
+	baseURL := "https://" + server
+	if wk.baseURL != "" {
+		baseURL = wk.baseURL
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf(".well-known returned %d", resp.StatusCode)
+
+	info := &ServerInfo{
+		BaseURL:       baseURL,
+		MSC3916Stable: vr.features["org.matrix.msc3916.stable"],
+		Versions:      vr.versions,
+		Features:      vr.features,
+		LastChecked:   time.Now(),
 	}
-	var wk struct {
-		Homeserver struct {
-			BaseURL string `json:"base_url"`
-		} `json:"m.homeserver"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&wk); err != nil {
-		return "", err
-	}
-	if wk.Homeserver.BaseURL == "" {
-		return "", fmt.Errorf(".well-known missing m.homeserver.base_url")
-	}
-	log.Printf("toxrestsim: .well-known resolved base_url=%q", wk.Homeserver.BaseURL)
-	return wk.Homeserver.BaseURL, nil
+
+	serverCapsMu.Lock()
+	serverCaps[server] = *info
+	serverCapsMu.Unlock()
+
+	log.Printf("toxrestsim: caps %s base=%q msc3916=%v", server, baseURL, info.MSC3916Stable)
+	return info
 }
 
 func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
@@ -164,15 +198,17 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server, mediaID := parts[0], parts[1]
-	httpURL := fmt.Sprintf("https://%s/_matrix/media/v3/download/%s/%s", server, server, mediaID)
 
-	if baseURL, ok := cachedWellKnownBaseURL(server); ok {
-		httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s",
-			strings.TrimRight(baseURL, "/"), server, mediaID)
-		log.Printf("toxrestsim: media_download (cached) mxc=%q → http=%q", raw, httpURL)
-	} else {
-		log.Printf("toxrestsim: media_download mxc=%q → http=%q", raw, httpURL)
+	serverCapsMu.Lock()
+	cap, cached := serverCaps[server]
+	serverCapsMu.Unlock()
+
+	base := "https://" + server
+	if cached && cap.BaseURL != "" {
+		base = cap.BaseURL
 	}
+	httpURL := fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s", base, server, mediaID)
+	log.Printf("toxrestsim: media_download mxc=%q → http=%q (cached=%v)", raw, httpURL, cached)
 
 	ctx := r.Context()
 	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
@@ -191,25 +227,23 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
-		baseURL, err := discoverBaseURL(server)
-		if err != nil {
-			writeErr(w, "media not found", http.StatusNotFound)
-			return
-		}
-		cacheWellKnownBaseURL(server, baseURL)
-		httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s",
-			strings.TrimRight(baseURL, "/"), server, mediaID)
-		log.Printf("toxrestsim: media_download retry mxc=%q → http=%q", raw, httpURL)
-
-		proxyReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
-		proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
-		resp, err = client.Do(proxyReq)
-		if err != nil {
-			writeErr(w, err.Error(), http.StatusBadGateway)
-			return
+		info := discoverServerInfo(server)
+		cap = *info
+		cached = true
+		if info.BaseURL != base {
+			httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s", info.BaseURL, server, mediaID)
+			log.Printf("toxrestsim: media_download retry mxc=%q → http=%q", raw, httpURL)
+			proxyReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
+			proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
+			resp, err = client.Do(proxyReq)
+			if err != nil {
+				writeErr(w, err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
 	}
-	if isAuthRequired(resp) {
+
+	if resp.StatusCode != http.StatusOK && cap.MSC3916Stable {
 		resp.Body.Close()
 		log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
 		for _, ctype := range []string{TypeMatrix, TypeGomuksRoom} {
