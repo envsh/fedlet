@@ -626,6 +626,36 @@ func (c *Client) doRequest(method, fullURL string, body []byte) (*http.Response,
 	return resp, nil
 }
 
+func (c *Client) parseMXC(mxcURL string) (server, mediaID string, _ error) {
+	const pfx = "mxc://"
+	if !strings.HasPrefix(mxcURL, pfx) {
+		return "", "", fmt.Errorf("not mxc: %s", mxcURL)
+	}
+	rest := mxcURL[len(pfx):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid mxc: %s", mxcURL)
+	}
+	return parts[0], parts[1], nil
+}
+
+func (c *Client) downloadMedia(mxcURL string) (io.ReadCloser, string, error) {
+	server, mediaID, err := c.parseMXC(mxcURL)
+	if err != nil {
+		return nil, "", err
+	}
+	u := fmt.Sprintf("/_matrix/media/v3/download/%s/%s", server, mediaID)
+	resp, err := c.doRequest("GET", u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, "", fmt.Errorf("matrixlite: download status %d", resp.StatusCode)
+	}
+	return resp.Body, resp.Header.Get("Content-Type"), nil
+}
+
 func authErrorFromResponse(resp *http.Response, body []byte) error {
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		return nil

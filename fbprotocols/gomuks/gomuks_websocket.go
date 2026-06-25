@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,10 +27,11 @@ func publish(data []byte) error {
 }
 
 var (
-	pubfn_     func([]byte) error
-	muGomuks   sync.Mutex
-	gomuksConn *websocket.Conn
-	gomuksSeq  int
+	pubfn_         func([]byte) error
+	muGomuks       sync.Mutex
+	gomuksConn     *websocket.Conn
+	gomuksSeq      int
+	imageAuthToken string
 
 	pendingMu    sync.Mutex
 	pendingSends = map[int]chan error{}
@@ -180,6 +183,16 @@ func gomuksEventLoop(c *websocket.Conn) {
 				Data      json.RawMessage `json:"data"`
 			}
 			if json.Unmarshal(msg, &resp) == nil {
+				if resp.RequestID == 0 && resp.Command == "image_auth_token" {
+					var tok string
+					if json.Unmarshal(resp.Data, &tok) == nil {
+						muGomuks.Lock()
+						imageAuthToken = tok
+						muGomuks.Unlock()
+						log.Printf("gomuks: received image_auth_token")
+					}
+					continue
+				}
 				pendingMu.Lock()
 				ch, ok := pendingSends[resp.RequestID]
 				pendingMu.Unlock()
@@ -263,6 +276,30 @@ func Send(roomID, msg, msgType string) error {
 	case <-time.After(10 * time.Second):
 		return fmt.Errorf("gomuks: send timeout")
 	}
+}
+
+func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
+	const pfx = "mxc://"
+	if !strings.HasPrefix(mxcURL, pfx) {
+		return nil, "", fmt.Errorf("gomuks: not mxc: %s", mxcURL)
+	}
+	rest := mxcURL[len(pfx):]
+	u := fmt.Sprintf("http://%s/_gomuks/media/%s?encrypted=false", gomuksHost, rest)
+	muGomuks.Lock()
+	tok := imageAuthToken
+	muGomuks.Unlock()
+	if tok != "" {
+		u += "&image_auth=" + url.QueryEscape(tok)
+	}
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, "", fmt.Errorf("gomuks: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, "", fmt.Errorf("gomuks: download status %d", resp.StatusCode)
+	}
+	return resp.Body, resp.Header.Get("Content-Type"), nil
 }
 
 // protocol status

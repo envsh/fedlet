@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -311,4 +312,14 @@ func Send(roomID, msg, msgType string) error {
 		return fmt.Errorf("matrixlite: no active session")
 	}
 	return c.SendMessage(roomID, msg)
+}
+
+func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
+	muClient.Lock()
+	c := curClient
+	muClient.Unlock()
+	if c == nil {
+		return nil, "", fmt.Errorf("matrixlite: not connected")
+	}
+	return c.downloadMedia(mxcURL)
 }
