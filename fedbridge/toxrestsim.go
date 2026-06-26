@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -105,75 +104,74 @@ func handleTranslate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(translateResponse{TranslatedText: results[0]})
 }
 
-func discoverServerInfo(server string) *ServerInfo {
+func queryWellKnown(ctx context.Context, server string) (string, error) {
+	u := fmt.Sprintf("https://%s/.well-known/matrix/client", server)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req.Header.Set("User-Agent", "Fedlet/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf(".well-known returned %d", resp.StatusCode)
+	}
+	var wk struct {
+		Homeserver struct{ BaseURL string `json:"base_url"` } `json:"m.homeserver"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wk); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(wk.Homeserver.BaseURL, "/"), nil
+}
+
+func queryVersions(ctx context.Context, baseURL string) ([]string, map[string]bool, error) {
+	u := fmt.Sprintf("%s/_matrix/client/versions", strings.TrimRight(baseURL, "/"))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req.Header.Set("User-Agent", "Fedlet/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("versions returned %d", resp.StatusCode)
+	}
+	var data struct {
+		Versions []string        `json:"versions"`
+		Features map[string]bool `json:"unstable_features"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, nil, err
+	}
+	return data.Versions, data.Features, nil
+}
+
+func discoverServerInfo(server string) (ServerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	type wkResp struct{ baseURL string }
-	type vrResp struct {
-		versions []string
-		features map[string]bool
-	}
-	chWK := make(chan wkResp, 1)
-	chVR := make(chan vrResp, 1)
+	wkBaseURL, wkErr := queryWellKnown(ctx, server)
 
-	go func() {
-		u := fmt.Sprintf("https://%s/.well-known/matrix/client", server)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		req.Header.Set("User-Agent", "Fedlet/1.0")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			chWK <- wkResp{}
-			return
-		}
-		defer resp.Body.Close()
-		var wk struct {
-			Homeserver struct{ BaseURL string } `json:"m.homeserver"`
-		}
-		json.NewDecoder(resp.Body).Decode(&wk)
-		chWK <- wkResp{baseURL: strings.TrimRight(wk.Homeserver.BaseURL, "/")}
-	}()
-
-	go func() {
-		u := fmt.Sprintf("https://%s/_matrix/client/versions", server)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		req.Header.Set("User-Agent", "Fedlet/1.0")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			chVR <- vrResp{}
-			return
-		}
-		defer resp.Body.Close()
-		var data struct {
-			Versions []string        `json:"versions"`
-			Features map[string]bool `json:"unstable_features"`
-		}
-		json.NewDecoder(resp.Body).Decode(&data)
-		chVR <- vrResp{versions: data.Versions, features: data.Features}
-	}()
-
-	wk := <-chWK
-	vr := <-chVR
-
-	baseURL := "https://" + server
-	if wk.baseURL != "" {
-		baseURL = wk.baseURL
+	matrixURL := wkBaseURL
+	if matrixURL == "" {
+		matrixURL = "https://" + server
 	}
 
-	info := &ServerInfo{
-		BaseURL:       baseURL,
-		MSC3916Stable: vr.features["org.matrix.msc3916.stable"],
-		Versions:      vr.versions,
-		Features:      vr.features,
+	versions, features, vrErr := queryVersions(ctx, matrixURL)
+
+	info := ServerInfo{
+		BaseURL:       wkBaseURL,
+		MSC3916Stable: features["org.matrix.msc3916.stable"],
+		Versions:      versions,
+		Features:      features,
 		LastChecked:   time.Now(),
 	}
 
-	serverCapsMu.Lock()
-	serverCaps[server] = *info
-	serverCapsMu.Unlock()
-
-	log.Printf("toxrestsim: caps %s base=%q msc3916=%v", server, baseURL, info.MSC3916Stable)
-	return info
+	if wkErr != nil && vrErr != nil {
+		return info, fmt.Errorf("well-known: %w, versions: %w", wkErr, vrErr)
+	}
+	return info, nil
 }
 
 func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
@@ -199,16 +197,25 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	server, mediaID := parts[0], parts[1]
 
-	serverCapsMu.Lock()
-	cap, cached := serverCaps[server]
-	serverCapsMu.Unlock()
-
+	cap, ok := serverCaps[server]
+	if !ok {
+		info, err := discoverServerInfo(server)
+		if err == nil {
+			serverCapsMu.Lock()
+			serverCaps[server] = info
+			serverCapsMu.Unlock()
+			log.Printf("toxrestsim: caps %s base=%q msc3916=%v", server, info.BaseURL, info.MSC3916Stable)
+		} else {
+			log.Printf("toxrestsim: discover %s failed: %v", server, err)
+		}
+		cap = info
+	}
 	base := "https://" + server
-	if cached && cap.BaseURL != "" {
+	if cap.BaseURL != "" {
 		base = cap.BaseURL
 	}
 	httpURL := fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s", base, server, mediaID)
-	log.Printf("toxrestsim: media_download mxc=%q → http=%q (cached=%v)", raw, httpURL, cached)
+	log.Printf("toxrestsim: media_download mxc=%q → http=%q", raw, httpURL)
 
 	ctx := r.Context()
 	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
@@ -227,20 +234,8 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
-		info := discoverServerInfo(server)
-		cap = *info
-		cached = true
-		if info.BaseURL != base {
-			httpURL = fmt.Sprintf("%s/_matrix/media/v3/download/%s/%s", info.BaseURL, server, mediaID)
-			log.Printf("toxrestsim: media_download retry mxc=%q → http=%q", raw, httpURL)
-			proxyReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
-			proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
-			resp, err = client.Do(proxyReq)
-			if err != nil {
-				writeErr(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-		}
+		writeErr(w, "media not found", http.StatusNotFound)
+		return
 	}
 
 	if resp.StatusCode != http.StatusOK && cap.MSC3916Stable {
@@ -274,27 +269,6 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
-}
-
-func isAuthRequired(resp *http.Response) bool {
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return true
-	}
-	if resp.StatusCode != http.StatusNotFound {
-		return false
-	}
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "text/plain") {
-		return false
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if strings.Contains(string(body), "authentication is required") {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return true
-	}
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return false
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
