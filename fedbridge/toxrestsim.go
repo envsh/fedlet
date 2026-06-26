@@ -232,43 +232,62 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
-		writeErr(w, "media not found", http.StatusNotFound)
+	// 200 优先返回：跳过一切 auth 判断
+	// 之前 bug：200 的 body 被 resp.Body.Close() 关闭后走到 error 分支
+	if resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK && cap.MSC3916Stable {
-		resp.Body.Close()
-		log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
-		for _, ctype := range []string{TypeMatrix, TypeGomuksRoom} {
-			info := ctypeRegistry[ctype]
-			if info == nil || info.DlMediaFn == nil {
-				continue
-			}
-			rc, ct, err := info.DlMediaFn(raw)
-			if err != nil {
-				log.Printf("toxrestsim: DlMediaFn %s: %v", info.Name, err)
-				continue
-			}
-			defer rc.Close()
-			w.Header().Set("Content-Type", ct)
-			w.WriteHeader(http.StatusOK)
-			io.Copy(w, rc)
-			return
-		}
+	if !needsAuthForMedia(resp, cap) {
 		writeErr(w, "media not accessible", http.StatusNotFound)
 		return
 	}
 
-	defer resp.Body.Close()
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
+	log.Printf("toxrestsim: media_download auth required for %s (status %d)", raw, resp.StatusCode)
+	for _, ctype := range []string{TypeMatrix, TypeGomuksRoom} {
+		info := ctypeRegistry[ctype]
+		if info == nil || info.DlMediaFn == nil {
+			continue
 		}
+		rc, ct, err := info.DlMediaFn(raw)
+		if err != nil {
+			log.Printf("toxrestsim: DlMediaFn %s: %v", info.Name, err)
+			continue
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Type", ct)
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, rc)
+		return
 	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	writeErr(w, "media not accessible", http.StatusNotFound)
+}
+
+func needsAuthForMedia(resp *http.Response, cap ServerInfo) bool {
+	if cap.MSC3916Stable || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		resp.Body.Close()
+		return true
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		resp.Body.Close()
+		return false
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "text/plain") {
+		resp.Body.Close()
+		return false
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return strings.Contains(string(body), "authentication is required")
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
