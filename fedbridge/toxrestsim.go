@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,14 @@ type ServerInfo struct {
 	Features      map[string]bool
 	LastChecked   time.Time
 }
+
+type AuthSupport int
+
+const (
+	AuthUnknown   AuthSupport = iota
+	AuthSupported
+	AuthUnsupported
+)
 
 var (
 	serverCapsMu sync.Mutex
@@ -137,11 +146,14 @@ func queryVersions(ctx context.Context, baseURL string) ([]string, map[string]bo
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, fmt.Errorf("versions returned %d", resp.StatusCode)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	log.Printf("toxrestsim: versions body from %s: len=%d body=%s", baseURL, len(body), string(body))
 	var data struct {
 		Versions []string        `json:"versions"`
 		Features map[string]bool `json:"unstable_features"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, nil, err
 	}
 	return data.Versions, data.Features, nil
@@ -198,6 +210,7 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	server, mediaID := parts[0], parts[1]
 
 	cap, ok := serverCaps[server]
+	known := ok
 	if !ok {
 		info, err := discoverServerInfo(server)
 		if err == nil {
@@ -205,10 +218,26 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 			serverCaps[server] = info
 			serverCapsMu.Unlock()
 			log.Printf("toxrestsim: caps %s base=%q msc3916=%v", server, info.BaseURL, info.MSC3916Stable)
+			known = true
 		} else {
 			log.Printf("toxrestsim: discover %s failed: %v", server, err)
 		}
 		cap = info
+	}
+	var as AuthSupport
+	switch {
+	case !known:
+		as = AuthUnknown
+	default:
+		val, ok := cap.Features["org.matrix.msc3916.stable"]
+		switch {
+		case ok && val:
+			as = AuthSupported
+		case ok && !val:
+			as = AuthUnsupported
+		default:
+			as = AuthUnknown
+		}
 	}
 	base := "https://" + server
 	if cap.BaseURL != "" {
@@ -246,7 +275,7 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !needsAuthForMedia(resp, cap) {
+	if !needsAuthForMedia(resp, as) {
 		writeErr(w, "media not accessible", http.StatusNotFound)
 		return
 	}
@@ -271,23 +300,32 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	writeErr(w, "media not accessible", http.StatusNotFound)
 }
 
-func needsAuthForMedia(resp *http.Response, cap ServerInfo) bool {
-	if cap.MSC3916Stable || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+func needsAuthForMedia(resp *http.Response, as AuthSupport) bool {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		resp.Body.Close()
+		return true
+	}
+	if as == AuthSupported {
 		resp.Body.Close()
 		return true
 	}
 	if resp.StatusCode != http.StatusNotFound {
 		resp.Body.Close()
-		return false
+		return as == AuthUnknown
 	}
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "text/plain") {
+		log.Printf("toxrestsim: 404 body content-type=%q, skipped body read", ct)
 		resp.Body.Close()
-		return false
+		return as == AuthUnknown
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	return strings.Contains(string(body), "authentication is required")
+	log.Printf("toxrestsim: 404 body (len=%d): %.200s", len(body), string(body))
+	if strings.Contains(string(body), "authentication is required") {
+		return true
+	}
+	return as == AuthUnknown
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
