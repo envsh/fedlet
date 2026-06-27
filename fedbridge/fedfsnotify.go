@@ -2,11 +2,19 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
 	"log"
+	"math/rand"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +103,7 @@ func (w *syncWatch) flush() {
 	for path, op := range pending {
 		if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 			w.watcher.Remove(path)
-			publish(channel_name, w.marshalEvent("remove", w.rel(path)))
+			publish(channel_name, w.marshalEvent("remove", w.rel(path), 0, "", "", ""))
 			continue
 		}
 		stat, err := os.Stat(path)
@@ -112,7 +120,10 @@ func (w *syncWatch) flush() {
 		if op&fsnotify.Create != 0 {
 			ev = "create"
 		}
-		publish(channel_name, w.marshalEvent(ev, w.rel(path)))
+		sha := fileSHA256(path)
+		chk := fileChunk(path)
+		mimeVal := fileMIME(path)
+		publish(channel_name, w.marshalEvent(ev, w.rel(path), stat.Size(), mimeVal, sha, chk))
 	}
 }
 
@@ -142,15 +153,96 @@ func (w *syncWatch) addRecursive(dir string) {
 	})
 }
 
-func (w *syncWatch) marshalEvent(event, path string) []byte {
+func (w *syncWatch) marshalEvent(event, path string, size int64, mimeVal, sha256hex, chunk0b64 string) []byte {
 	b, _ := json.Marshal(struct {
-		Type  string `json:"type"`
-		Event string `json:"event"`
-		Path  string `json:"path"`
+		Type   string `json:"type"`
+		Event  string `json:"event"`
+		Path   string `json:"path"`
+		Size   int64  `json:"size"`
+		Mime   string `json:"mime"`
+		SHA256 string `json:"sha256"`
+		Chunk0 string `json:"chunk0"`
 	}{
-		Type:  "filesync",
-		Event: event,
-		Path:  path,
+		Type:   "filesync",
+		Event:  event,
+		Path:   path,
+		Size:   size,
+		Mime:   mimeVal,
+		SHA256: sha256hex,
+		Chunk0: chunk0b64,
 	})
 	return b
+}
+
+func fileSHA256(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h)
+}
+
+func fileChunk(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, _ := f.Stat()
+	if fi == nil || fi.Size() == 0 {
+		return ""
+	}
+	size := fi.Size()
+
+	maxChunk := size
+	if maxChunk > 64*1024 {
+		maxChunk = 64 * 1024
+	}
+	minChunk := int64(8 * 1024)
+	if size < minChunk {
+		minChunk = size
+	}
+
+	var chunkSize int64
+	if maxChunk >= minChunk {
+		chunkSize = rand.Int63n(maxChunk-minChunk+1) + minChunk
+	} else {
+		chunkSize = size
+	}
+
+	maxOffset := size - chunkSize
+	offset := int64(0)
+	if maxOffset > 0 {
+		offset = rand.Int63n(maxOffset + 1)
+	}
+
+	f.Seek(offset, 0)
+	buf := make([]byte, chunkSize)
+	n, _ := io.ReadFull(f, buf)
+	if n == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(buf[:n])
+}
+
+func fileMIME(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != "" {
+		m := mime.TypeByExtension(ext)
+		if m != "" {
+			return m
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(f, buf)
+	if n == 0 {
+		return "application/octet-stream"
+	}
+	return http.DetectContentType(buf[:n])
 }
