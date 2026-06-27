@@ -73,7 +73,7 @@ func main() {
 	flag.StringVar(&vlanpfx, "vlan", vlanpfx, "tun vlan ip prefix")
 	flag.Parse()
 
-	initVirTun()
+	initVirTun(cfg.KeyFile)
 
 	for _, info := range ProtocolStatuses() {
 		if info.StartFn != nil {
