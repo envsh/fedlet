@@ -1,13 +1,13 @@
 package outlookgraph
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -28,172 +28,73 @@ func SetPublishInfo(pubfn func([]byte) error) {
 	pubfn_ = pubfn
 }
 
+var globalClientID string
+
+func Send(to, msg, msgType string) error {
+	ctx := context.Background()
+	token, err := getToken(ctx, globalClientID)
+	if err != nil {
+		return fmt.Errorf("outlook send: auth: %w", err)
+	}
+
+	payload := buildSendMailPayload(to, msg)
+	req, err := http.NewRequestWithContext(ctx, "POST", graphAPI+"/me/sendMail", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("outlook send: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("outlook send: request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 202 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("outlook send: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func buildSendMailPayload(to, msg string) []byte {
+	type emailAddr struct {
+		Address string `json:"address"`
+	}
+	type recipient struct {
+		EmailAddress emailAddr `json:"emailAddress"`
+	}
+	type body struct {
+		ContentType string `json:"contentType"`
+		Content     string `json:"content"`
+	}
+	type message struct {
+		Subject      string      `json:"subject"`
+		Body         body        `json:"body"`
+		ToRecipients []recipient `json:"toRecipients"`
+	}
+	type payload struct {
+		Message message `json:"message"`
+	}
+
+	p := payload{
+		Message: message{
+			Subject:      "fedlet message",
+			Body:         body{ContentType: "Text", Content: msg},
+			ToRecipients: []recipient{{EmailAddress: emailAddr{Address: to}}},
+		},
+	}
+	data, _ := json.Marshal(p)
+	return data
+}
+
 type Config struct {
 	ClientID string `json:"clientId"`
-}
-
-type tokenJSON struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	Expiry       time.Time `json:"expiry"`
-}
-
-type oauthCred struct {
-	mu       sync.Mutex
-	clientID string
-	tok      *tokenJSON
-	hc       *http.Client
-}
-
-func newOAuthCred(clientID string) *oauthCred {
-	return &oauthCred{
-		clientID: clientID,
-		hc:       &http.Client{Timeout: 30 * time.Second},
-	}
 }
 
 func tokenFilePath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "fedlet", "outlook-tokens.json")
-}
-
-func (c *oauthCred) load() {
-	data, err := os.ReadFile(tokenFilePath())
-	if err != nil {
-		return
-	}
-	json.Unmarshal(data, &c.tok)
-}
-
-func (c *oauthCred) save() {
-	data, _ := json.MarshalIndent(c.tok, "", "  ")
-	p := tokenFilePath()
-	os.MkdirAll(filepath.Dir(p), 0700)
-	os.WriteFile(p, data, 0600)
-}
-
-const tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-const deviceCodeURL = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
-
-func (c *oauthCred) getToken(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.tok != nil && time.Now().Add(5*time.Minute).Before(c.tok.Expiry) {
-		return c.tok.AccessToken, nil
-	}
-	if c.tok != nil && c.tok.RefreshToken != "" {
-		if err := c.refresh(); err == nil {
-			return c.tok.AccessToken, nil
-		}
-		log.Println("outlook: refresh failed, re-authenticating")
-	}
-	if err := c.deviceCode(ctx); err != nil {
-		return "", err
-	}
-	return c.tok.AccessToken, nil
-}
-
-func (c *oauthCred) refresh() error {
-	v := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {c.tok.RefreshToken},
-		"client_id":     {c.clientID},
-		"scope":         {"https://graph.microsoft.com/.default"},
-	}
-	resp, err := c.hc.PostForm(tokenURL, v)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var r struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		Error        string `json:"error"`
-	}
-	json.Unmarshal(body, &r)
-	if r.Error != "" {
-		return fmt.Errorf("%s", r.Error)
-	}
-	c.tok.AccessToken = r.AccessToken
-	if r.RefreshToken != "" {
-		c.tok.RefreshToken = r.RefreshToken
-	}
-	c.tok.Expiry = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
-	c.save()
-	return nil
-}
-
-func (c *oauthCred) deviceCode(ctx context.Context) error {
-	v := url.Values{
-		"client_id": {c.clientID},
-		"scope":     {"https://graph.microsoft.com/.default"},
-	}
-	resp, err := c.hc.PostForm(deviceCodeURL, v)
-	if err != nil {
-		return err
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	var d struct {
-		DeviceCode string `json:"device_code"`
-		UserCode   string `json:"user_code"`
-		VerifURI   string `json:"verification_uri"`
-		Interval   int    `json:"interval"`
-		ExpiresIn  int    `json:"expires_in"`
-		Error      string `json:"error"`
-	}
-	json.Unmarshal(body, &d)
-	if d.Error != "" {
-		return fmt.Errorf("device code error: %s", d.Error)
-	}
-	log.Printf("To authenticate, open %s and enter code: %s", d.VerifURI, d.UserCode)
-	interval := d.Interval
-	if interval < 5 {
-		interval = 5
-	}
-	deadline := time.Now().Add(time.Duration(d.ExpiresIn) * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(interval) * time.Second):
-		}
-		vv := url.Values{
-			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-			"client_id":   {c.clientID},
-			"device_code": {d.DeviceCode},
-		}
-		resp, err := c.hc.PostForm(tokenURL, vv)
-		if err != nil {
-			continue
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		var t struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int    `json:"expires_in"`
-			Error        string `json:"error"`
-		}
-		json.Unmarshal(body, &t)
-		if t.AccessToken != "" {
-			c.tok = &tokenJSON{
-				AccessToken:  t.AccessToken,
-				RefreshToken: t.RefreshToken,
-				Expiry:       time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
-			}
-			c.save()
-			fmt.Println("Authenticated successfully.")
-			return nil
-		}
-		if t.Error != "" && t.Error != "authorization_pending" {
-			return fmt.Errorf("auth error: %s", t.Error)
-		}
-	}
-	return fmt.Errorf("device code flow timed out")
 }
 
 type folderInfo struct {
@@ -414,6 +315,7 @@ func Start(info string) {
 		log.Println("outlook: --outlook-client-id is required. Create an Azure AD app at https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade, enable 'Allow public client flows', and grant Mail.Read delegated permission")
 		return
 	}
+	globalClientID = cfg.ClientID
 	go poll(cfg)
 }
 
@@ -422,17 +324,15 @@ func poll(cfg Config) {
 	statusConnectedSince.Store(time.Now())
 	defer statusRunning.Store(false)
 
-	cred := newOAuthCred(cfg.ClientID)
-	cred.load()
 	ctx := context.Background()
 
-	token, err := cred.getToken(ctx)
+	token, err := getToken(ctx, cfg.ClientID)
 	if err != nil {
 		log.Println("outlook: auth error:", err)
 		pushError(err)
 		return
 	}
-	log.Printf("Token saved to %s", tokenFilePath())
+	log.Printf("outlook: authenticated (token: %s)", tokenFilePath())
 
 	folders, err := enumerateFolders(ctx, token)
 	if err != nil {
@@ -455,7 +355,7 @@ func poll(cfg Config) {
 
 	for {
 		time.Sleep(30 * time.Second)
-		token, err := cred.getToken(ctx)
+		token, err := getToken(ctx, cfg.ClientID)
 		if err != nil {
 			log.Println("outlook: get token:", err)
 			pushError(err)
@@ -490,6 +390,7 @@ func poll(cfg Config) {
 // protocol status
 var (
 	statusRunning        atomic.Bool
+	statusAuthStatus     atomic.Value // string
 	statusConnectedSince atomic.Value // time.Time
 	statusReconnTimes    atomic.Int64
 	statusLastErrsMu     sync.Mutex
@@ -505,6 +406,11 @@ func pushError(err error) {
 }
 
 func IsRunning() bool         { return statusRunning.Load() }
+func AuthStatus() string {
+	v := statusAuthStatus.Load()
+	if v == nil { return "" }
+	return v.(string)
+}
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
 	if v == nil { return time.Time{} }

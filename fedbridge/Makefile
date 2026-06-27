@@ -1,5 +1,5 @@
 BINARY = main
-TAGS = gomuks,toxoverhttp,emailimap,matrixlite
+TAGS = gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite
 
 # clipboard need CGO
 all:

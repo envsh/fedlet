@@ -13,7 +13,8 @@ var outlookClientID string
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "outlookgraph",
 	Ctypes:     []string{TypeOutlookEvent},
-	Capacities: ProtocolCapacities{CanReceive: true},
+	Capacities: ProtocolCapacities{CanReceive: true, CanSend: true},
+	SendFn:     outlookgraph.Send,
 	StartFn: func() {
 		cfg := outlookgraph.Config{ClientID: outlookClientID}
 		b, _ := json.Marshal(cfg)
@@ -25,6 +26,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        outlookgraph.IsRunning(),
+			AuthStatus:     outlookgraph.AuthStatus(),
 			LastErrs:       outlookgraph.LastErrs(),
 			ConnectedSince: outlookgraph.ConnectedSince(),
 			ReconnTimes:    outlookgraph.ReconnTimes(),

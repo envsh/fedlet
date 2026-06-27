@@ -12,6 +12,7 @@ type ProtocolCapacities struct {
 
 type ProtocolStatus struct {
 	Running        bool
+	AuthStatus     string
 	LastErrs       []error
 	ConnectedSince time.Time
 	ReconnTimes    int64
