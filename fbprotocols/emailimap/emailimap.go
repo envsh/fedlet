@@ -2,6 +2,7 @@ package emailimap
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/xml"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
@@ -148,7 +150,7 @@ func saveState(s *stateData) {
 	os.WriteFile(p, data, 0600)
 }
 
-func getBodyPreview(r io.Reader) (preview, html, charset string) {
+func getBodyPreview(mailID string, r io.Reader) (preview, html, charset string) {
 	if r == nil {
 		return "", "", ""
 	}
@@ -158,6 +160,10 @@ func getBodyPreview(r io.Reader) (preview, html, charset string) {
 		return "", "", ""
 	}
 
+	cte := msg.Header.Get("Content-Transfer-Encoding")
+	log.Printf("emailimap: mail %s CTE=%q type=%q", mailID, cte, msg.Header.Get("Content-Type"))
+	body := decodeCTE(msg.Body, cte)
+
 	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
 	if err != nil {
 		mediaType = "text/plain"
@@ -165,12 +171,12 @@ func getBodyPreview(r io.Reader) (preview, html, charset string) {
 
 	if strings.HasPrefix(mediaType, "text/plain") {
 		cs := params["charset"]
-		return readTextBody(msg.Body, cs), "", cs
+		return readTextBody(body, cs), "", cs
 	}
 
 	if strings.HasPrefix(mediaType, "text/html") {
 		cs := params["charset"]
-		return "", readTextBodyFull(msg.Body, cs), cs
+		return "", readTextBodyFull(body, cs), cs
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
@@ -182,12 +188,15 @@ func getBodyPreview(r io.Reader) (preview, html, charset string) {
 				break
 			}
 			pmt, pmp, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
+			pcte := part.Header.Get("Content-Transfer-Encoding")
+			log.Printf("emailimap: mail %s multipart part CTE=%q type=%q", mailID, pcte, pmt)
+			pBody := decodeCTE(part, pcte)
 			if strings.HasPrefix(pmt, "text/plain") {
 				cs := pmp["charset"]
-				return readTextBody(part, cs), "", cs
+				return readTextBody(pBody, cs), "", cs
 			}
 			if strings.HasPrefix(pmt, "text/html") && htmlBody == "" {
-				htmlBody = readTextBodyFull(part, pmp["charset"])
+				htmlBody = readTextBodyFull(pBody, pmp["charset"])
 				htmlCharset = pmp["charset"]
 			}
 		}
@@ -233,6 +242,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+func decodeCTE(r io.Reader, cte string) io.Reader {
+	switch strings.ToLower(strings.TrimSpace(cte)) {
+	case "base64":
+		return base64.NewDecoder(base64.StdEncoding, r)
+	case "quoted-printable":
+		return quotedprintable.NewReader(r)
+	default:
+		return r
+	}
 }
 
 func charsetDecoder(name string) (encoding.Encoding, bool) {
@@ -567,7 +587,7 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 			m.ReceivedDateTime = msg.Envelope.Date.Format(time.RFC3339)
 		}
 
-		m.BodyPreview, m.BodyHtml, m.Charset = getBodyPreview(msg.GetBody(&section))
+		m.BodyPreview, m.BodyHtml, m.Charset = getBodyPreview(m.ID, msg.GetBody(&section))
 		result = append(result, m)
 	}
 
