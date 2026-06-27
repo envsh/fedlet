@@ -254,7 +254,7 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
 
-	client := &http.Client{Timeout: 130 * time.Second}
+	client := &http.Client{Timeout: 330 * time.Second}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		writeErr(w, err.Error(), http.StatusBadGateway)
@@ -284,6 +284,15 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	for _, ctype := range []string{TypeMatrix, TypeGomuksRoom} {
 		info := ctypeRegistry[ctype]
 		if info == nil || info.DlMediaFn == nil {
+			continue
+		}
+		st := info.Status()
+		if !st.Running {
+			log.Printf("toxrestsim: %s not running, skipping DlMediaFn", info.Name)
+			continue
+		}
+		if st.ConnectedSince.IsZero() {
+			log.Printf("toxrestsim: %s not connected, skipping DlMediaFn", info.Name)
 			continue
 		}
 		rc, ct, err := info.DlMediaFn(raw)
