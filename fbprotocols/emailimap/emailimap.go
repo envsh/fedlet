@@ -49,6 +49,7 @@ type messageData struct {
 	From             string   `json:"from"`
 	ToRecipients     []string `json:"toRecipients"`
 	BodyPreview      string   `json:"bodyPreview"`
+	BodyHtml         string   `json:"bodyHtml,omitempty"`
 	ReceivedDateTime string   `json:"receivedDateTime"`
 	FolderID         string   `json:"folderId"`
 	FolderName       string   `json:"folderName"`
@@ -147,14 +148,14 @@ func saveState(s *stateData) {
 	os.WriteFile(p, data, 0600)
 }
 
-func getBodyPreview(r io.Reader) (string, string) {
+func getBodyPreview(r io.Reader) (preview, html, charset string) {
 	if r == nil {
-		return "", ""
+		return "", "", ""
 	}
 
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 
 	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
@@ -164,11 +165,17 @@ func getBodyPreview(r io.Reader) (string, string) {
 
 	if strings.HasPrefix(mediaType, "text/plain") {
 		cs := params["charset"]
-		return readTextBody(msg.Body, cs), cs
+		return readTextBody(msg.Body, cs), "", cs
+	}
+
+	if strings.HasPrefix(mediaType, "text/html") {
+		cs := params["charset"]
+		return "", readTextBodyFull(msg.Body, cs), cs
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
 		mr := multipart.NewReader(msg.Body, params["boundary"])
+		var htmlBody, htmlCharset string
 		for {
 			part, err := mr.NextPart()
 			if err != nil {
@@ -177,12 +184,33 @@ func getBodyPreview(r io.Reader) (string, string) {
 			pmt, pmp, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
 			if strings.HasPrefix(pmt, "text/plain") {
 				cs := pmp["charset"]
-				return readTextBody(part, cs), cs
+				return readTextBody(part, cs), "", cs
 			}
+			if strings.HasPrefix(pmt, "text/html") && htmlBody == "" {
+				htmlBody = readTextBodyFull(part, pmp["charset"])
+				htmlCharset = pmp["charset"]
+			}
+		}
+		if htmlBody != "" {
+			return "", htmlBody, htmlCharset
 		}
 	}
 
-	return "", ""
+	return "", "", ""
+}
+
+func readTextBodyFull(r io.Reader, charset string) string {
+	body, _ := io.ReadAll(r)
+	text := string(body)
+	if c, ok := charsetDecoder(charset); ok {
+		dec := transform.NewReader(strings.NewReader(text), c.NewDecoder())
+		if b, err := io.ReadAll(dec); err == nil {
+			text = string(b)
+		} else {
+			log.Printf("emailimap: decode error for charset %q: %v", charset, err)
+		}
+	}
+	return strings.TrimSpace(text)
 }
 
 func readTextBody(r io.Reader, charset string) string {
@@ -192,6 +220,8 @@ func readTextBody(r io.Reader, charset string) string {
 		dec := transform.NewReader(strings.NewReader(text), c.NewDecoder())
 		if b, err := io.ReadAll(dec); err == nil {
 			text = string(b)
+		} else {
+			log.Printf("emailimap: decode error for charset %q: %v", charset, err)
 		}
 	}
 	return truncate(strings.TrimSpace(text), 200)
@@ -537,7 +567,7 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 			m.ReceivedDateTime = msg.Envelope.Date.Format(time.RFC3339)
 		}
 
-		m.BodyPreview, m.Charset = getBodyPreview(msg.GetBody(&section))
+		m.BodyPreview, m.BodyHtml, m.Charset = getBodyPreview(msg.GetBody(&section))
 		result = append(result, m)
 	}
 
