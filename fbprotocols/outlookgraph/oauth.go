@@ -134,7 +134,7 @@ func refreshToken(clientID string) error {
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {tok.RefreshToken},
 		"client_id":     {clientID},
-		"scope":         {"https://graph.microsoft.com/.default"},
+		"scope":         {"https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access"},
 	}
 	resp, err := http.PostForm(tokenURL, v)
 	if err != nil {
@@ -195,7 +195,7 @@ func authCodeFlow(ctx context.Context, clientID string) error {
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 	authorizeURL := fmt.Sprintf("%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256",
 		authEndpoint, clientID, url.QueryEscape(redirectURI),
-		url.QueryEscape("https://graph.microsoft.com/.default"), challenge)
+		url.QueryEscape("https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access"), challenge)
 
 	tok = &tokenJSON{Status: AuthAwaiting, AuthURL: authorizeURL}
 	saveToken()

@@ -38,22 +38,33 @@ func Send(to, msg, msgType string) error {
 	}
 
 	payload := buildSendMailPayload(to, msg)
-	req, err := http.NewRequestWithContext(ctx, "POST", graphAPI+"/me/sendMail", bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("outlook send: build request: %w", err)
-	}
+	req, _ := http.NewRequestWithContext(ctx, "POST", graphAPI+"/me/messages", bytes.NewReader(payload))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("outlook send: request: %w", err)
+		return fmt.Errorf("outlook send: create draft: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 202 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("outlook send: HTTP %d: %s", resp.StatusCode, string(body))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		return fmt.Errorf("outlook send: create draft: HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	var draft struct{ ID string `json:"id"` }
+	json.Unmarshal(body, &draft)
+	log.Printf("outlook send: created draft ID=%s", draft.ID)
+
+	req2, _ := http.NewRequestWithContext(ctx, "POST", graphAPI+"/me/messages/"+draft.ID+"/send", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		return fmt.Errorf("outlook send: send failed (draft=%s): %w", draft.ID, err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != 202 {
+		return fmt.Errorf("outlook send: send (draft=%s): HTTP %d", draft.ID, resp2.StatusCode)
+	}
+	log.Printf("outlook send: sent draft ID=%s", draft.ID)
 	return nil
 }
 
@@ -155,6 +166,9 @@ func enumerateFolders(ctx context.Context, token string) ([]folderInfo, error) {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("list folders: HTTP %d: %s", resp.StatusCode, string(body))
+		}
 		var page struct {
 			Value []struct {
 				ID   string `json:"id"`
@@ -191,6 +205,9 @@ func getChildFolders(ctx context.Context, token, parentID string) ([]folderInfo,
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("list child folders: HTTP %d: %s", resp.StatusCode, string(body))
+		}
 		var page struct {
 			Value []struct {
 				ID   string `json:"id"`
@@ -227,6 +244,9 @@ func initDeltaSync(ctx context.Context, token, folderID string) (string, error) 
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("init delta: HTTP %d: %s", resp.StatusCode, string(body))
+		}
 		var page deltaPage
 		json.Unmarshal(body, &page)
 		if page.DeltaLink != "" {
@@ -257,6 +277,9 @@ func pollDelta(ctx context.Context, token, deltaLink string) ([]messageData, str
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, deltaLink, fmt.Errorf("poll delta: HTTP %d: %s", resp.StatusCode, string(body))
+		}
 		var page deltaPage
 		json.Unmarshal(body, &page)
 		if page.DeltaLink != "" {
@@ -334,10 +357,24 @@ func poll(cfg Config) {
 	}
 	log.Printf("outlook: authenticated (token: %s)", tokenFilePath())
 
-	folders, err := enumerateFolders(ctx, token)
-	if err != nil {
-		log.Println("outlook: enumerate folders error:", err)
+	var folders []folderInfo
+	for attempt := 0; attempt < 5; attempt++ {
+		folders, err = enumerateFolders(ctx, token)
+		if err == nil {
+			break
+		}
+		log.Printf("outlook: enumerate folders error: %v (attempt %d/5, retry in %ds)",
+			err, attempt+1, (attempt+1)*10)
 		pushError(err)
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Second)
+		token, err = getToken(ctx, cfg.ClientID)
+		if err != nil {
+			log.Println("outlook: refresh token during retry:", err)
+			return
+		}
+	}
+	if err != nil {
+		log.Println("outlook: enumerate folders failed after 5 attempts")
 		return
 	}
 	log.Printf("outlook: found %d folders", len(folders))
