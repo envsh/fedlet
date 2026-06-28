@@ -50,6 +50,7 @@ type messageData struct {
 	Subject          string   `json:"subject"`
 	From             string   `json:"from"`
 	ToRecipients     []string `json:"toRecipients"`
+	CcRecipients     []string `json:"ccRecipients,omitempty"`
 	BodyPreview      string   `json:"bodyPreview"`
 	BodyHtml         string   `json:"bodyHtml,omitempty"`
 	ReceivedDateTime string   `json:"receivedDateTime"`
@@ -579,6 +580,11 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 		for _, a := range msg.Envelope.To {
 			if a != nil {
 				m.ToRecipients = append(m.ToRecipients, addrString(a))
+			}
+		}
+		for _, a := range msg.Envelope.Cc {
+			if a != nil {
+				m.CcRecipients = append(m.CcRecipients, addrString(a))
 			}
 		}
 		if !msg.InternalDate.IsZero() {
