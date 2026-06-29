@@ -142,13 +142,23 @@ func refreshToken(clientID string) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		tok.Status = AuthRefreshFailed
+		saveToken()
+		statusAuthStatus.Store(AuthRefreshFailed)
+		return fmt.Errorf("refresh: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
 	var r struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
 		Error        string `json:"error"`
 	}
-	json.Unmarshal(body, &r)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return fmt.Errorf("refresh: parse: %w", err)
+	}
 	if r.Error != "" {
 		return fmt.Errorf("%s", r.Error)
 	}
@@ -243,13 +253,23 @@ func authCodeFlow(ctx context.Context, clientID string) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		tok = &tokenJSON{Status: AuthError, Error: string(body)}
+		saveToken()
+		statusAuthStatus.Store(AuthError)
+		return fmt.Errorf("token exchange: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
 	var r struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
 		Error        string `json:"error"`
 	}
-	json.Unmarshal(body, &r)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return fmt.Errorf("token exchange: parse: %w", err)
+	}
 	if r.Error != "" {
 		tok = &tokenJSON{Status: AuthError, Error: r.Error}
 		saveToken()

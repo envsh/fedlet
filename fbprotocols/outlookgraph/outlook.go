@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -406,6 +407,10 @@ func poll(cfg Config) {
 			if err != nil {
 				log.Printf("outlook: poll %s: %v", folders[i].Name, err)
 				pushError(err)
+				if strings.Contains(err.Error(), "HTTP 401") {
+					log.Printf("outlook: poll %s: token expired, forcing refresh", folders[i].Name)
+					token, _ = getToken(ctx, cfg.ClientID)
+				}
 				continue
 			}
 			folders[i].DeltaLink = newDL
