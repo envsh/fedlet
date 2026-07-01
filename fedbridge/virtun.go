@@ -9,20 +9,26 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-var tunov tun.Device
+var (
+	tunov        tun.Device
+	configuredIPs sync.Map
+)
 
 /*
 sudo setcap cap_net_admin+eip main
 */
 
 func initVirTun(keyFile string) {
-	t, err := tun.CreateTUN("fedlet", 1900)
+	t, err := tun.CreateTUN("fedlet", 1500)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
 		return
@@ -30,40 +36,62 @@ func initVirTun(keyFile string) {
 		tunov = t
 		log.Println("tundev created", "fedlet")
 	}
+
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			for _, p := range getPeerList() {
+				ip := vlanpfx + strconv.Itoa(stringToHostPart(p.ID))
+				if _, ok := configuredIPs.Load(ip); ok {
+					continue
+				}
+				if err := addIPToTun(ip); err != nil {
+					log.Printf("virtun: add ip %s: %v", ip, err)
+				} else {
+					configuredIPs.Store(ip, true)
+					log.Printf("virtun: added peer ip %s", ip)
+				}
+			}
+		}
+	}()
 }
 
-func setupSeedVirtIP(ip string) error {
+func addIPToTun(ip string) error {
 	switch runtime.GOOS {
 	case "linux":
 		link, err := netlink.LinkByName("fedlet")
 		if err != nil {
-			return fmt.Errorf("setup seed virt IP: link fedlet: %w", err)
+			return err
+		}
+		if err := netlink.LinkSetUp(link); err != nil {
+			return err
+		}
+		if err := netlink.LinkSetTxQLen(link, 1000); err != nil {
+			return err
 		}
 		addr, err := netlink.ParseAddr(ip + "/24")
 		if err != nil {
-			return fmt.Errorf("setup seed virt IP: parse addr: %w", err)
+			return err
 		}
-		if err := netlink.AddrAdd(link, addr); err != nil {
-			return fmt.Errorf("setup seed virt IP: addr add: %w", err)
-		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("setup seed virt IP: link set up: %w", err)
-		}
+		return netlink.AddrAdd(link, addr)
 	case "darwin":
-		out, err := exec.Command("ifconfig", "fedlet", "inet", ip, ip, "netmask", "255.255.255.0", "up").CombinedOutput()
+		out, err := exec.Command("ifconfig", "fedlet", "inet", ip, ip, "netmask", "255.255.255.0", "alias").CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("setup seed virt IP: ifconfig: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
 		}
+		return nil
 	case "windows":
-		out, err := exec.Command("netsh", "interface", "ip", "set", "address",
-			"name=fedlet", "source=static", "addr="+ip, "mask=255.255.255.0").CombinedOutput()
+		out, err := exec.Command("netsh", "interface", "ip", "add", "address",
+			"name=fedlet", "addr="+ip, "mask=255.255.255.0").CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("setup seed virt IP: netsh: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
 		}
-	default:
-		return fmt.Errorf("setup seed virt IP: unsupported platform: %s", runtime.GOOS)
 	}
-	return nil
+	return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+}
+
+func setupSeedVirtIP(ip string) error {
+	return addIPToTun(ip)
 }
 
 func stringToHostPart(s string) int {
