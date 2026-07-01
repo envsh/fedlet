@@ -10,7 +10,10 @@ all:
 			sudo setcap cap_net_admin+eip $(BINARY); \
 			getcap $(BINARY);; \
 		Darwin) \
-			echo "==> macOS: run with sudo for utun device";; \
+			echo "==> macOS: run with sudo for utun device"; \
+			sudo chown root:wheel $(BINARY) && sudo chmod u+s $(BINARY);; \
+		*) \
+			echo "==> warning: unknown OS $$(uname -s), setcap/setuid skipped";; \
 	esac
 
 NDK_DIR = /opt/android-ndk

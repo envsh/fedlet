@@ -77,6 +77,9 @@ func main() {
 	initVirTun(cfg.KeyFile)
 
 		go func() {
+			if tunov == nil {
+				return
+			}
 			for {
 				board, err := p2put.CollectBoard()
 				if err == nil {

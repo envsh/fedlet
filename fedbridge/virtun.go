@@ -27,17 +27,22 @@ var (
 sudo setcap cap_net_admin+eip main
 */
 
-func initVirTun(keyFile string) {
+func initVirTun(keyFile string) error {
 	t, err := tun.CreateTUN("fedlet", 1500)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
-		return
+		log.Println("    On MacOS, sudo chown root:wheel main && sudo chmod u+s main")
+		return fmt.Errorf("create tun: %w", err)
 	} else {
 		tunov = t
-		log.Println("tundev created", "fedlet")
+		ifname, _ := tunov.Name()
+		log.Println("tundev created", ifname)
 	}
 
 	go func() {
+		if tunov == nil {
+			return
+		}
 		for {
 			time.Sleep(2 * time.Second)
 			for _, p := range getPeerList() {
@@ -54,6 +59,8 @@ func initVirTun(keyFile string) {
 			}
 		}
 	}()
+
+	return nil
 }
 
 func addIPToTun(ip string) error {
@@ -75,7 +82,11 @@ func addIPToTun(ip string) error {
 		}
 		return netlink.AddrAdd(link, addr)
 	case "darwin":
-		out, err := exec.Command("ifconfig", "fedlet", "inet", ip, ip, "netmask", "255.255.255.0", "alias").CombinedOutput()
+		ifname, err := tunov.Name()
+		if err != nil {
+			return fmt.Errorf("add ip: get tun name: %w", err)
+		}
+		out, err := exec.Command("ifconfig", ifname, "inet", ip, ip, "netmask", "255.255.255.0", "alias").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
 		}
