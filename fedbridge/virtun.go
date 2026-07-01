@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/vishvananda/netlink"
@@ -23,10 +22,6 @@ sudo setcap cap_net_admin+eip main
 */
 
 func initVirTun(keyFile string) {
-	hostPart := computeHostPart(keyFile)
-	ip := vlanpfx + strconv.Itoa(hostPart)
-	log.Printf("virtun: computed IP: %s", ip)
-
 	t, err := tun.CreateTUN("fedlet", 1900)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
@@ -34,12 +29,6 @@ func initVirTun(keyFile string) {
 	} else {
 		tunov = t
 		log.Println("tundev created", "fedlet")
-	}
-
-	if err := setupSeedVirtIP(ip); err != nil {
-		log.Printf("virtun: %v", err)
-	} else {
-		log.Printf("virtun: %s configured and up", ip)
 	}
 }
 
@@ -75,6 +64,12 @@ func setupSeedVirtIP(ip string) error {
 		return fmt.Errorf("setup seed virt IP: unsupported platform: %s", runtime.GOOS)
 	}
 	return nil
+}
+
+func stringToHostPart(s string) int {
+	tbl := crc64.MakeTable(crc64.ECMA)
+	h := crc64.Checksum([]byte(s), tbl)
+	return int(h%253) + 2
 }
 
 func computeHostPart(keyFile string) int {

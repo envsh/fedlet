@@ -7,6 +7,7 @@ import (
 	"log"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 	"context"
 	"strings"
@@ -74,6 +75,27 @@ func main() {
 	flag.Parse()
 
 	initVirTun(cfg.KeyFile)
+
+		go func() {
+			for {
+				board, err := p2put.CollectBoard()
+				if err == nil {
+					localPeerID = board.PeerID
+					hostPart := stringToHostPart(board.PeerID)
+					ip := vlanpfx + strconv.Itoa(hostPart)
+					localPeerIP = ip
+					log.Printf("virtun: computed IP from peer_id: %s", ip)
+				if err := setupSeedVirtIP(ip); err != nil {
+					log.Printf("virtun: %v", err)
+				} else {
+					log.Printf("virtun: %s configured and up from peer_id", ip)
+				}
+				return
+			}
+			log.Printf("virtun: collect board: %v (retry in 1s)", err)
+			time.Sleep(time.Second)
+		}
+	}()
 
 	for _, info := range ProtocolStatuses() {
 		if info.StartFn != nil {

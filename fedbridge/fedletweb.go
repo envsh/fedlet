@@ -19,16 +19,23 @@ type peerEntry struct {
 	No   int    `json:"no"`
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	IP   string `json:"ip"`
 }
 
-var currentPeerID string
+var (
+	currentPeerID string
+	localPeerID   string
+	localPeerIP   string
+)
 
 func getPeerList() []peerEntry {
 	ids := p2put.GetClusterPeers()
 	sort.Strings(ids)
 	out := make([]peerEntry, 0, len(ids))
 	for i, id := range ids {
-		out = append(out, peerEntry{No: i, ID: id, Name: id})
+		hostPart := stringToHostPart(id)
+		ip := vlanpfx + strconv.Itoa(hostPart)
+		out = append(out, peerEntry{No: i, ID: id, Name: id, IP: ip})
 	}
 	return out
 }
@@ -188,8 +195,10 @@ func handlePeer(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"peerno": peerno,
-		"peer":   currentPeerID,
-		"peers":  pl,
+		"peerno":   peerno,
+		"peer":     currentPeerID,
+		"peers":    pl,
+		"local_id": localPeerID,
+		"local_ip": localPeerIP,
 	})
 }

@@ -50,7 +50,7 @@ h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
 </div>
 
 <div class="card">
-  <h2>Drift Tunnel Peer</h2>
+  <h2>Drift Tunnel Peer <span id="localTag" style="font-size:0.8rem;color:#8b949e"></span></h2>
   <div class="current-peer" id="currentPeer">Current: <span>—</span></div>
   <div class="peer-list" id="peerList"><div style="color:#666;font-size:0.9rem">loading...</div></div>
 </div>
@@ -80,11 +80,13 @@ async function loadPeers() {
   try {
     const r = await fetch('/api/peer')
     const data = await r.json()
-    document.getElementById('currentPeer').innerHTML = `Current: <span>${data.peer ? data.peer.substring(0,20)+'...' : '—'}</span>`
+    document.getElementById('currentPeer').innerHTML = `Current: <span>${data.peer ? data.peer : '—'}</span>`
+    const localTag = document.getElementById('localTag')
+    if (localTag) localTag.textContent = data.local_id ? data.local_id+' '+data.local_ip : ''
     const list = document.getElementById('peerList')
     list.innerHTML = data.peers.map(p => {
       const active = p.no === data.peerno
-      return `<div class="peer-item${active?' active':''}" data-no="${p.no}" onclick="switchPeer(${p.no})"><div class="peer-radio"></div><span class="peer-num">Peer ${p.no}</span><span class="peer-id">${p.id}</span></div>`
+      return `<div class="peer-item${active?' active':''}" data-no="${p.no}" onclick="switchPeer(${p.no})"><div class="peer-radio"></div><span class="peer-num">Peer ${p.no}</span><span class="peer-id">${p.id}</span><span style="color:#8b949e;font-size:12px;margin-left:8px">${p.ip}</span></div>`
     }).join('')
   } catch(e) {
     document.getElementById('peerList').innerHTML = '<div style="color:#c55">failed to load</div>'
