@@ -234,7 +234,7 @@ func readTextBody(r io.Reader, charset string) string {
 			log.Printf("emailimap: decode error for charset %q: %v", charset, err)
 		}
 	}
-	return truncate(strings.TrimSpace(text), 200)
+	return truncate(strings.TrimSpace(text), 686)
 }
 
 func truncate(s string, n int) string {

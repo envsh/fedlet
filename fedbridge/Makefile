@@ -7,7 +7,8 @@ all:
 	@case "$$(uname -s)" in \
 		Linux) \
 			echo "==> setcap cap_net_admin+eip on $(BINARY)"; \
-			sudo setcap cap_net_admin+eip $(BINARY);; \
+			sudo setcap cap_net_admin+eip $(BINARY); \
+			getcap $(BINARY);; \
 		Darwin) \
 			echo "==> macOS: run with sudo for utun device";; \
 	esac
