@@ -157,7 +157,11 @@ func hasExistingIP(ifname string) bool {
 func addIPToTun(ip string) error {
 	switch runtime.GOOS {
 	case "linux":
-		link, err := netlink.LinkByName("fedlet")
+		ifname, err := tunov.Name()
+		if err != nil {
+			return fmt.Errorf("add ip: get tun name: %w", err)
+		}
+		link, err := netlink.LinkByName(ifname)
 		if err != nil {
 			return err
 		}
