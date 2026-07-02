@@ -1,10 +1,5 @@
 package matrixlite
 
-type Event struct {
-	Type string
-	Data []byte
-}
-
 type Message struct {
 	EventID   string `json:"event_id,omitempty"`
 	Sender    string `json:"sender,omitempty"`

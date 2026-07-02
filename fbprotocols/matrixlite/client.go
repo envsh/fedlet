@@ -229,13 +229,13 @@ func (c *Client) detectSlidingSync() {
 	}
 }
 
-func (c *Client) Sync(timeout time.Duration) ([]Event, error) {
+func (c *Client) Sync(timeout time.Duration) ([]map[string]any, error) {
 	if c.useSliding {
-		events, err := c.slidingSync(timeout)
+		raws, err := c.slidingSync(timeout)
 		if err != nil {
 			return c.normalSync(timeout)
 		}
-		return events, nil
+		return raws, nil
 	}
 	return c.normalSync(timeout)
 }
@@ -261,7 +261,7 @@ type slidingResp struct {
 	Rooms map[string]slidingRoom `json:"rooms,omitempty"`
 }
 
-func (c *Client) slidingSync(timeout time.Duration) ([]Event, error) {
+func (c *Client) slidingSync(timeout time.Duration) ([]map[string]any, error) {
 	u := c.baseURL + slidingSyncEndpoint
 	q := url.Values{}
 	if c.slidingPos != "" {
@@ -311,16 +311,21 @@ func (c *Client) slidingSync(timeout time.Duration) ([]Event, error) {
 	c.slidingPos = sr.Pos
 	log.Printf("matrixlite: sliding sync pos -> %s", c.slidingPos)
 
-	var events []Event
+	var ms []map[string]any
 	for rid, room := range sr.Rooms {
 		for _, evRaw := range room.Timeline {
-			ev := extractMessageEvent(rid, evRaw)
-			if ev != nil {
-				events = append(events, *ev)
+			var m map[string]any
+			if json.Unmarshal(evRaw, &m) != nil {
+				continue
 			}
+			if t, _ := m["type"].(string); t != "m.room.message" {
+				continue
+			}
+			m["room_id"] = rid
+			ms = append(ms, m)
 		}
 	}
-	return events, nil
+	return ms, nil
 }
 
 type normalRoomTimeline struct {
@@ -340,7 +345,7 @@ type normalResp struct {
 	Rooms     normalRooms `json:"rooms,omitempty"`
 }
 
-func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
+func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 	u := c.baseURL + "/_matrix/client/v3/sync"
 	q := url.Values{}
 	if c.nextBatch != "" {
@@ -376,30 +381,23 @@ func (c *Client) normalSync(timeout time.Duration) ([]Event, error) {
 	prevNormalNextBatch = c.nextBatch
 	log.Printf("matrixlite: sync diff: %s", diff)
 
-	var events []Event
+	var ms []map[string]any
 	for rid, room := range nr.Rooms.Join {
 		for _, evRaw := range room.Timeline.Events {
-			ev := extractMessageEvent(rid, evRaw)
-			if ev != nil {
-				events = append(events, *ev)
+			var m map[string]any
+			if json.Unmarshal(evRaw, &m) != nil {
+				continue
 			}
+			if t, _ := m["type"].(string); t != "m.room.message" {
+				continue
+			}
+			m["room_id"] = rid
+			ms = append(ms, m)
 		}
 	}
-	return events, nil
+	return ms, nil
 }
 
-type rawContent struct {
-	Body    string `json:"body,omitempty"`
-	MsgType string `json:"msgtype,omitempty"`
-}
-
-type rawEvent struct {
-	Type    string     `json:"type"`
-	Sender  string     `json:"sender,omitempty"`
-	Content rawContent `json:"content,omitempty"`
-	EventID string     `json:"event_id,omitempty"`
-	TS      int64      `json:"origin_server_ts,omitempty"`
-}
 
 var (
 	ErrWellKnownNotFound  = errors.New("well-known: not found")
@@ -526,26 +524,6 @@ func fetchWellKnown(host string) (string, error) {
 		return "", fmt.Errorf("well-known: %w: empty m.homeserver.base_url", ErrWellKnownMalformed)
 	}
 	return wk.Homeserver.BaseURL, nil
-}
-
-func extractMessageEvent(roomID string, raw json.RawMessage) *Event {
-	var ev rawEvent
-	if err := json.Unmarshal(raw, &ev); err != nil {
-		return nil
-	}
-	if ev.Type != "m.room.message" {
-		return nil
-	}
-	msg := Message{
-		EventID:   ev.EventID,
-		Sender:    ev.Sender,
-		Body:      ev.Content.Body,
-		MsgType:   ev.Content.MsgType,
-		RoomID:    roomID,
-		Timestamp: ev.TS,
-	}
-	data, _ := json.Marshal(msg)
-	return &Event{Type: "m.room.message", Data: data}
 }
 
 func (c *Client) SendMessage(roomID, text string) error {

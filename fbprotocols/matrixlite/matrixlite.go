@@ -100,16 +100,16 @@ func pollLoop(baseURL, token, user, password string) {
 		// ═══ SYNC ═══
 		var lastErr error
 		for {
-			events, err := client.Sync(30 * time.Second)
+			ms, err := client.Sync(30 * time.Second)
 			if err == nil {
 				client.SaveSyncState(&state)
 				state.Save()
-				for _, ev := range events {
-					var msg Message
-					if json.Unmarshal(ev.Data, &msg) == nil && msg.Body != "" {
-						log.Printf("matrixlite: <%s> %s: %s", msg.RoomID, msg.Sender, msg.Body)
+				for _, m := range ms {
+					if rid, _ := m["room_id"].(string); rid != "" {
+						log.Printf("matrixlite: event in room %s", rid)
 					}
-					if err := publish(ev.Data); err != nil {
+					data, _ := json.Marshal(m)
+					if err := publish(data); err != nil {
 						log.Printf("matrixlite: publish error: %v", err)
 					}
 				}
