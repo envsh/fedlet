@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	tunov        tun.Device
+	tunov         tun.Device
 	configuredIPs sync.Map
 )
 
@@ -27,8 +27,34 @@ var (
 sudo setcap cap_net_admin+eip main
 */
 
+func findAvailableUTUN() string {
+	out, err := exec.Command("/sbin/ifconfig", "-a").CombinedOutput()
+	if err != nil {
+		return "utun3"
+	}
+	used := make(map[int]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "utun") {
+			continue
+		}
+		name := strings.SplitN(line, ":", 2)[0]
+		name = strings.TrimPrefix(name, "utun")
+		num, err := strconv.Atoi(name)
+		if err != nil {
+			continue
+		}
+		used[num] = true
+	}
+	for i := 0; i < 256; i++ {
+		if !used[i] {
+			return fmt.Sprintf("utun%d", i)
+		}
+	}
+	return "utun3"
+}
+
 func initVirTun(keyFile string) error {
-	t, err := tun.CreateTUN("fedlet", 1500)
+	t, err := tun.CreateTUN(findAvailableUTUN(), 1900)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
 		log.Println("    On MacOS, sudo chown root:wheel main && sudo chmod u+s main")
@@ -63,6 +89,14 @@ func initVirTun(keyFile string) error {
 	return nil
 }
 
+func hasExistingIP(ifname string) bool {
+	out, err := exec.Command("/sbin/ifconfig", ifname).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "inet ")
+}
+
 func addIPToTun(ip string) error {
 	switch runtime.GOOS {
 	case "linux":
@@ -86,7 +120,11 @@ func addIPToTun(ip string) error {
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
-		out, err := exec.Command("ifconfig", ifname, "inet", ip, ip, "netmask", "255.255.255.0", "alias").CombinedOutput()
+		args := []string{ifname, "inet", ip, ip, "netmask", "255.255.255.0"}
+		if hasExistingIP(ifname) {
+			args = append(args, "alias")
+		}
+		out, err := exec.Command("/sbin/ifconfig", args...).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
 		}
