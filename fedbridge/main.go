@@ -2,15 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
-	"time"
-	"context"
 	"strings"
+	"time"
 
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbecho"
@@ -19,18 +19,19 @@ import (
 )
 
 var svccaps = serviceCapacities{}
+
 type serviceCapacities struct {
-	sendMessage bool
-	bookmark  bool
-	clipboard bool
-	sqliteStore bool
+	sendMessage    bool
+	bookmark       bool
+	clipboard      bool
+	sqliteStore    bool
 	joplinInstance bool
-	filesyncPoint bool
-	forignProxy bool
-	hasDE bool
-	langServer bool
-	aiagentServer bool
-	ocrServer bool
+	filesyncPoint  bool
+	forignProxy    bool
+	hasDE          bool
+	langServer     bool
+	aiagentServer  bool
+	ocrServer      bool
 }
 
 var publishViaHTTP bool = true
@@ -75,19 +76,20 @@ func main() {
 	flag.Parse()
 
 	initVirTun(cfg.KeyFile)
+	defer cleanupPFRules()
 
-		go func() {
-			if tunov == nil {
-				return
-			}
-			for {
-				board, err := p2put.CollectBoard()
-				if err == nil {
-					localPeerID = board.PeerID
-					hostPart := stringToHostPart(board.PeerID)
-					ip := vlanpfx + strconv.Itoa(hostPart)
-					localPeerIP = ip
-					log.Printf("virtun: computed IP from peer_id: %s", ip)
+	go func() {
+		if tunov == nil {
+			return
+		}
+		for {
+			board, err := p2put.CollectBoard()
+			if err == nil {
+				localPeerID = board.PeerID
+				hostPart := stringToHostPart(board.PeerID)
+				ip := vlanpfx + strconv.Itoa(hostPart)
+				localPeerIP = ip
+				log.Printf("virtun: computed IP from peer_id: %s", ip)
 				if err := setupSeedVirtIP(ip); err != nil {
 					log.Printf("virtun: %v", err)
 				} else {
@@ -140,13 +142,13 @@ func tunloop() {
 	log.Println(err)
 	if err == nil {
 	}
-	select{}
+	select {}
 }
 
 func waitPeerCome(srv *pbtunnel.DriftServer, peerid string) {
 	btime := time.Now()
 	for peerid == "" && usepeer != "" {
-		time.Sleep(2*time.Second)
+		time.Sleep(2 * time.Second)
 		pl := getPeerList()
 		for _, p := range pl {
 			if strings.HasSuffix(p.ID, usepeer) {
@@ -167,15 +169,15 @@ var vlanpfx = "10.0.0."
 func echoLoop() {
 	peerid := ""
 	for i := 0; ; i++ {
-		time.Sleep(8*time.Second)
+		time.Sleep(8 * time.Second)
 		msg := fmt.Sprintf("hello foo %v", i)
 
 		btime1 := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		ret, err := pbecho.Echo(peerid, msg, ctx)
-		log.Println(ret, err, p2put.IsPeerConnected(peerid, true)||p2put.IsPeerConnected(peerid, false), time.Since(btime1))
+		log.Println(ret, err, p2put.IsPeerConnected(peerid, true) || p2put.IsPeerConnected(peerid, false), time.Since(btime1))
 
-		time.Sleep(2*time.Second)
+		time.Sleep(2 * time.Second)
 		btime2 := time.Now()
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		// res, err := pbexec.Exec(peerid, "uptime && uname -a", ctx2)

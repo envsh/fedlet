@@ -53,6 +53,59 @@ func findAvailableUTUN() string {
 	return "utun3"
 }
 
+func setupPFRules() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	ifname, err := tunov.Name()
+	if err != nil {
+		log.Printf("pf: get tun name: %v", err)
+		return
+	}
+	out, err := exec.Command("./pf-darwin.sh", "setup", ifname, vlanpfx).CombinedOutput()
+	if err != nil {
+		log.Printf("pf: setup: %v\n%s", err, string(out))
+		return
+	}
+	log.Printf("pf: loaded rules for %s0/24 via %s", vlanpfx, ifname)
+}
+
+func cleanupPFRules() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	out, err := exec.Command("./pf-darwin.sh", "cleanup").CombinedOutput()
+	if err != nil {
+		log.Printf("pf: cleanup: %v\n%s", err, string(out))
+	}
+}
+
+// FUTURE: DIOCNATLOOK — recover original dst IP/port from pf state table
+// After accept(), query pf NAT table via /dev/pf ioctl:
+//
+//   import "golang.org/x/sys/unix"
+//
+//   func lookupOriginalDst(conn net.Conn) (net.IP, int, error) {
+//        // 1. get conn's fd via unix.Getsockname or syscall.Getpeername equivalent
+//        // 2. open /dev/pf, issue DIOCNATLOOK (IOWR('D',31, struct pf_natlook))
+//        // 3. populate lookup: .saddr=clientIP .sport=clientPort .dport=localPort .proto=IPPROTO_TCP .direction=PF_IN
+//        // 4. ioctl returns .rdaddr=originalDstIP .rdport=originalDstPort
+//        // Reference: sys/net/pfvar.h on macOS
+//        // Used by: Squid, Tailscale (tun_macos.go)
+//   }
+//
+//   struct pf_natlook (from Apple's pfvar.h):
+//       struct pf_addr saddr;     // source address of packet
+//       struct pf_addr daddr;     // destination address (127.0.0.1 after rdr)
+//       struct pf_addr rdaddr;    // original destination (10.0.0.97 before rdr)
+//       u_int16_t sport;          // source port
+//       u_int16_t dport;          // destination port (after rdr)
+//       u_int16_t rdport;         // original destination port
+//       u_int8_t  proto;          // IPPROTO_TCP / IPPROTO_UDP
+//       u_int8_t  direction;      // PF_IN / PF_OUT
+//       sa_family_t af;           // AF_INET
+//   }
+
 func initVirTun(keyFile string) error {
 	t, err := tun.CreateTUN(findAvailableUTUN(), 1900)
 	if err != nil {
@@ -85,6 +138,10 @@ func initVirTun(keyFile string) error {
 			}
 		}
 	}()
+
+	if runtime.GOOS == "darwin" {
+		setupPFRules()
+	}
 
 	return nil
 }
