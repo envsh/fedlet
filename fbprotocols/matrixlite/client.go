@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const slidingSyncEndpoint = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
@@ -544,6 +546,87 @@ func (c *Client) SendMessage(roomID, text string) error {
 		raw, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("send: status %d: %s", resp.StatusCode, string(raw))
 	}
+	return nil
+}
+
+func (c *Client) uploadMedia(data []byte, contentType string) (string, error) {
+	u := c.baseURL + "/_matrix/media/v3/upload"
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("matrixlite: upload media req: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	c.setAuth(req)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("matrixlite: upload media: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("matrixlite: upload media HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+	var result struct {
+		ContentURI string `json:"content_uri"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("matrixlite: upload media decode: %w: %s", err, string(raw))
+	}
+	if result.ContentURI == "" {
+		return "", fmt.Errorf("matrixlite: upload media empty content_uri: %s", string(raw))
+	}
+	log.Printf("matrixlite: uploaded media -> %s (%s, %d bytes)", result.ContentURI, contentType, len(data))
+	return result.ContentURI, nil
+}
+
+func (c *Client) SendFileMessage(roomID string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+	mxc, err := c.uploadMedia(filedata, fileinfo.MimeType)
+	if err != nil {
+		return err
+	}
+
+	msgtype := "m.file"
+	switch fileinfo.MsgType {
+	case "image":
+		msgtype = "m.image"
+	case "video":
+		msgtype = "m.video"
+	case "audio":
+		msgtype = "m.audio"
+	}
+
+	info := map[string]any{
+		"mimetype": fileinfo.MimeType,
+		"size":     fileinfo.Size,
+	}
+	if fileinfo.Width > 0 {
+		info["w"] = fileinfo.Width
+		info["h"] = fileinfo.Height
+	}
+	content := map[string]any{
+		"body":    fileinfo.Filename,
+		"msgtype": msgtype,
+		"url":     mxc,
+		"info":    info,
+	}
+
+	txnID := atomic.AddInt64(&c.txnID, 1)
+	u := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%d",
+		c.baseURL, url.PathEscape(roomID), txnID)
+	body, _ := json.Marshal(content)
+
+	resp, err := c.doRequest(http.MethodPut, u, body)
+	if err != nil {
+		return fmt.Errorf("matrixlite: send file msg: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("matrixlite: send file msg HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+	log.Printf("matrixlite: sent file %s (%s) to %s", fileinfo.Filename, mxc, roomID)
 	return nil
 }
 

@@ -303,7 +303,7 @@ func LastErrs() []error {
 	return out
 }
 
-func Send(roomID, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	if roomID == "" || msg == "" {
 		return fmt.Errorf("matrixlite: empty roomID or message")
 	}
@@ -312,6 +312,12 @@ func Send(roomID, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInf
 	muClient.Unlock()
 	if c == nil {
 		return fmt.Errorf("matrixlite: no active session")
+	}
+	if len(filedata) > 0 {
+		if fileinfo == nil {
+			return fmt.Errorf("matrixlite: filedata present but fileinfo is nil")
+		}
+		return c.SendFileMessage(roomID, filedata, fileinfo)
 	}
 	return c.SendMessage(roomID, msg)
 }

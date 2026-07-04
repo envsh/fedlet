@@ -54,49 +54,6 @@ func TestParseAuthTrailingColon(t *testing.T) {
 	}
 }
 
-func TestExtractMessageEvent(t *testing.T) {
-	raw := json.RawMessage(`{"type":"m.room.message","sender":"@alice:example.com","content":{"body":"hello","msgtype":"m.text"},"event_id":"$abc","origin_server_ts":1712345678000}`)
-	ev := extractMessageEvent("!room:example.com", raw)
-	if ev == nil {
-		t.Fatal("expected event")
-	}
-	if ev.Type != "m.room.message" {
-		t.Errorf("type: got %q", ev.Type)
-	}
-	var msg Message
-	if err := json.Unmarshal(ev.Data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if msg.Sender != "@alice:example.com" {
-		t.Errorf("sender: got %q", msg.Sender)
-	}
-	if msg.Body != "hello" {
-		t.Errorf("body: got %q", msg.Body)
-	}
-	if msg.RoomID != "!room:example.com" {
-		t.Errorf("room: got %q", msg.RoomID)
-	}
-	if msg.MsgType != "m.text" {
-		t.Errorf("msgtype: got %q", msg.MsgType)
-	}
-}
-
-func TestExtractMessageEventNonMessage(t *testing.T) {
-	raw := json.RawMessage(`{"type":"m.room.member","sender":"@alice:example.com","content":{"membership":"join"}}`)
-	ev := extractMessageEvent("!room:example.com", raw)
-	if ev != nil {
-		t.Error("expected nil for non-message event")
-	}
-}
-
-func TestExtractMessageEventEncrypted(t *testing.T) {
-	raw := json.RawMessage(`{"type":"m.room.encrypted","sender":"@bob:example.com","content":{"algorithm":"m.megolm.v1.aes-sha2"}}`)
-	ev := extractMessageEvent("!room:example.com", raw)
-	if ev != nil {
-		t.Error("expected nil for encrypted event")
-	}
-}
-
 func TestMessageJSONRoundtrip(t *testing.T) {
 	msg := Message{
 		EventID:   "$abc",
@@ -198,12 +155,22 @@ func TestSlidingSyncExtract(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	var msg Message
-	if err := json.Unmarshal(events[0].Data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	ev := events[0]
+	if ev["type"] != "m.room.message" {
+		t.Errorf("type: got %v", ev["type"])
 	}
-	if msg.Body != "hi" {
-		t.Errorf("body: got %q", msg.Body)
+	if ev["sender"] != "@alice:example.com" {
+		t.Errorf("sender: got %v", ev["sender"])
+	}
+	content, _ := ev["content"].(map[string]any)
+	if content["body"] != "hi" {
+		t.Errorf("body: got %v", content["body"])
+	}
+	if content["msgtype"] != "m.text" {
+		t.Errorf("msgtype: got %v", content["msgtype"])
+	}
+	if ev["room_id"] != "!room:example.com" {
+		t.Errorf("room: got %v", ev["room_id"])
 	}
 	if c.slidingPos != "5" {
 		t.Errorf("pos: got %q", c.slidingPos)
@@ -235,12 +202,22 @@ func TestNormalSyncExtract(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	var msg Message
-	if err := json.Unmarshal(events[0].Data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	ev := events[0]
+	if ev["type"] != "m.room.message" {
+		t.Errorf("type: got %v", ev["type"])
 	}
-	if msg.Body != "hey" {
-		t.Errorf("body: got %q", msg.Body)
+	if ev["sender"] != "@bob:example.com" {
+		t.Errorf("sender: got %v", ev["sender"])
+	}
+	content, _ := ev["content"].(map[string]any)
+	if content["body"] != "hey" {
+		t.Errorf("body: got %v", content["body"])
+	}
+	if content["msgtype"] != "m.text" {
+		t.Errorf("msgtype: got %v", content["msgtype"])
+	}
+	if ev["room_id"] != "!room:example.com" {
+		t.Errorf("room: got %v", ev["room_id"])
 	}
 	if c.nextBatch != "s2" {
 		t.Errorf("next_batch: got %q", c.nextBatch)
@@ -274,12 +251,22 @@ func TestSlidingSyncFallbackToNormal(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event got %d", len(events))
 	}
-	var msg Message
-	if err := json.Unmarshal(events[0].Data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	ev := events[0]
+	if ev["type"] != "m.room.message" {
+		t.Errorf("type: got %v", ev["type"])
 	}
-	if msg.Body != "fallback" {
-		t.Errorf("body: got %q", msg.Body)
+	if ev["sender"] != "@bob:example.com" {
+		t.Errorf("sender: got %v", ev["sender"])
+	}
+	content, _ := ev["content"].(map[string]any)
+	if content["body"] != "fallback" {
+		t.Errorf("body: got %v", content["body"])
+	}
+	if content["msgtype"] != "m.text" {
+		t.Errorf("msgtype: got %v", content["msgtype"])
+	}
+	if ev["room_id"] != "!room:example.com" {
+		t.Errorf("room: got %v", ev["room_id"])
 	}
 }
 

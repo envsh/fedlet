@@ -27,6 +27,11 @@ func publish(data []byte) error {
 	return pubfn_(data)
 }
 
+type pendingDataResult struct {
+	Data json.RawMessage
+	Err  error
+}
+
 var (
 	pubfn_         func([]byte) error
 	muGomuks       sync.Mutex
@@ -36,6 +41,8 @@ var (
 
 	pendingMu    sync.Mutex
 	pendingSends = map[int]chan error{}
+	pendingDataMu sync.Mutex
+	pendingData  = map[int]chan pendingDataResult{}
 )
 
 func SetPublishInfo(pubfn func([]byte) error) {
@@ -194,6 +201,19 @@ func gomuksEventLoop(c *websocket.Conn) {
 					}
 					continue
 				}
+				pendingDataMu.Lock()
+				chData, dataOK := pendingData[resp.RequestID]
+				pendingDataMu.Unlock()
+				if dataOK {
+					if resp.Command == "error" {
+						var errStr string
+						json.Unmarshal(resp.Data, &errStr)
+						chData <- pendingDataResult{Err: fmt.Errorf("gomuks: upload_media error: %s", errStr)}
+					} else {
+						chData <- pendingDataResult{Data: resp.Data}
+					}
+					continue
+				}
 				pendingMu.Lock()
 				ch, ok := pendingSends[resp.RequestID]
 				pendingMu.Unlock()
@@ -231,11 +251,132 @@ func gomuksEventLoop(c *websocket.Conn) {
 	}
 }
 
-func Send(roomID, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func sendGomuksUpload(conn *websocket.Conn, seq int, filedata []byte, fileinfo *fbshared.MediaDataInfo) (json.RawMessage, error) {
+	tmpFile, err := os.CreateTemp("", "fedlet-gomuks-upload-*")
+	if err != nil {
+		return nil, fmt.Errorf("gomuks: create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(filedata); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("gomuks: write temp file: %w", err)
+	}
+	tmpFile.Close()
+	if _, err := os.Stat(tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("gomuks: temp file stat: %w", err)
+	}
+	defer os.Remove(tmpPath)
+
+	params := map[string]any{
+		"path":     tmpPath,
+		"filename": fileinfo.Filename,
+		"encrypt":  true,
+	}
+	cmd := map[string]any{
+		"command":    "upload_media",
+		"request_id": seq,
+		"data":       params,
+	}
+	data, _ := json.Marshal(cmd)
+
+	ch := make(chan pendingDataResult, 1)
+	pendingDataMu.Lock()
+	pendingData[seq] = ch
+	pendingDataMu.Unlock()
+	defer func() {
+		pendingDataMu.Lock()
+		delete(pendingData, seq)
+		pendingDataMu.Unlock()
+	}()
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return nil, fmt.Errorf("gomuks: upload_media write: %w", err)
+	}
+
+	select {
+	case result := <-ch:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return result.Data, nil
+	case <-time.After(60 * time.Second):
+		return nil, fmt.Errorf("gomuks: upload_media timeout")
+	}
+}
+
+func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	log.Printf("gomuks: Send roomID=%q msg=%q msgType=%q", roomID, msg, msgType)
 	if roomID == "" || msg == "" {
 		return fmt.Errorf("gomuks: empty roomID or message")
 	}
+
+	if len(filedata) > 0 {
+		if fileinfo == nil {
+			return fmt.Errorf("gomuks: filedata present but fileinfo is nil")
+		}
+		muGomuks.Lock()
+		conn := gomuksConn
+		gomuksSeq++
+		seq := gomuksSeq
+		muGomuks.Unlock()
+		if conn == nil {
+			return fmt.Errorf("gomuks: not connected")
+		}
+
+		content, err := sendGomuksUpload(conn, seq, filedata, fileinfo)
+		if err != nil {
+			return fmt.Errorf("gomuks: upload: %w", err)
+		}
+
+		var mapped map[string]any
+		if err := json.Unmarshal(content, &mapped); err != nil {
+			return fmt.Errorf("gomuks: upload_media response decode: %w", err)
+		}
+
+		muGomuks.Lock()
+		gomuksSeq++
+		seq = gomuksSeq
+		muGomuks.Unlock()
+
+		cmd := map[string]any{
+			"command":    "send_message",
+			"request_id": seq,
+			"data": map[string]any{
+				"room_id":      roomID,
+				"text":         msg,
+				"base_content": mapped,
+			},
+		}
+		data, _ := json.Marshal(cmd)
+
+		ch := make(chan error, 1)
+		pendingMu.Lock()
+		pendingSends[seq] = ch
+		pendingMu.Unlock()
+		defer func() {
+			pendingMu.Lock()
+			delete(pendingSends, seq)
+			pendingMu.Unlock()
+		}()
+
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			return fmt.Errorf("gomuks: send file msg write: %w", err)
+		}
+
+		select {
+		case err := <-ch:
+			if err != nil {
+				return fmt.Errorf("gomuks: send file: %w", err)
+			}
+			log.Printf("gomuks: sent file %s to %s", fileinfo.Filename, roomID)
+			return nil
+		case <-time.After(10 * time.Second):
+			return fmt.Errorf("gomuks: send file msg timeout")
+		}
+	}
+
 	muGomuks.Lock()
 	conn := gomuksConn
 	gomuksSeq++
