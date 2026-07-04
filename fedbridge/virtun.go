@@ -118,6 +118,8 @@ func initVirTun(keyFile string) error {
 		log.Println("tundev created", ifname)
 	}
 
+	go tunFixChecksums()
+
 	go func() {
 		if tunov == nil {
 			return
@@ -232,4 +234,131 @@ func computeHostPart(keyFile string) int {
 		}
 	}
 	return 2
+}
+
+// tunFixChecksums completes L4 checksums for self-addressed TCP/UDP packets
+// on the macOS utun hairpin path.
+//
+// macOS routes self-addressed traffic as loopback, deferring the transport TX
+// checksum — but the point-to-point utun egresses the packet with only the
+// pseudo-header partial checksum. Recomputing the full checksum before
+// re-injection is the confirmed fix.
+//
+// References:
+//
+//	fips PR #117 / commit 225fab2 — "fix(tun): complete L4 checksum on
+//	hairpinned self-traffic (macOS)".  Confirmed the exact symptom: SYN/SYN-ACK
+//	get through (MSS clamping rewrites checksum), bare ACK/data/FIN are silently
+//	dropped.  Fix: recompute_transport_checksum() before re-injecting.
+//	https://github.com/jmcorgan/fips/pull/117
+//
+//	StackOverflow #76876059 — "Why packets seem not relayed to target
+//	applications using TUN interface?"  "On utun interfaces, checksum validation
+//	is absolutely required for avoiding that kernel discard packets."
+//	https://stackoverflow.com/questions/76876059
+//
+//	WireGuard-go tun_darwin.go — macOS utun reads/writes with 4-byte AF_INET
+//	prefix.  Read strips it, Write prepends it.  Used as reference for the
+//	buffer layout with offset=4.
+//	https://git.zx2c4.com/wireguard-go/tree/tun/tun_darwin.go
+func tunFixChecksums() {
+	if tunov == nil {
+		return
+	}
+	buf := make([]byte, 2004)
+	for {
+		n, err := tunov.Read(buf, 4)
+		if err != nil || n < 20 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		pkt := buf[4 : 4+n]
+
+		if pkt[0]>>4 != 4 {
+			tunov.Write(buf[:4+n], 4)
+			continue
+		}
+		ipHdrLen := (pkt[0] & 0x0F) * 4
+		if len(pkt) < int(ipHdrLen) {
+			continue
+		}
+		proto := pkt[9]
+
+		pkt[10], pkt[11] = 0, 0
+		csum := onesComplementSum(pkt[:ipHdrLen])
+		pkt[10] = byte(csum >> 8)
+		pkt[11] = byte(csum & 0xFF)
+
+		switch proto {
+		case 6:
+			off := int(ipHdrLen)
+			if len(pkt) < off+20 {
+				break
+			}
+			totalLen := uint16(len(pkt) - off)
+			pkt[off+16], pkt[off+17] = 0, 0
+			psum := pseudoChecksum(pkt[12:16], pkt[16:20], 6, totalLen)
+			csum = onesComplementSumFold(pkt[off:], psum)
+			pkt[off+16] = byte(csum >> 8)
+			pkt[off+17] = byte(csum & 0xFF)
+
+		case 17:
+			off := int(ipHdrLen)
+			if len(pkt) < off+8 {
+				break
+			}
+			totalLen := uint16(len(pkt) - off)
+			pkt[off+6], pkt[off+7] = 0, 0
+			psum := pseudoChecksum(pkt[12:16], pkt[16:20], 17, totalLen)
+			csum = onesComplementSumFold(pkt[off:], psum)
+			pkt[off+6] = byte(csum >> 8)
+			pkt[off+7] = byte(csum & 0xFF)
+		}
+
+		tunov.Write(buf[:4+n], 4)
+	}
+}
+
+// onesComplementSum computes an RFC 1071 one's complement Internet checksum
+// over data.  Reference: WireGuard-go tun/checksum.go checksum().
+func onesComplementSum(data []byte) uint16 {
+	var sum uint32
+	for i := 0; i < len(data)-1; i += 2 {
+		sum += uint32(data[i])<<8 | uint32(data[i+1])
+	}
+	if len(data)%2 == 1 {
+		sum += uint32(data[len(data)-1]) << 8
+	}
+	for sum > 0xffff {
+		sum = (sum >> 16) + (sum & 0xffff)
+	}
+	return ^uint16(sum)
+}
+
+// pseudoChecksum returns the RFC 1071 pseudo-header sum for L4 checksum
+// computation.  Reference: WireGuard-go tun/checksum.go
+// pseudoHeaderChecksumNoFold().
+func pseudoChecksum(src, dst []byte, proto byte, totalLen uint16) uint32 {
+	return (uint32(src[0])<<8 | uint32(src[1])) +
+		(uint32(src[2])<<8 | uint32(src[3])) +
+		(uint32(dst[0])<<8 | uint32(dst[1])) +
+		(uint32(dst[2])<<8 | uint32(dst[3])) +
+		uint32(proto) + uint32(totalLen)
+}
+
+// onesComplementSumFold continues an RFC 1071 checksum computation with an
+// existing accumulator (from pseudoChecksum).  Reference: WireGuard-go
+// tun/checksum.go checksum().
+func onesComplementSumFold(data []byte, initial uint32) uint16 {
+	var sum uint32 = initial
+	for i := 0; i < len(data)-1; i += 2 {
+		sum += uint32(data[i])<<8 | uint32(data[i+1])
+	}
+	if len(data)%2 == 1 {
+		sum += uint32(data[len(data)-1]) << 8
+	}
+	for sum > 0xffff {
+		sum = (sum >> 16) + (sum & 0xffff)
+	}
+	return ^uint16(sum)
 }
