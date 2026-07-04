@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 func publish(data []byte) error {
@@ -31,7 +33,7 @@ func SetPublishInfo(pubfn func([]byte) error) {
 
 var globalClientID string
 
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	ctx := context.Background()
 	token, err := getToken(ctx, globalClientID)
 	if err != nil {

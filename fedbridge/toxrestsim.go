@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/kitech/touse/oai"
 )
 
@@ -378,11 +379,44 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var fileData []byte
+	var fileName string
+	const maxFileSize = 5 * 1024 * 1024
+
+	if strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			writeErr(w, "failed to parse multipart: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err == nil {
+			fileData, _ = io.ReadAll(file)
+			fileName = header.Filename
+			file.Close()
+		}
+	}
+
+	if len(fileData) > maxFileSize {
+		writeErr(w, "file too large (max 5MB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	var fileInfo *fbshared.MediaDataInfo
+	if len(fileData) > 0 {
+		info := getMediaDataInfo(fileData, fileName)
+		fileInfo = &info
+	}
+
 	chatType := r.FormValue("type")
 	idStr := r.FormValue("id")
 	message := r.FormValue("message")
 
-	if chatType == "" || idStr == "" || message == "" {
+	if message == "" && len(fileData) > 0 {
+		message = fileName
+	}
+
+	if chatType == "" || idStr == "" || (message == "" && len(fileData) == 0) {
+		log.Printf("toxrestsim: POST /api/messages/send: missing params type=%q id=%q message=%q", chatType, idStr, message)
 		writeErr(w, "missing required parameters: type, id, message", http.StatusBadRequest)
 		return
 	}
@@ -402,11 +436,10 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	simEvents = append(simEvents, e)
 	simMu.Unlock()
 
-	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q event_id=%d",
-		chatType, idStr, message, e.ID)
+	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q file=%q event_id=%d",
+		chatType, idStr, message, fileName, e.ID)
 
-	log.Printf("toxrestsim: dispatching type=%q id=%q message=%q", chatType, idStr, message)
-	if err := DispatchSend(chatType, idStr, message, chatType); err != nil {
+	if err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo); err != nil {
 		log.Printf("toxrestsim: dispatch error: %v", err)
 		writeErr(w, err.Error(), http.StatusInternalServerError)
 		return

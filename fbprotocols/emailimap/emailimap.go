@@ -35,6 +35,8 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/transform"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 type Config struct {
@@ -744,7 +746,7 @@ func deriveFrom(username string) string {
 	return username + "@unknown"
 }
 
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("emailimap: empty to or message")
 	}

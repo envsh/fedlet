@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 var (
@@ -126,7 +128,7 @@ func pollLoop() {
 	}
 }
 
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if msg == "" {
 		return fmt.Errorf("misskey: empty message")
 	}

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 var pubfn_ func([]byte) error
@@ -210,7 +212,7 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 	}
 }
 
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("irclounge: empty target or message")
 	}

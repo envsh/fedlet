@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 /////
@@ -187,7 +189,7 @@ func sendToOldAPI(to, msg, msgType string) (int, []byte, error) {
 //   msgType: 联系人类型常量（"unktox_friend"/"unktox_conference"/"unktox_group"），
 //            新 API 直接 POST /api/messages/send?type={msgType}&id={to}&message={msg}，
 //            404 时 fallback 到旧 API，按 msgType 映射到不同端点和参数名
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("toxoverhttp: empty to or message")
 	}

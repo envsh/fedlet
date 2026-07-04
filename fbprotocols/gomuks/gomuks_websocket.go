@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/gorilla/websocket"
 )
 
@@ -230,7 +231,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 	}
 }
 
-func Send(roomID, msg, msgType string) error {
+func Send(roomID, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	log.Printf("gomuks: Send roomID=%q msg=%q msgType=%q", roomID, msg, msgType)
 	if roomID == "" || msg == "" {
 		return fmt.Errorf("gomuks: empty roomID or message")

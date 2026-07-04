@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 func publish(data []byte) error {
@@ -505,7 +507,7 @@ func LastErrs() []error {
 	return out
 }
 
-func Send(to, msg, msgType string) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("irccloud: empty to or message")
 	}

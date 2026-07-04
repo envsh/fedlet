@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 var (
@@ -301,7 +303,7 @@ func LastErrs() []error {
 	return out
 }
 
-func Send(roomID, msg, msgType string) error {
+func Send(roomID, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if roomID == "" || msg == "" {
 		return fmt.Errorf("matrixlite: empty roomID or message")
 	}
