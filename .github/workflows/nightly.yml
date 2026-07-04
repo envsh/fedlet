@@ -1,0 +1,119 @@
+name: Nightly Build
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Remove local replace directives
+        working-directory: fedbridge
+        run: |
+          go mod edit -dropreplace github.com/envsh/libp2px
+          go mod edit -dropreplace github.com/envsh/fedlet
+
+      - name: Build
+        working-directory: fedbridge
+        run: go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          EXE="main${{ runner.os == 'Windows' && '.exe' || '' }}"
+          cp "fedbridge/$EXE" dist/
+          cd dist
+          zip -j "fedbridge-${{ runner.os }}.zip" "$EXE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedbridge-${{ runner.os }}
+          path: dist/fedbridge-${{ runner.os }}.zip
+
+  android:
+    strategy:
+      matrix:
+        arch: [arm64, armv7]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - uses: nathantannar4/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: false
+
+      - name: Remove local replace directives
+        working-directory: fedbridge
+        run: |
+          go mod edit -dropreplace github.com/envsh/libp2px
+          go mod edit -dropreplace github.com/envsh/fedlet
+
+      - name: Build for ${{ matrix.arch }}
+        working-directory: fedbridge
+        run: |
+          NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CC=$NDK/bin/aarch64-linux-android23-clang \
+            CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+            go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main.arm64
+          else
+            CC=$NDK/bin/armv7a-linux-androideabi23-clang \
+            CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
+            go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main.armv7
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          EXE="main.${{ matrix.arch }}"
+          cp "fedbridge/$EXE" dist/
+          cd dist
+          zip -j "fedbridge-android-${{ matrix.arch }}.zip" "$EXE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedbridge-android-${{ matrix.arch }}
+          path: dist/fedbridge-android-${{ matrix.arch }}.zip
+
+  release:
+    needs: [build, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create/update nightly release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: nightly
+          name: Nightly Build
+          prerelease: true
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: fedbridge-*/*.zip
