@@ -408,7 +408,12 @@ func poll(cfg Config) {
 				log.Printf("outlook: poll %s: %v", folders[i].Name, err)
 				pushError(err)
 				if strings.Contains(err.Error(), "HTTP 401") {
-					log.Printf("outlook: poll %s: token expired, forcing refresh", folders[i].Name)
+					if strings.Contains(err.Error(), "JWT is not well formed") {
+						log.Printf("outlook: poll %s: token malformed, clearing for re-authentication", folders[i].Name)
+						tok = nil
+					} else {
+						log.Printf("outlook: poll %s: token expired, refreshing", folders[i].Name)
+					}
 					token, _ = getToken(ctx, cfg.ClientID)
 				}
 				continue

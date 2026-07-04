@@ -106,7 +106,7 @@ func pollLoop(baseURL, token, user, password string) {
 				state.Save()
 				for _, m := range ms {
 					if rid, _ := m["room_id"].(string); rid != "" {
-						log.Printf("matrixlite: event in room %s", rid)
+						log.Printf("matrixlite: event in room %s, msgtype %s", rid, rawEventMsgtype(m))
 					}
 					data, _ := json.Marshal(m)
 					if err := publish(data); err != nil {
@@ -322,4 +322,10 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 		return nil, "", fmt.Errorf("matrixlite: not connected")
 	}
 	return c.downloadMedia(mxcURL)
+}
+
+func rawEventMsgtype(m map[string]any) string {
+	content, _ := m["content"].(map[string]any)
+	mt, _ := content["msgtype"].(string)
+	return mt
 }
