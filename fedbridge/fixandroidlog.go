@@ -1,17 +1,16 @@
+//go:build android
+
 package main
 
 import (
 	"log"
 	"os"
-	"runtime"
 	"syscall"
 )
 
+// 在 Android 上，Dup3 比 Dup2 更通用——所有 Android 架构都支持 Dup3（内核 ≥ 2.6.27）。
 func init() {
-	if runtime.GOOS != "android" {
-		return
-	}
-	syscall.Dup2(0, 1)
-	syscall.Dup2(0, 2)
+	syscall.Dup3(0, 1, 0)
+	syscall.Dup3(0, 2, 0)
 	log.SetOutput(os.Stderr)
 }
