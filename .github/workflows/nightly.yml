@@ -59,7 +59,7 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - uses: nathantannar4/setup-ndk@v1
+      - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25c
           add-to-path: false

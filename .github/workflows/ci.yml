@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -109,3 +109,43 @@ jobs:
         with:
           name: fedbridge-android-${{ matrix.arch }}
           path: fedbridge/main.${{ matrix.arch }}
+
+  bleed:
+    needs: [build, android]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Debug artifact structure
+        shell: bash
+        run: ls -laR
+
+      - name: Prepare release binaries
+        shell: bash
+        run: |
+          mkdir -p release
+          for d in fedbridge-*/; do
+            dname="${d%/}"
+            case "$dname" in
+              fedbridge-Linux)   cp "$dname"/main        release/fedbridge-bleed-linux-amd64 ;;
+              fedbridge-macOS)   cp "$dname"/main        release/fedbridge-bleed-darwin-arm64 ;;
+              fedbridge-Windows) cp "$dname"/main.exe    release/fedbridge-bleed-windows-amd64.exe ;;
+              fedbridge-android-arm64) cp "$dname"/main.arm64 release/fedbridge-bleed-android-arm64 ;;
+              fedbridge-android-armv7) cp "$dname"/main.armv7 release/fedbridge-bleed-android-armv7 ;;
+              *) echo "skipping unknown artifact: $dname" ;;
+            esac
+          done
+
+      - name: Create/update bleed release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: bleed
+          name: Bleeding Edge
+          prerelease: true
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: release/*
