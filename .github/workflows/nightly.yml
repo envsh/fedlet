@@ -11,7 +11,19 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            goarch: amd64
+            arch-suffix: ""
+          - os: macos-latest
+            goarch: arm64
+            arch-suffix: ""
+          - os: windows-latest
+            goarch: amd64
+            arch-suffix: ""
+          - os: windows-latest
+            goarch: "386"
+            arch-suffix: "-x86"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -21,30 +33,36 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Remove local replace directives
+      - name: Checkout libp2px dependency
+        uses: actions/checkout@v4
+        with:
+          repository: envsh/libp2px
+          path: libp2px
+
+      - name: Fix replace path for CI
         working-directory: fedbridge
-        run: |
-          go mod edit -dropreplace github.com/envsh/libp2px
-          go mod edit -dropreplace github.com/envsh/fedlet
+        run: go mod edit -replace github.com/envsh/libp2px=../libp2px
+
+      - name: Remove go.work for CI
+        shell: bash
+        working-directory: fedbridge
+        run: rm -f go.work go.work.sum
+
+      - name: Install X11 dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
 
       - name: Build
+        env:
+          GOARCH: ${{ matrix.goarch }}
         working-directory: fedbridge
         run: go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main
 
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p dist
-          EXE="main${{ runner.os == 'Windows' && '.exe' || '' }}"
-          cp "fedbridge/$EXE" dist/
-          cd dist
-          zip -j "fedbridge-${{ runner.os }}.zip" "$EXE"
-
-      - name: Upload artifact
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: fedbridge-${{ runner.os }}
-          path: dist/fedbridge-${{ runner.os }}.zip
+          name: fedbridge-${{ runner.os }}${{ matrix.arch-suffix }}
+          path: fedbridge/main
 
   android:
     strategy:
@@ -64,11 +82,20 @@ jobs:
           ndk-version: r25c
           add-to-path: false
 
-      - name: Remove local replace directives
+      - name: Checkout libp2px dependency
+        uses: actions/checkout@v4
+        with:
+          repository: envsh/libp2px
+          path: libp2px
+
+      - name: Fix replace path for CI
         working-directory: fedbridge
-        run: |
-          go mod edit -dropreplace github.com/envsh/libp2px
-          go mod edit -dropreplace github.com/envsh/fedlet
+        run: go mod edit -replace github.com/envsh/libp2px=../libp2px
+
+      - name: Remove go.work for CI
+        shell: bash
+        working-directory: fedbridge
+        run: rm -f go.work go.work.sum
 
       - name: Build for ${{ matrix.arch }}
         working-directory: fedbridge
@@ -84,20 +111,11 @@ jobs:
             go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main.armv7
           fi
 
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p dist
-          EXE="main.${{ matrix.arch }}"
-          cp "fedbridge/$EXE" dist/
-          cd dist
-          zip -j "fedbridge-android-${{ matrix.arch }}.zip" "$EXE"
-
-      - name: Upload artifact
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: fedbridge-android-${{ matrix.arch }}
-          path: dist/fedbridge-android-${{ matrix.arch }}.zip
+          path: fedbridge/main.${{ matrix.arch }}
 
   release:
     needs: [build, android]
@@ -108,6 +126,24 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: Prepare release binaries
+        shell: bash
+        run: |
+          mkdir -p release
+          for d in fedbridge-*/; do
+            dname="${d%/}"
+            case "$dname" in
+              fedbridge-Linux)   cp "$dname"/main        release/fedbridge-nightly-linux-amd64 ;;
+              fedbridge-macOS)   cp "$dname"/main        release/fedbridge-nightly-darwin-arm64 ;;
+              fedbridge-Windows) cp "$dname"/main    release/fedbridge-nightly-windows-amd64.exe ;;
+              fedbridge-Windows-x86) cp "$dname"/main    release/fedbridge-nightly-windows-x86.exe ;;
+              fedbridge-android-arm64) cp "$dname"/main.arm64 release/fedbridge-nightly-android-arm64 ;;
+              fedbridge-android-armv7) cp "$dname"/main.armv7 release/fedbridge-nightly-android-armv7 ;;
+              *) echo "skipping unknown artifact: $dname" ;;
+            esac
+          done
+          gzip -9 release/*
+
       - name: Create/update nightly release
         uses: ncipollo/release-action@v1
         with:
@@ -116,4 +152,4 @@ jobs:
           prerelease: true
           allowUpdates: true
           removeArtifacts: true
-          artifacts: fedbridge-*/*.zip
+          artifacts: release/*
