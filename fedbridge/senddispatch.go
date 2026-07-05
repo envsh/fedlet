@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,16 +117,27 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 
 		resp, err := htcli.Do(req)
 		err0 = err
+		var scc string
 		if resp != nil {
 			slurp, _ := io.ReadAll(resp.Body)
+			scc = string(slurp)
 			resp.Body.Close()
 			if len(slurp) > 99 {
 				slurp = slurp[:99]
 			}
-			log.Println("rethttp:", string(slurp))
+			log.Println("rethttp:", string(slurp), peerid)
+			// raw proxy, real status line in body
+			// 404 page not found ...
+			// {"message_id":6}
+			if !strings.HasPrefix(scc, "200 ") &&
+				!strings.HasPrefix(scc, "{") {
+				// err0 = fmt.Errorf(scc)
+			}
 		}
 		if err0 != nil {
 			log.Println(err0, peerid)
+		} else if resp.StatusCode != 200 {
+			log.Println(resp.StatusCode, scc, peerid)
 		} else {
 			break
 		}
