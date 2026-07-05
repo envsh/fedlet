@@ -154,6 +154,7 @@ jobs:
               *) echo "skipping unknown artifact: $dname" ;;
             esac
           done
+          gzip -9 release/*
 
       - name: Create/update bleed release
         uses: ncipollo/release-action@v1
