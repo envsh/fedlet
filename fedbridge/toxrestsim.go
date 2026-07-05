@@ -373,6 +373,7 @@ func handleSwitchPeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"peer": simPeer})
 }
 
+// POST /api/messages/send
 func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -440,9 +441,19 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		chatType, idStr, message, fileName, e.ID)
 
 	if err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo); err != nil {
-		log.Printf("toxrestsim: dispatch error: %v", err)
-		writeErr(w, err.Error(), http.StatusInternalServerError)
-		return
+		log.Printf("toxrestsim: dispatch send error: %v", err)
+		
+		// retry ForeachSend
+		if strings.Contains(err.Error(), "not connected") {
+			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo)
+			if err != nil {
+				log.Printf("toxrestsim: foreach send error: %v", err)
+			}
+		}
+		if err != nil {
+			writeErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeJSON(w, map[string]interface{}{"message_id": e.ID})

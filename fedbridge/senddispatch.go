@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
+	// "strings"
+	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
+	"github.com/envsh/libp2px/pbtunnel"
+	// "github.com/envsh/libp2px/p2put"
 )
 
 type forwardReq struct {
@@ -68,3 +76,59 @@ const (
 	TypeMisskeyNote   = "misskey_note"
 	TypeOutlookEvent  = "outlook_event"
 )
+
+// return when first success
+func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+	var err0 error
+	btime := time.Now()
+	pl := getPeerList()
+	if len(pl) == 0 {
+		return fmt.Errorf("foreachsend: no peers available")
+	}
+	for _, p := range pl {
+		peerid := p.ID
+		log.Println("swito peered ", peerid, time.Since(btime))
+		htcli := pbtunnel.NewHttpClient(peerid)
+
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		w.WriteField("type", msgType)
+		w.WriteField("id", to)
+		w.WriteField("message", msg)
+		if len(filedata) > 0 {
+			filename := "file"
+			if fileinfo != nil && fileinfo.Filename != "" {
+				filename = fileinfo.Filename
+			}
+			fw, _ := w.CreateFormFile("file", filename)
+			fw.Write(filedata)
+		}
+		w.Close()
+
+		req, err := http.NewRequest(http.MethodPost,
+			"http://127.0.0.1:4004/api/messages/send", &buf)
+		if err != nil {
+			err0 = err
+			log.Println(err, peerid)
+			continue
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+
+		resp, err := htcli.Do(req)
+		err0 = err
+		if resp != nil {
+			slurp, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if len(slurp) > 99 {
+				slurp = slurp[:99]
+			}
+			log.Println("rethttp:", string(slurp))
+		}
+		if err0 != nil {
+			log.Println(err0, peerid)
+		} else {
+			break
+		}
+	}
+	return err0
+}
