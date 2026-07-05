@@ -6,14 +6,26 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            goarch: amd64
+            arch-suffix: ""
+          - os: macos-latest
+            goarch: arm64
+            arch-suffix: ""
+          - os: windows-latest
+            goarch: amd64
+            arch-suffix: ""
+          - os: windows-latest
+            goarch: "386"
+            arch-suffix: "-x86"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +55,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libx11-dev
 
       - name: Build
+        env:
+          GOARCH: ${{ matrix.goarch }}
         working-directory: fedbridge
         run: go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main
 
@@ -53,8 +67,8 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: fedbridge-${{ runner.os }}
-          path: fedbridge/main${{ runner.os == 'Windows' && '.exe' || '' }}
+          name: fedbridge-${{ runner.os }}${{ matrix.arch-suffix }}
+          path: fedbridge/main
 
   android:
     strategy:
@@ -109,3 +123,44 @@ jobs:
         with:
           name: fedbridge-android-${{ matrix.arch }}
           path: fedbridge/main.${{ matrix.arch }}
+
+  bleed:
+    needs: [build, android]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Debug artifact structure
+        shell: bash
+        run: ls -laR
+
+      - name: Prepare release binaries
+        shell: bash
+        run: |
+          mkdir -p release
+          for d in fedbridge-*/; do
+            dname="${d%/}"
+            case "$dname" in
+              fedbridge-Linux)   cp "$dname"/main        release/fedbridge-bleed-linux-amd64 ;;
+              fedbridge-macOS)   cp "$dname"/main        release/fedbridge-bleed-darwin-arm64 ;;
+              fedbridge-Windows) cp "$dname"/main    release/fedbridge-bleed-windows-amd64.exe ;;
+              fedbridge-Windows-x86) cp "$dname"/main release/fedbridge-bleed-windows-x86.exe ;;
+              fedbridge-android-arm64) cp "$dname"/main.arm64 release/fedbridge-bleed-android-arm64 ;;
+              fedbridge-android-armv7) cp "$dname"/main.armv7 release/fedbridge-bleed-android-armv7 ;;
+              *) echo "skipping unknown artifact: $dname" ;;
+            esac
+          done
+
+      - name: Create/update bleed release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: bleed
+          name: Bleeding Edge
+          prerelease: true
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: release/*
