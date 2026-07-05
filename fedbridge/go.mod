@@ -17,7 +17,7 @@ require github.com/envsh/fedlet v0.0.0
 
 replace github.com/envsh/fedlet => ../
 
-require github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77 // indirect
+require github.com/envsh/toxera/fedkey v0.0.0-20260704194804-bccdd6d90e12 // indirect
 
 require (
 	github.com/bep/debounce v1.2.1
