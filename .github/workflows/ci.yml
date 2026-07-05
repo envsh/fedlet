@@ -44,7 +44,7 @@ jobs:
 
       - name: Build
         working-directory: fedbridge
-        run: go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap
+        run: go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap -o main
 
       - name: Vet
         working-directory: fedbridge

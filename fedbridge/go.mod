@@ -1,4 +1,7 @@
-module main
+// must NOT be "module main" — go test generates _testmain.go that imports
+// this module path, and Go reserves "main" as an import path for programs,
+// making it unimportable. See https://github.com/golang/go/issues/28514.
+module fedbridge
 
 go 1.22.1
 

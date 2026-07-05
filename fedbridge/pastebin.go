@@ -17,6 +17,11 @@ func init() {
 	http.HandleFunc("/api/pastebin", handlePastebin)
 }
 
+var (
+	_pasteRsURL   = "https://paste.rs/"
+	_dpasteComURL = "https://dpaste.com/api/v2/"
+)
+
 type pastebinRequest struct {
 	Text string `json:"text"`
 }
@@ -99,7 +104,7 @@ func uploadPasteRs(text string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://paste.rs/", strings.NewReader(text))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _pasteRsURL, strings.NewReader(text))
 	if err != nil {
 		return "", fmt.Errorf("paste.rs: create request: %w", err)
 	}
@@ -134,7 +139,7 @@ func uploadDpasteCom(text string) (string, error) {
 	defer cancel()
 
 	form := url.Values{"content": {text}, "format": {"url"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://dpaste.com/api/v2/", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _dpasteComURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("dpaste.com: create request: %w", err)
 	}
