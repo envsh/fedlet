@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/crc64"
 	"log"
@@ -178,6 +179,24 @@ func addIPToTun(ip string) error {
 			return err
 		}
 		return netlink.AddrAdd(link, addr)
+	case "android":
+		ifname, err := tunov.Name()
+		if err != nil {
+			return fmt.Errorf("add ip: get tun name: %w", err)
+		}
+		out, err := exec.Command("ip", "addr", "add", ip+"/24", "dev", ifname).CombinedOutput()
+		if err != nil {
+			if errors.Is(err, exec.ErrNotFound) {
+				log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root")
+				return nil
+			}
+			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
+		}
+		out, err = exec.Command("ip", "link", "set", ifname, "up").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("add ip: link up: %s", strings.TrimSpace(string(out)))
+		}
+		return nil
 	case "darwin":
 		ifname, err := tunov.Name()
 		if err != nil {
