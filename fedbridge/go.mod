@@ -7,7 +7,8 @@ go 1.22.1
 
 // require github.com/envsh/toxera/p2put v0.0.0
 
-replace github.com/envsh/libp2px => ../../libp2px
+// moved to go.work
+// replace github.com/envsh/libp2px => ../../libp2px
 
 // require github.com/envsh/toxera/fedkey v0.0.0 // indirect
 
