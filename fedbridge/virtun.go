@@ -119,7 +119,9 @@ func initVirTun(keyFile string) error {
 		log.Println("tundev created", ifname)
 	}
 
-	go tunFixChecksums()
+	if runtime.GOOS == "darwin" {
+		go tunFixChecksums()
+	}
 
 	go func() {
 		if tunov == nil {
@@ -285,8 +287,11 @@ func tunFixChecksums() {
 		return
 	}
 	buf := make([]byte, 2004)
+	bufs := [][]byte{buf}
+	sizes := make([]int, 1)
 	for {
-		n, err := tunov.Read(buf, 4)
+		_, err := tunov.Read(bufs, sizes, 4)
+		n := sizes[0]
 		if err != nil || n < 20 {
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -294,7 +299,7 @@ func tunFixChecksums() {
 		pkt := buf[4 : 4+n]
 
 		if pkt[0]>>4 != 4 {
-			tunov.Write(buf[:4+n], 4)
+			tunov.Write(bufs[:1], 4)
 			continue
 		}
 		ipHdrLen := (pkt[0] & 0x0F) * 4
@@ -334,7 +339,7 @@ func tunFixChecksums() {
 			pkt[off+7] = byte(csum & 0xFF)
 		}
 
-		tunov.Write(buf[:4+n], 4)
+		tunov.Write(bufs[:1], 4)
 	}
 }
 

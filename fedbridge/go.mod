@@ -27,7 +27,7 @@ require (
 	github.com/kitech/touse/oai v0.0.0-20260614143315-47f1e0d5834c
 	github.com/vishvananda/netlink v1.3.1
 	golang.design/x/clipboard v0.7.0
-	golang.zx2c4.com/wireguard v0.0.0-20230223181233-21636207a675
+	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 )
 
 // github.com/envsh/libp2px v0.0.0
@@ -180,7 +180,7 @@ require (
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/tools v0.30.0 // indirect
-	golang.zx2c4.com/wintun v0.0.0-20211104114900-415007cec224 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	gonum.org/v1/gonum v0.15.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
