@@ -1,0 +1,14 @@
+package main
+
+import (
+
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/address"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/admin"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/config"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/ipv6rwc"
+
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/core"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/multicast"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/tun"
+	_ "github.com/yggdrasil-network/yggdrasil-go/src/version"
+)
