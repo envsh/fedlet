@@ -1,5 +1,9 @@
 package main
 
+
+// match go 1.22
+// go get -v github.com/yggdrasil-network/yggdrasil-go@v0.5.12
+
 import (
 
 	_ "github.com/yggdrasil-network/yggdrasil-go/src/address"

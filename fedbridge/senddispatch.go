@@ -137,6 +137,7 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 		if err0 != nil {
 			log.Println(err0, peerid)
 		} else if resp.StatusCode != 200 {
+			err0 = fmt.Errorf("foreachsend: peer %s returned HTTP %d", peerid, resp.StatusCode)
 			log.Println(resp.StatusCode, scc, peerid)
 		} else {
 			break
