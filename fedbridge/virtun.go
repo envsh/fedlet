@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc64"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -22,6 +24,11 @@ import (
 var (
 	tunov         tun.Device
 	configuredIPs sync.Map
+	tunMTU        int
+	tunOffset     int
+	peerIPMap     map[string]string
+	peerIPMu      sync.RWMutex
+	tunBufSize    int
 )
 
 /*
@@ -115,13 +122,17 @@ func initVirTun(keyFile string) error {
 		return fmt.Errorf("create tun: %w", err)
 	} else {
 		tunov = t
+		tunMTU = 1900
+		tunOffset = 0
+		if runtime.GOOS == "darwin" {
+			tunOffset = 4
+		}
+		tunBufSize = tunMTU + tunOffset + 4
 		ifname, _ := tunov.Name()
 		log.Println("tundev created", ifname)
 	}
 
-	if runtime.GOOS == "darwin" {
-		go tunFixChecksums()
-	}
+	go tunReadLoop()
 
 	go func() {
 		if tunov == nil {
@@ -131,6 +142,12 @@ func initVirTun(keyFile string) error {
 			time.Sleep(2 * time.Second)
 			for _, p := range getPeerList() {
 				ip := vlanpfx + strconv.Itoa(stringToHostPart(p.ID))
+				peerIPMu.Lock()
+				if peerIPMap == nil {
+					peerIPMap = make(map[string]string)
+				}
+				peerIPMap[ip] = p.ID
+				peerIPMu.Unlock()
 				if _, ok := configuredIPs.Load(ip); ok {
 					continue
 				}
@@ -257,92 +274,6 @@ func computeHostPart(keyFile string) int {
 	return 2
 }
 
-// tunFixChecksums completes L4 checksums for self-addressed TCP/UDP packets
-// on the macOS utun hairpin path.
-//
-// macOS routes self-addressed traffic as loopback, deferring the transport TX
-// checksum — but the point-to-point utun egresses the packet with only the
-// pseudo-header partial checksum. Recomputing the full checksum before
-// re-injection is the confirmed fix.
-//
-// References:
-//
-//	fips PR #117 / commit 225fab2 — "fix(tun): complete L4 checksum on
-//	hairpinned self-traffic (macOS)".  Confirmed the exact symptom: SYN/SYN-ACK
-//	get through (MSS clamping rewrites checksum), bare ACK/data/FIN are silently
-//	dropped.  Fix: recompute_transport_checksum() before re-injecting.
-//	https://github.com/jmcorgan/fips/pull/117
-//
-//	StackOverflow #76876059 — "Why packets seem not relayed to target
-//	applications using TUN interface?"  "On utun interfaces, checksum validation
-//	is absolutely required for avoiding that kernel discard packets."
-//	https://stackoverflow.com/questions/76876059
-//
-//	WireGuard-go tun_darwin.go — macOS utun reads/writes with 4-byte AF_INET
-//	prefix.  Read strips it, Write prepends it.  Used as reference for the
-//	buffer layout with offset=4.
-//	https://git.zx2c4.com/wireguard-go/tree/tun/tun_darwin.go
-func tunFixChecksums() {
-	if tunov == nil {
-		return
-	}
-	buf := make([]byte, 2004)
-	bufs := [][]byte{buf}
-	sizes := make([]int, 1)
-	for {
-		_, err := tunov.Read(bufs, sizes, 4)
-		n := sizes[0]
-		if err != nil || n < 20 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		pkt := buf[4 : 4+n]
-
-		if pkt[0]>>4 != 4 {
-			tunov.Write(bufs[:1], 4)
-			continue
-		}
-		ipHdrLen := (pkt[0] & 0x0F) * 4
-		if len(pkt) < int(ipHdrLen) {
-			continue
-		}
-		proto := pkt[9]
-
-		pkt[10], pkt[11] = 0, 0
-		csum := onesComplementSum(pkt[:ipHdrLen])
-		pkt[10] = byte(csum >> 8)
-		pkt[11] = byte(csum & 0xFF)
-
-		switch proto {
-		case 6:
-			off := int(ipHdrLen)
-			if len(pkt) < off+20 {
-				break
-			}
-			totalLen := uint16(len(pkt) - off)
-			pkt[off+16], pkt[off+17] = 0, 0
-			psum := pseudoChecksum(pkt[12:16], pkt[16:20], 6, totalLen)
-			csum = onesComplementSumFold(pkt[off:], psum)
-			pkt[off+16] = byte(csum >> 8)
-			pkt[off+17] = byte(csum & 0xFF)
-
-		case 17:
-			off := int(ipHdrLen)
-			if len(pkt) < off+8 {
-				break
-			}
-			totalLen := uint16(len(pkt) - off)
-			pkt[off+6], pkt[off+7] = 0, 0
-			psum := pseudoChecksum(pkt[12:16], pkt[16:20], 17, totalLen)
-			csum = onesComplementSumFold(pkt[off:], psum)
-			pkt[off+6] = byte(csum >> 8)
-			pkt[off+7] = byte(csum & 0xFF)
-		}
-
-		tunov.Write(bufs[:1], 4)
-	}
-}
-
 // onesComplementSum computes an RFC 1071 one's complement Internet checksum
 // over data.  Reference: WireGuard-go tun/checksum.go checksum().
 func onesComplementSum(data []byte) uint16 {
@@ -385,4 +316,257 @@ func onesComplementSumFold(data []byte, initial uint32) uint16 {
 		sum = (sum >> 16) + (sum & 0xffff)
 	}
 	return ^uint16(sum)
+}
+
+// tunReadLoop handles all TUN I/O — hairpin, forwarding, logging.
+//
+// macOS utun hairpin: self-addressed traffic via loopback defers transport TX
+// checksum, so the utun egress carries only a pseudo-header partial checksum.
+// SYN/SYN-ACK survive (MSS clamping rewrites checksum), but ACK/data/FIN are
+// silently dropped.  We detect hairpin by dst==localIP and recompute.
+//
+// References:
+//
+//	fips PR #117 / commit 225fab2 — "fix(tun): complete L4 checksum on
+//	hairpinned self-traffic (macOS)".  Confirmed the exact symptom: SYN/SYN-ACK
+//	get through (MSS clamping rewrites checksum), bare ACK/data/FIN are silently
+//	dropped.  Fix: recompute_transport_checksum() before re-injecting.
+//	https://github.com/jmcorgan/fips/pull/117
+//
+//	StackOverflow #76876059 — "Why packets seem not relayed to target
+//	applications using TUN interface?"  "On utun interfaces, checksum validation
+//	is absolutely required for avoiding that kernel discard packets."
+//	https://stackoverflow.com/questions/76876059
+//
+//	WireGuard-go tun_darwin.go — macOS utun reads/writes with 4-byte AF_INET
+//	prefix.  Read strips it, Write prepends it.  Used as reference for the
+//	buffer layout with offset=4.
+//	https://git.zx2c4.com/wireguard-go/tree/tun/tun_darwin.go
+func tunReadLoop() {
+	if tunov == nil {
+		return
+	}
+	for localPeerIP == "" {
+		time.Sleep(100 * time.Millisecond)
+	}
+	localIP := net.ParseIP(localPeerIP)
+	buf := make([]byte, tunBufSize)
+	bufs := [][]byte{buf}
+	sizes := make([]int, 1)
+
+	for {
+		_, err := tunov.Read(bufs, sizes, tunOffset)
+		n := sizes[0]
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		pkt := buf[tunOffset : tunOffset+n]
+
+		version := pkt[0] >> 4
+		if version != 4 && version != 6 {
+			log.Printf("tun: unsupported IP version %d len=%d", version, n)
+			continue
+		}
+
+		var srcIP, dstIP net.IP
+		var proto byte
+		var ihl int
+
+		switch version {
+		case 4:
+			if len(pkt) < 20 {
+				continue
+			}
+			srcIP = net.IP(pkt[12:16])
+			dstIP = net.IP(pkt[16:20])
+			proto = pkt[9]
+			ihl = int(pkt[0]&0x0F) * 4
+		case 6:
+			if len(pkt) < 40 {
+				continue
+			}
+			srcIP = net.IP(pkt[8:24])
+			dstIP = net.IP(pkt[24:40])
+			proto = pkt[6]
+			ihl = 40
+		}
+
+		dstStr := dstIP.String()
+
+		switch {
+		case dstIP.Equal(localIP):
+			if runtime.GOOS == "darwin" && version == 4 && isTCPorUDP(proto) {
+				fixIPChecksum(pkt)
+				if proto == 6 {
+					fixTCPChecksum(pkt, ihl)
+				} else {
+					fixUDPChecksum(pkt, ihl)
+				}
+			}
+			tunov.Write(bufs[:1], tunOffset)
+			log.Printf("tun: hairpin v%d src=%s dst=%s proto=%d len=%d [+]",
+				version, srcIP, dstIP, proto, n)
+
+		case func() bool { peerIPMu.RLock(); defer peerIPMu.RUnlock(); _, ok := peerIPMap[dstStr]; return ok }():
+			peerIPMu.RLock()
+			pid := peerIPMap[dstStr]
+			peerIPMu.RUnlock()
+			if proto == 6 || proto == 17 {
+				sport, dport := parsePorts(pkt, proto, ihl)
+				log.Printf("tun: forward v%d src=%s:%d dst=%s:%d proto=%s len=%d → peer=%s [-]",
+					version, srcIP, sport, dstIP, dport, protoName(proto), n, pid)
+			} else {
+				log.Printf("tun: forward v%d src=%s dst=%s proto=%d len=%d → peer=%s [-]",
+					version, srcIP, dstIP, proto, n, pid)
+			}
+
+		case version == 4 && dstIP.Equal(net.IPv4bcast):
+			log.Printf("tun: broadcast v%d src=%s dst=%s proto=%d len=%d [-]",
+				version, srcIP, dstIP, proto, n)
+
+		case version == 6 && dstIP.IsMulticast():
+			log.Printf("tun: multicast v6 src=%s dst=%s proto=%d len=%d [-]",
+				srcIP, dstIP, proto, n)
+
+		case dstIP.IsLoopback():
+			log.Printf("tun: loopback v%d src=%s dst=%s proto=%d len=%d [-]",
+				version, srcIP, dstIP, proto, n)
+
+		case dstIP.IsLinkLocalUnicast():
+			log.Printf("tun: linklocal v%d src=%s dst=%s proto=%d len=%d [-]",
+				version, srcIP, dstIP, proto, n)
+
+		default:
+			switch proto {
+			case 1:
+				log.Printf("tun: ICMP v%d src=%s dst=%s type=%s len=%d [-]",
+					version, srcIP, dstIP, icmpTypeStr(4, pkt, ihl), n)
+			case 6:
+				sport, dport := parsePorts(pkt, 6, ihl)
+				log.Printf("tun: TCP v%d src=%s:%d dst=%s:%d len=%d [-]",
+					version, srcIP, sport, dstIP, dport, n)
+			case 17:
+				sport, dport := parsePorts(pkt, 17, ihl)
+				log.Printf("tun: UDP v%d src=%s:%d dst=%s:%d len=%d [-]",
+					version, srcIP, sport, dstIP, dport, n)
+			case 58:
+				log.Printf("tun: ICMPv6 v%d src=%s dst=%s type=%s len=%d [-]",
+					version, srcIP, dstIP, icmpTypeStr(6, pkt, ihl), n)
+			default:
+				log.Printf("tun: PROTO-%d v%d src=%s dst=%s len=%d [-]",
+					proto, version, srcIP, dstIP, n)
+			}
+		}
+	}
+}
+
+func isTCPorUDP(proto byte) bool { return proto == 6 || proto == 17 }
+
+func protoName(proto byte) string {
+	switch proto {
+	case 1:
+		return "ICMP"
+	case 6:
+		return "TCP"
+	case 17:
+		return "UDP"
+	default:
+		return fmt.Sprintf("UNKN(%d)", proto)
+	}
+}
+
+func parsePorts(pkt []byte, proto byte, ihl int) (sport, dport uint16) {
+	if len(pkt) < ihl+4 {
+		return 0, 0
+	}
+	return binary.BigEndian.Uint16(pkt[ihl:]), binary.BigEndian.Uint16(pkt[ihl+2:])
+}
+
+func fixIPChecksum(pkt []byte) {
+	ihl := int(pkt[0]&0x0F) * 4
+	pkt[10], pkt[11] = 0, 0
+	csum := onesComplementSum(pkt[:ihl])
+	pkt[10] = byte(csum >> 8)
+	pkt[11] = byte(csum & 0xFF)
+}
+
+func fixTCPChecksum(pkt []byte, ihl int) {
+	off := ihl
+	if len(pkt) < off+20 {
+		return
+	}
+	totalLen := uint16(len(pkt) - off)
+	pkt[off+16], pkt[off+17] = 0, 0
+	psum := pseudoChecksum(pkt[12:16], pkt[16:20], 6, totalLen)
+	csum := onesComplementSumFold(pkt[off:], psum)
+	pkt[off+16] = byte(csum >> 8)
+	pkt[off+17] = byte(csum & 0xFF)
+}
+
+func fixUDPChecksum(pkt []byte, ihl int) {
+	off := ihl
+	if len(pkt) < off+8 {
+		return
+	}
+	totalLen := uint16(len(pkt) - off)
+	pkt[off+6], pkt[off+7] = 0, 0
+	psum := pseudoChecksum(pkt[12:16], pkt[16:20], 17, totalLen)
+	csum := onesComplementSumFold(pkt[off:], psum)
+	pkt[off+6] = byte(csum >> 8)
+	pkt[off+7] = byte(csum & 0xFF)
+}
+
+func icmpTypeStr(version int, pkt []byte, ihl int) string {
+	if version == 4 {
+		if len(pkt) < ihl+1 {
+			return ""
+		}
+		t := pkt[ihl]
+		switch t {
+		case 0:
+			return "EchoReply"
+		case 3:
+			return "DestUnreach"
+		case 8:
+			return "Echo"
+		case 11:
+			return "TimeExceed"
+		default:
+			return fmt.Sprintf("ICMP-%d", t)
+		}
+	}
+	if version == 6 {
+		if len(pkt) < ihl+1 {
+			return ""
+		}
+		t := pkt[ihl]
+		switch t {
+		case 1:
+			return "DestUnreach"
+		case 128:
+			return "Echo"
+		case 129:
+			return "EchoReply"
+		case 130:
+			return "MLD-Query"
+		case 131:
+			return "MLD-Report-v1"
+		case 132:
+			return "MLD-Done"
+		case 133:
+			return "RouterSolicit"
+		case 134:
+			return "RouterAdv"
+		case 135:
+			return "NeighborSolicit"
+		case 136:
+			return "NeighborAdv"
+		case 143:
+			return "MLD-Report-v2"
+		default:
+			return fmt.Sprintf("ICMPv6-%d", t)
+		}
+	}
+	return ""
 }
