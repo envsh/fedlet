@@ -117,13 +117,13 @@ func main() {
 	// go echoLoop()
 	go tunloop()
 
-	// proxy := pbtunnel.NewHTTPProxy()
-	// go func() {
-	// 	err := proxy.ListenAndServe(":9449")
-	// 	log.Println(err)
-	// 	panic(err)
-	// }()
-	// defer proxy.Close()
+	proxy := pbtunnel.NewHTTPProxy()
+	go func() {
+		err := proxy.ListenAndServe(":9229")
+		log.Println(err)
+		// 	panic(err)
+	}()
+	defer proxy.Close()
 
 	err := http.ListenAndServe(":4004", nil)
 	if err != nil {
