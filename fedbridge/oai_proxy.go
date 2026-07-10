@@ -39,3 +39,25 @@ func handleOAIProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	proxy.ServeHTTP(w, r)
 }
+
+/* opencode.json examples
+Bearer: https://api.groq.com/openai/|gsk_xxx
+
+      "mygroq-provider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "My Groq AI ProviderDisplay Name",
+      "options": {
+        "baseURL": "http://127.0.0.1:4004/v1"
+      },
+      "models": {
+        "groq/compound": {
+          "name": "My Groq Model Display Name",
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          }
+        }
+      }
+    },
+
+*/

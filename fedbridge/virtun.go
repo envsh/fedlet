@@ -21,6 +21,15 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+/*
+   对于对端无tun设备的情况，采用隐式添加proxy的方式，需要识别协议的功能
+
+   那就假设对端都没有tun设备，然后走同一套实现逻辑。有tun设备的端点能够随意发起连接，没有tun设备的端点，只能做接收端服务端，发起请求需要代码实现。
+
+https://github.com/tun2proxy/tun2proxy 似乎是针对特定场景的实现，不太通用，需要部署参数，用起来可能不通用了。。。
+
+*/
+
 var (
 	tunov         tun.Device
 	configuredIPs sync.Map
