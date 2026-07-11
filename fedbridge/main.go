@@ -16,6 +16,7 @@ import (
 	"github.com/envsh/libp2px/pbecho"
 	"github.com/envsh/libp2px/pbexec"
 	"github.com/envsh/libp2px/pbtunnel"
+	"github.com/envsh/libp2px/dlog"
 )
 
 var svccaps = serviceCapacities{}
@@ -38,6 +39,9 @@ var publishViaHTTP bool = true
 var channel_name = "reddit"
 
 func publish(channel string, data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("publish: empty data")
+	}
 	btime := time.Now()
 	err := publish2(channel, data)
 	if err != nil {
@@ -64,6 +68,7 @@ func publish2(channel string, data []byte) error {
 	return p2put.PublishTopic(channel, data)
 }
 
+var DDLog = dlog.DDLog
 func main() {
 	cfg, p2putFs := p2put.ConfigFlags()
 	cfg.Dht = false
@@ -74,6 +79,8 @@ func main() {
 	flag.StringVar(&usepeer, "peerno", usepeer, "use which peer as tunnel dest, suffix 5 chars")
 	flag.StringVar(&vlanpfx, "vlan", vlanpfx, "tun vlan ip prefix")
 	flag.Parse()
+
+	defer DDLog.ExitFlush()
 
 	initVirTun(cfg.KeyFile)
 	defer cleanupPFRules()

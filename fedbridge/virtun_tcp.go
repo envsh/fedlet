@@ -7,8 +7,14 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sort"
+	"strings"
 
 	"fedbridge/vtcp"
+
+	"github.com/envsh/libp2px/p2put"
+	"github.com/envsh/libp2px/pbtunnel"
+
 )
 
 type tcpKey struct {
@@ -113,25 +119,71 @@ func feedTCP(bridge *tcpBridge, tcp []byte) {
 	pkts := bridge.vc.HandleSegment(seg)
 	bridge.vc.Flush(pkts)
 	if bridge.vc.State() == vtcp.StateClosed {
-		log.Printf("tun: TCP %s → %s RST [+]",
-			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr())
+		DDLog.Printf("tun: TCP %s → %s RST seq=%d ack=%d [+]",
+			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr(),
+			seg.Seq, seg.Ack)
 	}
+}
+
+var (
+	peerips   = map[string]string{} // ip => peerid
+	peeripsMu sync.Mutex
+)
+
+// return empty for default
+func peeridByConnIP(ipport string) string {
+	rawIP, _, err := net.SplitHostPort(ipport)
+	if err != nil {
+		return ""
+	}
+	if rawIP == "127.0.0.1" {
+		return ""
+	}
+
+	peeripsMu.Lock()
+	defer peeripsMu.Unlock()
+
+	if id, ok := peerips[rawIP]; ok {
+		return id
+	}
+
+	ids := p2put.GetClusterPeers()
+	sort.Strings(ids)
+	for _, id := range ids {
+		hostPart := stringToHostPart(id)
+		mappedIP := vlanpfx + strconv.Itoa(hostPart)
+		peerips[mappedIP] = id
+	}
+	return peerips[rawIP]
 }
 
 func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tcpBridge {
 	seg, err := vtcp.ParseSegment(tcp)
 	if err != nil {
-		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d <x> %s [+]",
 			net.IP(srcIP[:]).String(), srcPort,
 			net.IP(dstIP[:]).String(), dstPort, err.Error())
 		return nil
 	}
 
-	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+	dstAddr := net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort))
+	if strings.HasPrefix(dstAddr, localPeerIP+":") {
+		// self good goon
+	} else if id := peeridByConnIP(dstAddr); id != "" {
+		dstAddr = net.JoinHostPort(id, itoaU16(dstPort))
+	} else {
+		DDLog.Printf("no route to %s myip %s", dstAddr, localPeerIP)
+		return nil
+	}
+	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d <x> %s [+]",
 		net.IP(srcIP[:]).String(), srcPort,
-		net.IP(dstIP[:]).String(), dstPort, "todo dail peer dst 56789")
-	remote, err := net.Dial("tcp", net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort)))
+		net.IP(dstIP[:]).String(), dstPort, dstAddr)
+
+	remote_, err := pbtunnel.Dial(dstAddr)
+	remote := &pbtunnel.P2PConn{remote_}
+	// remote, err := net.Dial("tcp", dstAddr)
 	if err != nil {
+		log.Println(err)
 		return nil
 	}
 
@@ -159,13 +211,13 @@ func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tc
 func newTCPBridge6(tcp []byte, srcIP, dstIP [16]byte, srcPort, dstPort uint16) *tcpBridge {
 	seg, err := vtcp.ParseSegment(tcp)
 	if err != nil {
-		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d <x> %s [+]",
 			net.IP(srcIP[:]).String(), srcPort,
 			net.IP(dstIP[:]).String(), dstPort, err.Error())
 		return nil
 	}
 
-	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d <x> %s [+]",
 		net.IP(srcIP[:]).String(), srcPort,
 		net.IP(dstIP[:]).String(), dstPort, "todo dail peer dst 56789")
 
@@ -196,16 +248,22 @@ func newTCPBridge6(tcp []byte, srcIP, dstIP [16]byte, srcPort, dstPort uint16) *
 }
 
 func (b *tcpBridge) startBridge() {
+	// for only one close log per conn
+	closed := false
+	closeFunc := func(reason string) {
+		if closed { return }
+		closed = true
+		log.Printf("tun: TCP %s → %s %s [+]",
+			b.vc.LocalAddr(), b.vc.RemoteAddr(), reason)
+	}
 	go func() {
 		io.Copy(b.vc, b.remote)
-		log.Printf("tun: TCP %s → %s remote close [+]",
-			b.vc.LocalAddr(), b.vc.RemoteAddr())
+		closeFunc("remote close")
 		b.vc.Close()
 	}()
 	go func() {
 		io.Copy(b.remote, b.vc)
-		log.Printf("tun: TCP %s → %s local FIN [+]",
-			b.vc.LocalAddr(), b.vc.RemoteAddr())
+		closeFunc("local FIN")
 		if tc, ok := b.remote.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
