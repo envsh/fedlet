@@ -106,15 +106,24 @@ func handleTCP6(pkt []byte, srcIP, dstIP [16]byte) {
 func feedTCP(bridge *tcpBridge, tcp []byte) {
 	seg, err := vtcp.ParseSegment(tcp)
 	if err != nil {
+		log.Printf("tun: TCP -> %s %s [+]",
+			bridge.remote.RemoteAddr().String(), err.Error())
 		return
 	}
 	pkts := bridge.vc.HandleSegment(seg)
 	bridge.vc.Flush(pkts)
+	if bridge.vc.State() == vtcp.StateClosed {
+		log.Printf("tun: TCP %s → %s RST [+]",
+			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr())
+	}
 }
 
 func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tcpBridge {
 	seg, err := vtcp.ParseSegment(tcp)
 	if err != nil {
+		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+			net.IP(srcIP[:]).String(), srcPort,
+			net.IP(dstIP[:]).String(), dstPort, err.Error())
 		return nil
 	}
 
@@ -150,8 +159,15 @@ func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tc
 func newTCPBridge6(tcp []byte, srcIP, dstIP [16]byte, srcPort, dstPort uint16) *tcpBridge {
 	seg, err := vtcp.ParseSegment(tcp)
 	if err != nil {
+		log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+			net.IP(srcIP[:]).String(), srcPort,
+			net.IP(dstIP[:]).String(), dstPort, err.Error())
 		return nil
 	}
+
+	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d '<x>' %s [+]",
+		net.IP(srcIP[:]).String(), srcPort,
+		net.IP(dstIP[:]).String(), dstPort, "todo dail peer dst 56789")
 
 	remote, err := net.Dial("tcp6", net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort)))
 	if err != nil {
@@ -182,10 +198,14 @@ func newTCPBridge6(tcp []byte, srcIP, dstIP [16]byte, srcPort, dstPort uint16) *
 func (b *tcpBridge) startBridge() {
 	go func() {
 		io.Copy(b.vc, b.remote)
+		log.Printf("tun: TCP %s → %s remote close [+]",
+			b.vc.LocalAddr(), b.vc.RemoteAddr())
 		b.vc.Close()
 	}()
 	go func() {
 		io.Copy(b.remote, b.vc)
+		log.Printf("tun: TCP %s → %s local FIN [+]",
+			b.vc.LocalAddr(), b.vc.RemoteAddr())
 		if tc, ok := b.remote.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
