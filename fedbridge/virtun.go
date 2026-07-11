@@ -134,7 +134,22 @@ func initVirTun(keyFile string) error {
 		tunMTU = 1900
 		tunOffset = 0
 		if runtime.GOOS == "darwin" {
+			// macOS utun requires a 4-byte AF_INET/AF_INET6 prefix before the
+			// IP packet.  The tun device reads/writes with this offset so the
+			// 4-byte family field sits at buf[0:4] and the IP packet starts at
+			// buf[4:].
+			// Reference: wireguard-go/tun/tun_darwin.go — NativeTUN Read/Write.
 			tunOffset = 4
+		}
+		if runtime.GOOS == "linux" {
+			// wireguard-go/tun.CreateTUN always sets IFF_VNET_HDR
+			// (tun_linux.go:566).  When vnetHdr is active, Write calls
+			// handleGRO() (offload_linux.go:865) which requires
+			// offset >= virtioNetHdrLen (12 bytes = sizeof(virtioNetHdr)),
+			// otherwise it returns "invalid offset".
+			// Read with vnetHdr uses an internal readBuff and copies the IP
+			// packet to bufs[0][offset:]; offset=12 is safe for both directions.
+			tunOffset = 12
 		}
 		tunBufSize = tunMTU + tunOffset + 4
 		ifname, _ := tunov.Name()
@@ -167,6 +182,14 @@ func initVirTun(keyFile string) error {
 					log.Printf("virtun: added peer ip %s", ip)
 				}
 			}
+		}
+	}()
+
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			tcpCleanup()
+			udpCleanup()
 		}
 	}()
 
@@ -302,6 +325,22 @@ func onesComplementSum(data []byte) uint16 {
 // pseudoChecksum returns the RFC 1071 pseudo-header sum for L4 checksum
 // computation.  Reference: WireGuard-go tun/checksum.go
 // pseudoHeaderChecksumNoFold().
+func pseudoChecksum6(src, dst []byte, proto byte, totalLen uint16) uint32 {
+	var sum uint32
+	for i := 0; i < 16; i += 2 {
+		sum += uint32(src[i])<<8 | uint32(src[i+1])
+	}
+	for i := 0; i < 16; i += 2 {
+		sum += uint32(dst[i])<<8 | uint32(dst[i+1])
+	}
+	var len32 [4]byte
+	binary.BigEndian.PutUint32(len32[:], uint32(totalLen))
+	sum += uint32(len32[0])<<8 | uint32(len32[1])
+	sum += 0
+	sum += uint32(proto)
+	return sum
+}
+
 func pseudoChecksum(src, dst []byte, proto byte, totalLen uint16) uint32 {
 	return (uint32(src[0])<<8 | uint32(src[1])) +
 		(uint32(src[2])<<8 | uint32(src[3])) +
@@ -453,12 +492,34 @@ func tunReadLoop() {
 					version, srcIP, dstIP, icmpTypeStr(4, pkt, ihl), n)
 			case 6:
 				sport, dport := parsePorts(pkt, 6, ihl)
-				log.Printf("tun: TCP v%d src=%s:%d dst=%s:%d len=%d [-]",
+				log.Printf("tun: TCP v%d src=%s:%d dst=%s:%d len=%d [+]",
 					version, srcIP, sport, dstIP, dport, n)
+				if version == 4 {
+					var src, dst [4]byte
+					copy(src[:], srcIP.To4())
+					copy(dst[:], dstIP.To4())
+					handleTCP4(pkt, ihl, src, dst)
+				} else {
+					var src, dst [16]byte
+					copy(src[:], srcIP.To16())
+					copy(dst[:], dstIP.To16())
+					handleTCP6(pkt, src, dst)
+				}
 			case 17:
 				sport, dport := parsePorts(pkt, 17, ihl)
-				log.Printf("tun: UDP v%d src=%s:%d dst=%s:%d len=%d [-]",
+				log.Printf("tun: UDP v%d src=%s:%d dst=%s:%d len=%d [+]",
 					version, srcIP, sport, dstIP, dport, n)
+				if version == 4 {
+					var src, dst [4]byte
+					copy(src[:], srcIP.To4())
+					copy(dst[:], dstIP.To4())
+					handleUDP4(pkt, ihl, src, dst)
+				} else {
+					var src, dst [16]byte
+					copy(src[:], srcIP.To16())
+					copy(dst[:], dstIP.To16())
+					handleUDP6(pkt, src, dst)
+				}
 			case 58:
 				log.Printf("tun: ICMPv6 v%d src=%s dst=%s type=%s len=%d [-]",
 					version, srcIP, dstIP, icmpTypeStr(6, pkt, ihl), n)
