@@ -26,8 +26,9 @@ type tcpKey struct {
 
 // seen connections with: ss -ant|grep EST|grep 9339
 type tcpBridge struct {
-	vc     *vtcp.Conn
-	remote net.Conn
+	vc                *vtcp.Conn
+	remote            net.Conn
+	establishedLogged bool
 }
 
 var tcpConns sync.Map
@@ -118,6 +119,11 @@ func feedTCP(bridge *tcpBridge, tcp []byte) {
 	}
 	pkts := bridge.vc.HandleSegment(seg)
 	bridge.vc.Flush(pkts)
+	if bridge.vc.State() == vtcp.StateEstablished && !bridge.establishedLogged {
+		bridge.establishedLogged = true
+		DDLog.Printf("tun: TCP ESTABLISHED %s ↔ %s [+]",
+			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr())
+	}
 	if bridge.vc.State() == vtcp.StateClosed {
 		DDLog.Printf("tun: TCP %s → %s RST seq=%d ack=%d [+]",
 			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr(),
