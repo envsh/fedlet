@@ -26,7 +26,16 @@ var (
 	currentPeerID string
 	localPeerID   string
 	localPeerIP   string
+	localPeerIPv6 string
 )
+
+var ipv6Prefixes = []string{
+	"fd00::",      // ULA mesh 内部
+	"200::",       // Yggdrasil 废弃段，任意使用（RFC 4048）
+	"240e::",      // ISP 中国电信
+	"2001:470::",  // Hurricane Electric Tunnelbroker
+	"2607:f8b0::", // Google
+}
 
 func getPeerList() []peerEntry {
 	ids := p2put.GetClusterPeers()

@@ -28,9 +28,9 @@ type ProtocolInfo struct {
 	// DlMediaFn downloads media identified by an mxc:// URL.
 	// Caller must close the returned io.ReadCloser.
 	DlMediaFn func(mxcURL string) (io.ReadCloser, string, error)
-	StartFn    func()
-	StopFn     func()
-	statusFn   func() ProtocolStatus
+	StartFn   func()
+	StopFn    func()
+	statusFn  func() ProtocolStatus
 }
 
 func (p *ProtocolInfo) Status() ProtocolStatus {

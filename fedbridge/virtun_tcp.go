@@ -5,17 +5,16 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"sort"
-	"strings"
 
 	"fedbridge/vtcp"
 
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbtunnel"
-
 )
 
 type tcpKey struct {
@@ -30,7 +29,7 @@ type tcpBridge struct {
 	vc                *vtcp.Conn
 	remote            net.Conn
 	establishedLogged bool
-	connid     int64
+	connid            int64
 }
 
 var natconnid int64 = 10000
@@ -266,7 +265,9 @@ func (b *tcpBridge) startBridge() {
 	// for only one close log per conn
 	closed := false
 	closeFunc := func(reason string) {
-		if closed { return }
+		if closed {
+			return
+		}
 		closed = true
 		log.Printf("tun: TCP %s → %s %s [+]",
 			b.vc.LocalAddr(), b.vc.RemoteAddr(), reason)

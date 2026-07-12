@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"hash/crc64"
@@ -12,7 +13,6 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
-	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +22,7 @@ import (
 
 // need CGO_ENABLED=1 or panic for clipboard@v0.7.0 on X11
 var clip_ierr = errors.New("unknown")
+
 func init() {
 	err := clipboard.Init()
 	if err != nil {

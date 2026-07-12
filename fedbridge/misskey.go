@@ -1,4 +1,5 @@
 //go:build misskey
+
 package main
 
 import (

@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	// "strings"
 	"time"
 
@@ -28,12 +28,13 @@ type forwardReq struct {
 }
 
 // DispatchSend 按联系人类型分发消息。
-//   ctype:    联系人类型常量（如 "unktox_conference"），用于查找到哪个后端 sender
-//   to:       目标标识（friend ID / room ID 等）
-//   msg:      消息正文
-//   msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
-//   filedata: 文件字节流，nil 表示纯文本
-//   fileinfo: 文件元信息，nil 表示无附件
+//
+//	ctype:    联系人类型常量（如 "unktox_conference"），用于查找到哪个后端 sender
+//	to:       目标标识（friend ID / room ID 等）
+//	msg:      消息正文
+//	msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
+//	filedata: 文件字节流，nil 表示纯文本
+//	fileinfo: 文件元信息，nil 表示无附件
 func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	info, ok := ctypeRegistry[ctype]
 	log.Printf("senddispatch: ctype=%q to=%q msg=%q ok=%v canSend=%v",

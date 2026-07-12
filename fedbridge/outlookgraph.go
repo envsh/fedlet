@@ -1,4 +1,5 @@
 //go:build outlookgraph
+
 package main
 
 import (

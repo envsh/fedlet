@@ -38,18 +38,22 @@ type pastebinResponse struct {
 // The order of services is randomized; if one fails, the other is tried as fallback.
 //
 // Request:
-//   POST /api/pastebin
-//   Content-Type: application/json
-//   {"text": "content to paste"}
+//
+//	POST /api/pastebin
+//	Content-Type: application/json
+//	{"text": "content to paste"}
 //
 // Response (200):
-//   {"url": "https://paste.rs/abc123", "service": "paste.rs"}
+//
+//	{"url": "https://paste.rs/abc123", "service": "paste.rs"}
 //
 // Response (502 — both services failed):
-//   {"error": "all pastebin services failed: ..."}
+//
+//	{"error": "all pastebin services failed: ..."}
 //
 // Response (400 — invalid request):
-//   {"error": "text is required"}
+//
+//	{"error": "text is required"}
 func handlePastebin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, "method not allowed", http.StatusMethodNotAllowed)

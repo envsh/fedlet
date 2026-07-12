@@ -1,4 +1,5 @@
 //go:build irccloud
+
 package main
 
 import (
@@ -47,12 +48,12 @@ var _ = RegisterProtocol(&ProtocolInfo{
 		})
 		irccloud.Start(info)
 	},
-	statusFn:   ircStatusFn,
+	statusFn: ircStatusFn,
 })
 
 func init() {
-	flag.StringVar(&ircInfo,    "irc",        "", "IRCCloud email:password")
-	flag.StringVar(&ircJoin,    "irc-join",   "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")
+	flag.StringVar(&ircInfo, "irc", "", "IRCCloud email:password")
+	flag.StringVar(&ircJoin, "irc-join", "#nixos,#firefox,#javascript", "comma-separated IRC channels to join on connect")
 }
 
 func splitTrim(s, sep string) []string {

@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envsh/libp2px/dlog"
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbecho"
 	"github.com/envsh/libp2px/pbexec"
 	"github.com/envsh/libp2px/pbtunnel"
-	"github.com/envsh/libp2px/dlog"
 )
 
 var svccaps = serviceCapacities{}
@@ -69,6 +69,7 @@ func publish2(channel string, data []byte) error {
 }
 
 var DDLog = dlog.DDLog
+
 func main() {
 	cfg, p2putFs := p2put.ConfigFlags()
 	cfg.Dht = false
@@ -101,6 +102,21 @@ func main() {
 					log.Printf("virtun: %v", err)
 				} else {
 					log.Printf("virtun: %s configured and up from peer_id", ip)
+				}
+				if ipv6Available() {
+					for _, pfx := range ipv6Prefixes {
+						addr := pfx + strconv.Itoa(hostPart)
+						if localPeerIPv6 == "" {
+							localPeerIPv6 = addr
+						}
+						if err := setupSeedVirtIP(addr); err != nil {
+							log.Printf("virtun: %s: %v", addr, err)
+						} else {
+							log.Printf("virtun: %s configured and up", addr)
+						}
+					}
+				} else {
+					log.Printf("virtun: IPv6 not available (kernel disabled), skipping")
 				}
 				return
 			}

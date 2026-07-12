@@ -163,7 +163,9 @@ func initVirTun(keyFile string) error {
 			return
 		}
 		for {
-			if true { return } // disable peer ip, not used for our new tun2peerid
+			if true {
+				return
+			} // disable peer ip, not used for our new tun2peerid
 			time.Sleep(2 * time.Second)
 			for _, p := range getPeerList() {
 				ip := vlanpfx + strconv.Itoa(stringToHostPart(p.ID))
@@ -210,6 +212,7 @@ func hasExistingIP(ifname string) bool {
 }
 
 func addIPToTun(ip string) error {
+	is6 := strings.Contains(ip, ":")
 	switch runtime.GOOS {
 	case "linux":
 		ifname, err := tunov.Name()
@@ -226,7 +229,11 @@ func addIPToTun(ip string) error {
 		if err := netlink.LinkSetTxQLen(link, 1000); err != nil {
 			return err
 		}
-		addr, err := netlink.ParseAddr(ip + "/24")
+		cidr := ip + "/24"
+		if is6 {
+			cidr = ip + "/64"
+		}
+		addr, err := netlink.ParseAddr(cidr)
 		if err != nil {
 			return err
 		}
@@ -236,7 +243,11 @@ func addIPToTun(ip string) error {
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
-		out, err := exec.Command("ip", "addr", "add", ip+"/24", "dev", ifname).CombinedOutput()
+		cidr := ip + "/24"
+		if is6 {
+			cidr = ip + "/64"
+		}
+		out, err := exec.Command("ip", "addr", "add", cidr, "dev", ifname).CombinedOutput()
 		if err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
 				log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root")
@@ -254,7 +265,12 @@ func addIPToTun(ip string) error {
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
-		args := []string{ifname, "inet", ip, ip, "netmask", "255.255.255.0"}
+		var args []string
+		if is6 {
+			args = []string{ifname, "inet6", ip, "prefixlen", "64"}
+		} else {
+			args = []string{ifname, "inet", ip, ip, "netmask", "255.255.255.0"}
+		}
 		if hasExistingIP(ifname) {
 			args = append(args, "alias")
 		}
@@ -264,6 +280,14 @@ func addIPToTun(ip string) error {
 		}
 		return nil
 	case "windows":
+		if is6 {
+			out, err := exec.Command("netsh", "interface", "ipv6", "add", "address",
+				"name=fedlet", "addr="+ip).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("add ip6: %s", strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
 		out, err := exec.Command("netsh", "interface", "ip", "add", "address",
 			"name=fedlet", "addr="+ip, "mask=255.255.255.0").CombinedOutput()
 		if err != nil {
@@ -275,6 +299,25 @@ func addIPToTun(ip string) error {
 
 func setupSeedVirtIP(ip string) error {
 	return addIPToTun(ip)
+}
+
+func ipv6Available() bool {
+	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
+		return true
+	}
+	data, err := os.ReadFile("/proc/net/if_inet6")
+	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+		log.Printf("ipv6: check1 /proc/net/if_inet6 fail — err=%v content=%q len=%d",
+			err, string(data), len(data))
+		return false
+	}
+	data, err = os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	if err != nil || strings.TrimSpace(string(data)) != "0" {
+		log.Printf("ipv6: check2 /proc/sys/net/ipv6/conf/all/disable_ipv6 fail — err=%v value=%q",
+			err, strings.TrimSpace(string(data)))
+		return false
+	}
+	return true
 }
 
 func stringToHostPart(s string) int {
@@ -399,6 +442,10 @@ func tunReadLoop() {
 		time.Sleep(100 * time.Millisecond)
 	}
 	localIP := net.ParseIP(localPeerIP)
+	var localIP6 net.IP
+	if localPeerIPv6 != "" {
+		localIP6 = net.ParseIP(localPeerIPv6)
+	}
 	buf := make([]byte, tunBufSize)
 	bufs := [][]byte{buf}
 	sizes := make([]int, 1)
@@ -444,7 +491,7 @@ func tunReadLoop() {
 		dstStr := dstIP.String()
 
 		switch {
-		case dstIP.Equal(localIP):
+		case dstIP.Equal(localIP) || (localIP6 != nil && dstIP.Equal(localIP6)):
 			if runtime.GOOS == "darwin" && version == 4 && isTCPorUDP(proto) {
 				fixIPChecksum(pkt)
 				if proto == 6 {
@@ -489,8 +536,12 @@ func tunReadLoop() {
 		default:
 			switch proto {
 			case 1:
-				log.Printf("tun: ICMP v%d src=%s dst=%s type=%s len=%d [-]",
-					version, srcIP, dstIP, icmpTypeStr(4, pkt, ihl), n)
+				if version == 4 {
+					if !handleICMP4(pkt, ihl, bufs, n) {
+						log.Printf("tun: ICMP v4 src=%s dst=%s type=%s len=%d [-]",
+							srcIP, dstIP, icmpTypeStr(4, pkt, ihl), n)
+					}
+				}
 			case 6: // TCP V4/V6
 				sport, dport := parsePorts(pkt, 6, ihl)
 				_, _ = sport, dport
@@ -528,8 +579,10 @@ func tunReadLoop() {
 					panic(fmt.Errorf("wtt version %v", version))
 				}
 			case 58:
-				log.Printf("tun: ICMPv6 v%d src=%s dst=%s type=%s len=%d [-]",
-					version, srcIP, dstIP, icmpTypeStr(6, pkt, ihl), n)
+				if !handleICMP6(pkt, bufs, n) {
+					log.Printf("tun: ICMPv6 v%d src=%s dst=%s type=%s len=%d [-]",
+						version, srcIP, dstIP, icmpTypeStr(6, pkt, ihl), n)
+				}
 			default:
 				log.Printf("tun: PROTO-%d v%d src=%s dst=%s len=%d [-]",
 					proto, version, srcIP, dstIP, n)
@@ -646,4 +699,48 @@ func icmpTypeStr(version int, pkt []byte, ihl int) string {
 		}
 	}
 	return ""
+}
+
+func handleICMP4(pkt []byte, ihl int, bufs [][]byte, n int) bool {
+	icmp := pkt[ihl:]
+	if len(icmp) < 8 || icmp[0] != 8 {
+		return false
+	}
+	tmp := make([]byte, 4)
+	copy(tmp, pkt[12:16])
+	copy(pkt[12:16], pkt[16:20])
+	copy(pkt[16:20], tmp)
+	icmp[0] = 0
+	icmp[1] = 0
+	icmp[2], icmp[3] = 0, 0
+	csum := onesComplementSum(icmp)
+	icmp[2] = byte(csum >> 8)
+	icmp[3] = byte(csum & 0xFF)
+	fixIPChecksum(pkt)
+	tunov.Write(bufs[:1], tunOffset)
+	DDLog.Printf("tun: ICMP Echo Reply v4 %s → %s len=%d [+]",
+		net.IP(pkt[12:16]).String(), net.IP(pkt[16:20]).String(), n)
+	return true
+}
+
+func handleICMP6(pkt []byte, bufs [][]byte, n int) bool {
+	icmp := pkt[40:]
+	if len(icmp) < 8 || icmp[0] != 128 {
+		return false
+	}
+	tmp := make([]byte, 16)
+	copy(tmp, pkt[8:24])
+	copy(pkt[8:24], pkt[24:40])
+	copy(pkt[24:40], tmp)
+	icmp[0] = 129
+	icmp[1] = 0
+	icmp[2], icmp[3] = 0, 0
+	psum := pseudoChecksum6(pkt[8:24], pkt[24:40], 58, uint16(len(icmp)))
+	csum := onesComplementSumFold(icmp, psum)
+	icmp[2] = byte(csum >> 8)
+	icmp[3] = byte(csum & 0xFF)
+	tunov.Write(bufs[:1], tunOffset)
+	DDLog.Printf("tun: ICMPv6 Echo Reply %s → %s len=%d [+]",
+		net.IP(pkt[8:24]).String(), net.IP(pkt[24:40]).String(), n)
+	return true
 }

@@ -32,14 +32,14 @@ type simEvent struct {
 }
 
 var (
-	simSelf   = selfInfo{
+	simSelf = selfInfo{
 		Address:          "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6",
 		Name:             "fedbridge",
 		StatusMessage:    "Online",
 		ConnectionStatus: 1,
 	}
-	simPeer  string
-	simMu    sync.Mutex
+	simPeer   string
+	simMu     sync.Mutex
 	simEvents []simEvent
 	simNextID uint64 = 1
 )
@@ -55,7 +55,7 @@ type ServerInfo struct {
 type AuthSupport int
 
 const (
-	AuthUnknown   AuthSupport = iota
+	AuthUnknown AuthSupport = iota
 	AuthSupported
 	AuthUnsupported
 )
@@ -127,7 +127,9 @@ func queryWellKnown(ctx context.Context, server string) (string, error) {
 		return "", fmt.Errorf(".well-known returned %d", resp.StatusCode)
 	}
 	var wk struct {
-		Homeserver struct{ BaseURL string `json:"base_url"` } `json:"m.homeserver"`
+		Homeserver struct {
+			BaseURL string `json:"base_url"`
+		} `json:"m.homeserver"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&wk); err != nil {
 		return "", err
@@ -442,7 +444,7 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 
 	if err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo); err != nil {
 		log.Printf("toxrestsim: dispatch send error: %v", err)
-		
+
 		// retry ForeachSend
 		if strings.Contains(err.Error(), "not connected") {
 			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo)

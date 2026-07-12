@@ -1,4 +1,5 @@
 //go:build gomuks
+
 package main
 
 import (

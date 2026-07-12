@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	emailAuth   string
-	emailImapDir string
+	emailAuth       string
+	emailImapDir    string
 	emailImapServer string
 )
 

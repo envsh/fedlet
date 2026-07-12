@@ -4,13 +4,12 @@ import (
 	"encoding/binary"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 
 	// "github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbtunnel"
-
 )
 
 type udpKey4 struct {

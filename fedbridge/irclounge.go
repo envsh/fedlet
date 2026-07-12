@@ -1,4 +1,5 @@
 //go:build irclounge
+
 package main
 
 import (
