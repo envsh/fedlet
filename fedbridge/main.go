@@ -84,7 +84,7 @@ func main() {
 	defer DDLog.ExitFlush()
 
 	initVirTun(cfg.KeyFile)
-	defer cleanupPFRules()
+	defer cleanupDarwinRoutes()
 
 	go func() {
 		if tunov == nil {

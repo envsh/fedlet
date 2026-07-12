@@ -70,30 +70,23 @@ func findAvailableUTUN() string {
 	return "utun3"
 }
 
-func setupPFRules() {
+func setupDarwinRoutes() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	ifname, err := tunov.Name()
+	out, err := exec.Command("/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=1").CombinedOutput()
 	if err != nil {
-		log.Printf("pf: get tun name: %v", err)
-		return
+		log.Printf("route: sysctl: %v\n%s", err, string(out))
 	}
-	out, err := exec.Command("./pf-darwin.sh", "setup", ifname, vlanpfx).CombinedOutput()
-	if err != nil {
-		log.Printf("pf: setup: %v\n%s", err, string(out))
-		return
-	}
-	log.Printf("pf: loaded rules for %s0/24 via %s", vlanpfx, ifname)
 }
 
-func cleanupPFRules() {
+func cleanupDarwinRoutes() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	out, err := exec.Command("./pf-darwin.sh", "cleanup").CombinedOutput()
+	out, err := exec.Command("./pfroute-darwin.sh", "cleanup").CombinedOutput()
 	if err != nil {
-		log.Printf("pf: cleanup: %v\n%s", err, string(out))
+		log.Printf("route: cleanup: %v\n%s", err, string(out))
 	}
 }
 
@@ -197,7 +190,7 @@ func initVirTun(keyFile string) error {
 	}()
 
 	if runtime.GOOS == "darwin" {
-		setupPFRules()
+		setupDarwinRoutes()
 	}
 
 	return nil
@@ -277,6 +270,12 @@ func addIPToTun(ip string) error {
 		out, err := exec.Command("/sbin/ifconfig", args...).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
+		}
+		if !is6 {
+			out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, vlanpfx, ip).CombinedOutput()
+			if err != nil {
+				log.Fatalf("virtun: %s", strings.TrimSpace(string(out)))
+			}
 		}
 		return nil
 	case "windows":
@@ -645,6 +644,20 @@ func fixUDPChecksum(pkt []byte, ihl int) {
 	csum := onesComplementSumFold(pkt[off:], psum)
 	pkt[off+6] = byte(csum >> 8)
 	pkt[off+7] = byte(csum & 0xFF)
+}
+
+func macOSVersion() (major, minor int) {
+	out, err := exec.Command("/usr/bin/sw_vers", "-productVersion").CombinedOutput()
+	if err != nil {
+		return 0, 0
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), ".", 3)
+	if len(parts) < 2 {
+		return 0, 0
+	}
+	major, _ = strconv.Atoi(parts[0])
+	minor, _ = strconv.Atoi(parts[1])
+	return
 }
 
 func icmpTypeStr(version int, pkt []byte, ihl int) string {
