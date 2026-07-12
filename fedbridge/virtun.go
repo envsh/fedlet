@@ -271,11 +271,13 @@ func addIPToTun(ip string) error {
 		if err != nil {
 			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
 		}
-		if !is6 {
-			out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, vlanpfx, ip).CombinedOutput()
-			if err != nil {
-				log.Fatalf("virtun: %s", strings.TrimSpace(string(out)))
-			}
+		is6str := "4"
+		if is6 {
+			is6str = "6"
+		}
+		out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, vlanpfx, ip, is6str).CombinedOutput()
+		if err != nil {
+			log.Fatalf("virtun: %s", strings.TrimSpace(string(out)))
 		}
 		return nil
 	case "windows":
