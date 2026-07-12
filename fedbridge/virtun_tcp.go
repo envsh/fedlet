@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"sort"
 	"strings"
 
@@ -29,8 +30,10 @@ type tcpBridge struct {
 	vc                *vtcp.Conn
 	remote            net.Conn
 	establishedLogged bool
+	connid     int64
 }
 
+var natconnid int64 = 10000
 var tcpConns sync.Map
 
 func tcpKeyFrom4(pkt []byte, ihl int, srcIP, dstIP [4]byte) tcpKey {
@@ -121,13 +124,18 @@ func feedTCP(bridge *tcpBridge, tcp []byte) {
 	bridge.vc.Flush(pkts)
 	if bridge.vc.State() == vtcp.StateEstablished && !bridge.establishedLogged {
 		bridge.establishedLogged = true
-		DDLog.Printf("tun: TCP ESTABLISHED %s ↔ %s [+]",
+		DDLog.Printf("tun: TCP ESTAB %s ↔ %s [+]",
 			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr())
 	}
 	if bridge.vc.State() == vtcp.StateClosed {
-		DDLog.Printf("tun: TCP %s → %s RST seq=%d ack=%d [+]",
-			bridge.vc.LocalAddr(), bridge.vc.RemoteAddr(),
-			seg.Seq, seg.Ack)
+		if seg.HasFlag(vtcp.FlagRST) {
+			DDLog.Printf("tun: TCP %s → %s RST seq=%d ack=%d [+]",
+				bridge.vc.LocalAddr(), bridge.vc.RemoteAddr(),
+				seg.Seq, seg.Ack)
+		} else {
+			DDLog.Printf("tun: TCP %s ↔ %s CLOSED [+]",
+				bridge.vc.LocalAddr(), bridge.vc.RemoteAddr())
+		}
 	}
 }
 
@@ -209,6 +217,7 @@ func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tc
 	})
 
 	bridge := &tcpBridge{vc: vc, remote: remote}
+	bridge.connid = atomic.AddInt64(&natconnid, 1)
 	vc.Flush(vc.AcceptSYN(seg))
 	bridge.startBridge()
 	return bridge

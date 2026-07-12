@@ -6,6 +6,11 @@ import (
 	"net"
 	"sync"
 	"time"
+	"strings"
+
+	// "github.com/envsh/libp2px/p2put"
+	"github.com/envsh/libp2px/pbtunnel"
+
 )
 
 type udpKey4 struct {
@@ -63,7 +68,18 @@ func handleUDP4(pkt []byte, ihl int, srcIP, dstIP [4]byte) {
 		return
 	}
 
-	conn, err := net.Dial("udp", net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort)))
+	dstAddr := net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort))
+	if strings.HasPrefix(dstAddr, localPeerIP+":") {
+		// self good goon
+	} else if id := peeridByConnIP(dstAddr); id != "" {
+		dstAddr = net.JoinHostPort(id, itoaU16(dstPort))
+	} else {
+		DDLog.Printf("no route to %s myip %s", dstAddr, localPeerIP)
+		return
+	}
+
+	conn, err := pbtunnel.DialUDP(dstAddr)
+	// conn, err := net.Dial("udp", net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort)))
 	if err != nil {
 		log.Printf("tun: UDP dial %s:%d: %v", net.IP(dstIP[:]).String(), dstPort, err)
 		return
@@ -79,7 +95,10 @@ func handleUDP4(pkt []byte, ihl int, srcIP, dstIP [4]byte) {
 	}
 	udpConns4.Store(k, f)
 	go udpReadLoop4(f, k)
-	conn.Write(udp[8:])
+	_, err = conn.Write(udp[8:])
+	if err != nil {
+		log.Println(err)
+	}
 	log.Printf("tun: UDP NAT new %s:%d → %s:%d [+]",
 		net.IP(srcIP[:]).String(), srcPort,
 		net.IP(dstIP[:]).String(), dstPort)
@@ -129,12 +148,15 @@ func udpReadLoop4(f *udpFlow4, k udpKey4) {
 	buf := make([]byte, 65507)
 	for {
 		f.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 		n, err := f.conn.Read(buf)
 		if err != nil {
+			log.Println(err, f.serverIP, f.serverPort)
 			f.conn.Close()
 			udpConns4.Delete(k)
 			return
 		}
+
 		f.mu.Lock()
 		f.lastUse = time.Now()
 		f.mu.Unlock()
@@ -145,7 +167,10 @@ func udpReadLoop4(f *udpFlow4, k udpKey4) {
 		binary.BigEndian.PutUint16(udpHdr[4:6], udpLen)
 		udpData := append(udpHdr, buf[:n]...)
 		pkt := buildUDP4(f.serverIP, f.clientIP, udpData)
-		writeTun(pkt)
+		err = writeTun(pkt)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }
 

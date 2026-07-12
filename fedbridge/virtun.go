@@ -511,18 +511,21 @@ func tunReadLoop() {
 				}
 			case 17:
 				sport, dport := parsePorts(pkt, 17, ihl)
-				log.Printf("tun: UDP v%d src=%s:%d dst=%s:%d len=%d [+]",
-					version, srcIP, sport, dstIP, dport, n)
+				_, _ = sport, dport
+				// log.Printf("tun: UDP v%d src=%s:%d dst=%s:%d len=%d [+]",
+				//	version, srcIP, sport, dstIP, dport, n)
 				if version == 4 {
 					var src, dst [4]byte
 					copy(src[:], srcIP.To4())
 					copy(dst[:], dstIP.To4())
 					handleUDP4(pkt, ihl, src, dst)
-				} else {
+				} else if version == 6 {
 					var src, dst [16]byte
 					copy(src[:], srcIP.To16())
 					copy(dst[:], dstIP.To16())
 					handleUDP6(pkt, src, dst)
+				} else {
+					panic(fmt.Errorf("wtt version %v", version))
 				}
 			case 58:
 				log.Printf("tun: ICMPv6 v%d src=%s dst=%s type=%s len=%d [-]",
