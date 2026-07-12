@@ -701,46 +701,4 @@ func icmpTypeStr(version int, pkt []byte, ihl int) string {
 	return ""
 }
 
-func handleICMP4(pkt []byte, ihl int, bufs [][]byte, n int) bool {
-	icmp := pkt[ihl:]
-	if len(icmp) < 8 || icmp[0] != 8 {
-		return false
-	}
-	tmp := make([]byte, 4)
-	copy(tmp, pkt[12:16])
-	copy(pkt[12:16], pkt[16:20])
-	copy(pkt[16:20], tmp)
-	icmp[0] = 0
-	icmp[1] = 0
-	icmp[2], icmp[3] = 0, 0
-	csum := onesComplementSum(icmp)
-	icmp[2] = byte(csum >> 8)
-	icmp[3] = byte(csum & 0xFF)
-	fixIPChecksum(pkt)
-	tunov.Write(bufs[:1], tunOffset)
-	DDLog.Printf("tun: ICMP Echo Reply v4 %s → %s len=%d [+]",
-		net.IP(pkt[12:16]).String(), net.IP(pkt[16:20]).String(), n)
-	return true
-}
 
-func handleICMP6(pkt []byte, bufs [][]byte, n int) bool {
-	icmp := pkt[40:]
-	if len(icmp) < 8 || icmp[0] != 128 {
-		return false
-	}
-	tmp := make([]byte, 16)
-	copy(tmp, pkt[8:24])
-	copy(pkt[8:24], pkt[24:40])
-	copy(pkt[24:40], tmp)
-	icmp[0] = 129
-	icmp[1] = 0
-	icmp[2], icmp[3] = 0, 0
-	psum := pseudoChecksum6(pkt[8:24], pkt[24:40], 58, uint16(len(icmp)))
-	csum := onesComplementSumFold(icmp, psum)
-	icmp[2] = byte(csum >> 8)
-	icmp[3] = byte(csum & 0xFF)
-	tunov.Write(bufs[:1], tunOffset)
-	DDLog.Printf("tun: ICMPv6 Echo Reply %s → %s len=%d [+]",
-		net.IP(pkt[8:24]).String(), net.IP(pkt[24:40]).String(), n)
-	return true
-}
