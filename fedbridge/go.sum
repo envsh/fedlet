@@ -208,6 +208,8 @@ github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/kitech/touse/oai v0.0.0-20260614143315-47f1e0d5834c h1:8vglNgxO3SG+FeXNpTAWXX95aBzfnNCa/A2eAUbNRRc=
 github.com/kitech/touse/oai v0.0.0-20260614143315-47f1e0d5834c/go.mod h1:RndqLg//u8EawJ2O3hpk/lTCVE8F/gcFb1KGjGcTAoQ=
+github.com/kitech/touse/oai v0.0.0-20260712120832-957a5f2a1671 h1:OXBWEH2R4uzXqEMyHTdW5iL3yOxE0YFjOQQEghbbBaU=
+github.com/kitech/touse/oai v0.0.0-20260712120832-957a5f2a1671/go.mod h1:RndqLg//u8EawJ2O3hpk/lTCVE8F/gcFb1KGjGcTAoQ=
 github.com/klauspost/compress v1.17.9 h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2qeMA=
 github.com/klauspost/compress v1.17.9/go.mod h1:Di0epgTjJY877eYKx5yC51cX2A2Vl2ibi7bDH9ttBbw=
 github.com/klauspost/cpuid/v2 v2.2.8 h1:+StwCXwm9PdpiEkPyzBXIy+M9KUb4ODm0Zarf1kS5BM=

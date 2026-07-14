@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -101,7 +102,28 @@ func handleTranslate(w http.ResponseWriter, r *http.Request) {
 		writeTranslationErr("MISSING_FIELDS", "text and to required", http.StatusBadRequest)
 		return
 	}
-	results, err := oai.MsetTranFull(req.To, "", req.Text)
+	type tranFn func(string, string, ...string) ([]string, error)
+	type backend struct {
+		name string
+		fn   tranFn
+	}
+	pool := []backend{
+		{"mset", oai.MsetTranFull},
+		{"deepl", oai.DeeplTranFull},
+		{"yandex", oai.YandexTranFull},
+	}
+	perm := rand.Perm(len(pool))
+	var results []string
+	var err error
+	for i := 0; i < len(perm) && i < 3; i++ {
+		p := pool[perm[i]]
+		log.Printf("translate: trying %s backend (attempt %d/3)", p.name, i+1)
+		results, err = p.fn(req.To, "", req.Text)
+		if err == nil {
+			break
+		}
+		log.Printf("translate: %s failed: %v", p.name, err)
+	}
 	if err != nil {
 		writeTranslationErr("TRANSLATE_FAILED", err.Error(), http.StatusInternalServerError)
 		return

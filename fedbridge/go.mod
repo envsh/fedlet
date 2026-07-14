@@ -24,7 +24,7 @@ require (
 	github.com/bep/debounce v1.2.1
 	github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/kitech/touse/oai v0.0.0-20260614143315-47f1e0d5834c
+	github.com/kitech/touse/oai v0.0.0-20260712120832-957a5f2a1671
 	github.com/vishvananda/netlink v1.3.1
 	golang.design/x/clipboard v0.7.0
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
