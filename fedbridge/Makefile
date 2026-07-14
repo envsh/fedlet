@@ -1,9 +1,10 @@
 BINARY = main
-TAGS = gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite
+TAGS = $(PROTO_TAGS)
 
-# clipboard need CGO
-all:
-	CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
+BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
+
+define POST_BUILD
 	@case "$$(uname -s)" in \
 		Linux) \
 			echo "==> setcap cap_net_admin+eip on $(BINARY)"; \
@@ -15,6 +16,25 @@ all:
 		*) \
 			echo "==> warning: unknown OS $$(uname -s), setcap/setuid skipped";; \
 	esac
+endef
+
+# about 33M
+all:
+	$(BUILD_CMD)
+	$(POST_BUILD)
+
+# about 30M
+nodht: TAGS := nodht,$(PROTO_TAGS)
+nodht: all
+
+# about 31M
+# with dht but no protos
+noproto: TAGS := nowatchdog
+noproto: all
+
+# about 28M
+min: TAGS := nodht,nowatchdog
+min: all
 
 NDK_DIR = /opt/android-ndk
 NDK_HOST = $(shell uname -s | tr A-Z a-z)-x86_64
