@@ -26,10 +26,18 @@ setup)
 	verify_ip=$4
 	is6=$5
 
-	# 1. enable ip forwarding
-	if ! /usr/sbin/sysctl -w net.inet.ip.forwarding=1 >/dev/null 2>&1; then
-		echo "sysctl: failed to enable ip forwarding"
-		exit 1
+	# 1. sysctl + pfctl — one-time: inject pass quick before com.apple/* anchor
+	if ! /sbin/pfctl -sr 2>/dev/null | grep -qF "pass out quick on ${ifname}"; then
+		/usr/sbin/sysctl -w net.inet.ip.forwarding=1 >/dev/null 2>&1
+		/sbin/pfctl -f - 2>/dev/null <<-PFEOF
+			scrub-anchor "com.apple/*"
+			nat-anchor "com.apple/*"
+			rdr-anchor "com.apple/*"
+			dummynet-anchor "com.apple/*"
+			pass out quick on ${ifname} inet proto { udp, icmp } from any to ${pfx}0/24 keep state
+			anchor "com.apple/*"
+			load anchor "com.apple" from "/etc/pf.anchors/com.apple"
+		PFEOF
 	fi
 
 	# 2. add v4 subnet route (idempotent — already-exists is fine)

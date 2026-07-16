@@ -52,6 +52,7 @@ var udpConns6 sync.Map
 func handleUDP4(pkt []byte, ihl int, srcIP, dstIP [4]byte) {
 	udp := pkt[ihl:]
 	if len(udp) < 8 {
+		log.Printf("invalid pktlen %v, must >=8", len(udp))
 		return
 	}
 	srcPort := binary.BigEndian.Uint16(udp[0:2])

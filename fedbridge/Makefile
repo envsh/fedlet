@@ -83,4 +83,4 @@ a32:
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(ARMV7_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(ARMV7_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog,$(TAGS) -o $(BINARY).arm32
+	go build -v -tags nodht,nopubsub,nowatchdog -o $(BINARY).arm32
