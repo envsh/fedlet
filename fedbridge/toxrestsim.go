@@ -468,7 +468,9 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		log.Printf("toxrestsim: dispatch send error: %v", err)
 
 		// retry ForeachSend
-		if strings.Contains(err.Error(), "not connected") {
+		if strings.Contains(err.Error(), "not connected") ||
+			// 当前运行二进制未编译相应的模块
+			strings.Contains(err.Error(), "no local sender for") {
 			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo)
 			if err != nil {
 				log.Printf("toxrestsim: foreach send error: %v", err)

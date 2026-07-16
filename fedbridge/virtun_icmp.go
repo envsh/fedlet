@@ -22,12 +22,12 @@ func handleICMP4(pkt []byte, ihl int, bufs [][]byte, n int) bool {
 	if pid == "" {
 		writeICMPDestUnreach4(pkt, ihl, 1)
 		tunov.Write(bufs[:1], tunOffset)
-		log.Printf("tun: ICMP DestUnreach v4 %s → %s len=%d [+]",
+		log.Printf("tun: ICMP Dest Unreach v4 %s → %s len=%d [+]",
 			net.IP(pkt[12:16]).String(), net.IP(pkt[16:20]).String(), n)
 		return true
 	}
 
-	log.Printf("tun: ICMP v4 Dial %s", pid+":1")
+	log.Printf("tun: ICMP v4 Dial %s ...", pid+":1")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stm, err := pbtunnel.Dial(pid+":1", ctx)
@@ -63,7 +63,7 @@ func handleICMP6(pkt []byte, bufs [][]byte, n int) bool {
 	if pid == "" {
 		writeICMPDestUnreach6(pkt, 3)
 		tunov.Write(bufs[:1], tunOffset)
-		log.Printf("tun: ICMPv6 DestUnreach %s → %s len=%d [+]",
+		log.Printf("tun: ICMPv6 Dest Unreach %s → %s len=%d [+]",
 			net.IP(pkt[8:24]).String(), net.IP(pkt[24:40]).String(), n)
 		return true
 	}

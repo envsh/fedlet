@@ -24,7 +24,7 @@ all:
 	$(POST_BUILD)
 
 # about 30M
-nodht: TAGS := nodht,$(PROTO_TAGS)
+nodht: TAGS := nodht,nopubsub,$(PROTO_TAGS)
 nodht: all
 
 # about 31M
@@ -33,7 +33,7 @@ noproto: TAGS := nowatchdog
 noproto: all
 
 # about 28M
-min: TAGS := nodht,nowatchdog
+min: TAGS := nodht,nopubsub,nowatchdog
 min: all
 
 NDK_DIR = /opt/android-ndk
@@ -76,11 +76,11 @@ a64:
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(AARCH64_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(AARCH64_SYSROOT_LDFLAGS)" \
-	go build -v -tags $(TAGS) -o $(BINARY).arm64
+	go build -v -tags nodht,nopubsub,nowatchdog,$(TAGS) -o $(BINARY).arm64
 
 a32:
 	CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(ARMV7_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(ARMV7_SYSROOT_LDFLAGS)" \
-	go build -v -tags $(TAGS) -o $(BINARY).arm
+	go build -v -tags nodht,nopubsub,nowatchdog,$(TAGS) -o $(BINARY).arm32
