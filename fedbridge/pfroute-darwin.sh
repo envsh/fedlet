@@ -36,7 +36,6 @@ setup)
 			dummynet-anchor "com.apple/*"
 			pass out quick on ${ifname} inet proto { udp, icmp } from any to ${pfx}0/24 keep state
 			anchor "com.apple/*"
-			load anchor "com.apple" from "/etc/pf.anchors/com.apple"
 		PFEOF
 	fi
 
