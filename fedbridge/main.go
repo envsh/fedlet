@@ -35,6 +35,8 @@ type serviceCapacities struct {
 	ocrServer      bool
 }
 
+var syncDir string
+
 var publishViaHTTP bool = true
 var channel_name = "reddit"
 

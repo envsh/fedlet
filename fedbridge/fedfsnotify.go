@@ -1,4 +1,3 @@
-//go:build matrixlite
 
 package main
 
@@ -22,8 +21,6 @@ import (
 	"github.com/bep/debounce"
 	"github.com/fsnotify/fsnotify"
 )
-
-var syncDir string
 
 type syncWatch struct {
 	watcher   *fsnotify.Watcher
