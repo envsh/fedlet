@@ -134,6 +134,10 @@ func initVirTun(keyFile string) error {
 			// Reference: wireguard-go/tun/tun_darwin.go — NativeTUN Read/Write.
 			tunOffset = 4
 		}
+		// fix tun write error invalid offset
+		if runtime.GOOS == "android" {
+			tunOffset = 12
+		}
 		if runtime.GOOS == "linux" {
 			// wireguard-go/tun.CreateTUN always sets IFF_VNET_HDR
 			// (tun_linux.go:566).  When vnetHdr is active, Write calls
@@ -715,5 +719,3 @@ func icmpTypeStr(version int, pkt []byte, ihl int) string {
 	}
 	return ""
 }
-
-
