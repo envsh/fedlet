@@ -34,7 +34,7 @@ func init() {
 	misskey.SetPublishInfo(func(data []byte) error {
 		return publish(channel_name, data)
 	})
-	flag.StringVar(&misskeyHost, "misskey", "", "Misskey instance URL")
+	flag.StringVar(&misskeyHost, "misskey", "https://misskey.io", "Misskey instance URL")
 	flag.StringVar(&misskeyToken, "misskey-token", "", "Misskey API token")
 	flag.StringVar(&misskeyTimeline, "misskey-timeline", "home", "Timeline: home/local/hybrid/global")
 }

@@ -156,6 +156,17 @@ func main() {
 	}
 }
 
+/*
+结论: gzip 压缩和 HTTP Range 请求（Accept-Ranges, If-Range, Range 头等）是互斥的。
+结论：net/http 标准库没有内建的自动 gzip 压缩中间件。
+所以最终还是需要引入一个外部包或用标准库自己写一个 wrapper。之前讨论的几个选择依然成立：
+1. github.com/NYTimes/gziphandler v1.1.1 — 最轻量，只依赖 stdlib，Go 1.11+ 兼容，一行代码集成
+2. 自己写 ~30 行中间件 — 用 compress/gzip + sync.Pool，零外部依赖
+3. github.com/klauspost/compress/gzhttp — 性能更好但依赖较重
+
+err := http.ListenAndServe(":4004", gzip.GzipHandler(http.DefaultServeMux))
+*/
+
 func tunloop() {
 	var peerid string
 
