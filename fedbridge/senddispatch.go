@@ -47,14 +47,14 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 	}
 	if info.statusFn != nil {
 		st := info.Status()
-		log.Printf("senddispatch: protocol=%q running=%v connected=%v reconn=%d errs=%d",
+		log.Printf("sendbr: protocol=%q running=%v connected=%v reconn=%d errs=%d",
 			info.Name, st.Running, st.ConnectedSince, st.ReconnTimes, len(st.LastErrs))
 		if !st.Running || (st.Running && st.ConnectedSince.IsZero()) {
 			req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo}
 			data, _ := json.Marshal(req)
-			log.Printf("senddispatch: backend %q not ready (running=%v connected=%v), forwardReq=%s",
+			log.Printf("sendbr: backend %q not ready (running=%v connected=%v), forwardReq=%s",
 				info.Name, st.Running, st.ConnectedSince, data)
-			return fmt.Errorf("senddispatch: backend %q not ready", ctype)
+			return fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
 		}
 	}
 	err := info.SendFn(to, msg, msgType, filedata, fileinfo)
@@ -80,6 +80,7 @@ const (
 )
 
 // return when first success
+// maybe infinite msgs !!!
 func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
 	var err0 error
 	btime := time.Now()
@@ -97,6 +98,7 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 		w.WriteField("type", msgType)
 		w.WriteField("id", to)
 		w.WriteField("message", msg)
+		w.WriteField("ttl", "1") // cutoff infinite loop send, used in handleMessageSend
 		if len(filedata) > 0 {
 			filename := "file"
 			if fileinfo != nil && fileinfo.Filename != "" {
@@ -108,7 +110,7 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 		w.Close()
 
 		req, err := http.NewRequest(http.MethodPost,
-			"http://127.0.0.1:4004/api/messages/send", &buf)
+			"http://127.0.0.1:4004/api/messages/send?ttl=1", &buf)
 		if err != nil {
 			err0 = err
 			log.Println(err, peerid)

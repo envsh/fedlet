@@ -67,6 +67,7 @@ var (
 )
 
 func init() {
+	rand.Seed(time.Now().UnixNano())
 	log.Println("toxrestsim: registering /api/* stub handlers")
 	http.HandleFunc("/api/self", handleSelf)
 	http.HandleFunc("/api/switchpeer", handleSwitchPeer)
@@ -435,6 +436,7 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	chatType := r.FormValue("type")
 	idStr := r.FormValue("id")
 	message := r.FormValue("message")
+	sendTTL := r.FormValue("ttl") // foreachSend ttl+1
 
 	if message == "" && len(fileData) > 0 {
 		message = fileName
@@ -465,12 +467,14 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		chatType, idStr, message, fileName, e.ID)
 
 	if err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo); err != nil {
-		log.Printf("toxrestsim: dispatch send error: %v", err)
+		log.Printf("toxrestsim: dispatch send error: ttl=%v %v", sendTTL, err)
 
 		// retry ForeachSend
-		if strings.Contains(err.Error(), "not connected") ||
+		// TODO maybe infinite msgs!!!
+		if (sendTTL == "" || sendTTL == "0") && (
+			strings.Contains(err.Error(), "not connected") ||
 			// 当前运行二进制未编译相应的模块
-			strings.Contains(err.Error(), "no local sender for") {
+			strings.Contains(err.Error(), "no local sender for")) {
 			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo)
 			if err != nil {
 				log.Printf("toxrestsim: foreach send error: %v", err)
