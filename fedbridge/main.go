@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/envsh/libp2px/dlog"
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbecho"
@@ -50,6 +52,14 @@ func publish(channel string, data []byte) error {
 		log.Println(channel, len(data), time.Since(btime), err)
 	}
 	// log.Println(channel, len(data), time.Since(btime), err)
+	var um fbshared.UnifiedMessage
+	if json.Unmarshal(data, &um) == nil && um.Protocol != "" {
+		log.Printf("publish: %s protocol=%s msgtype=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
+			channel, um.Protocol, um.MsgType,
+			um.ChatID, um.ChatName,
+			um.UserID, um.Username,
+			len(um.Text), len(um.Attachments))
+	}
 	return err
 }
 func publish2(channel string, data []byte) error {

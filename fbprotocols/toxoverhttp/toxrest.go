@@ -149,6 +149,9 @@ func poll_toxrest() {
 			} else {
 				published++
 			}
+			um := ev.toUnified(evJSON)
+			data, _ := json.Marshal(um)
+			publish(data)
 		}
 		if len(events) > 0 {
 			// log.Println("published", published, "/", len(events))

@@ -117,6 +117,9 @@ func pollLoop() {
 			if err := publish(data); err != nil {
 				log.Printf("misskey: publish error: %v", err)
 			}
+			um := n.toUnified(data)
+			umData, _ := json.Marshal(um)
+			publish(umData)
 		}
 
 		if len(notes) > 0 {

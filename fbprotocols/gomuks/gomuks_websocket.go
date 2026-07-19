@@ -96,10 +96,7 @@ func poll_gomuks() {
 			}
 			time.Sleep(5 * time.Second)
 			continue
-		}
-		if resp != nil {
-			log.Println("ws dial: http status=", resp.Status)
-		}
+			}
 
 		muGomuks.Lock()
 		gomuksConn = c
@@ -216,6 +213,9 @@ func gomuksEventLoop(c *websocket.Conn) {
 			if err := publish(msg); err != nil {
 				log.Println("publish error:", err)
 			}
+			um, _ := gomuksMsgToUnified(msg)
+			data, _ := json.Marshal(um)
+			publish(data)
 
 		case <-pingTicker.C:
 			seq++

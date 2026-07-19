@@ -114,6 +114,9 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 				log.Printf("irclounge: publish error: %v", err)
 				pushError(err)
 			}
+			um := loungeMsgToUnified(event.Data)
+			umData, _ := json.Marshal(um)
+			publish(umData)
 
 			case "init":
 				log.Println("irclounge: initial state loaded, parsing...")

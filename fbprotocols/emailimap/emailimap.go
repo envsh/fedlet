@@ -446,6 +446,9 @@ func poll(username, password, server string, dirs []string) {
 				if err := publish(b); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
+				um := m.toUnified(b)
+				data, _ := json.Marshal(um)
+				publish(data)
 			}
 			log.Printf("emailimap: %s: %d messages", dir, len(msgs))
 

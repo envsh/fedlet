@@ -237,6 +237,9 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 	if err := publish(msg); err != nil {
 		log.Println("publish error:", err)
 	}
+	um := irccloudMsgToUnified(msg)
+	data, _ := json.Marshal(um)
+	publish(data)
 }
 
 func (st *streamState) flushPendingJoins(cl *Client) {

@@ -114,6 +114,9 @@ func pollLoop(baseURL, token, user, password string) {
 					if err := publish(data); err != nil {
 						log.Printf("matrixlite: publish error: %v", err)
 					}
+					um := matrixEventToUnified(m, data)
+					umData, _ := json.Marshal(um)
+					publish(umData)
 				}
 				continue
 			}

@@ -428,6 +428,9 @@ func poll(cfg Config) {
 				if err := publish(b); err != nil {
 					log.Println("outlook: publish error:", err)
 				}
+				um := m.toUnified(b)
+				data, _ := json.Marshal(um)
+				publish(data)
 			}
 			if len(msgs) > 0 {
 				log.Printf("outlook: %s: %d new messages", folders[i].Name, len(msgs))
