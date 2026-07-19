@@ -18,17 +18,17 @@ import (
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
-func publish(data []byte) error {
-	if pubfn_ == nil {
-		return fmt.Errorf("pubfn not set")
-	}
-	return pubfn_(data)
+var pubfn_ func(any) error
+
+func SetPublishInfo(pubfn func(any) error) {
+	pubfn_ = pubfn
 }
 
-var pubfn_ func([]byte) error
-
-func SetPublishInfo(pubfn func([]byte) error) {
-	pubfn_ = pubfn
+func publish(v any) error {
+	if pubfn_ == nil {
+		return fmt.Errorf("outlook: publish fn not set")
+	}
+	return pubfn_(v)
 }
 
 var globalClientID string
@@ -425,13 +425,12 @@ func poll(cfg Config) {
 				m.FolderID = folders[i].ID
 				m.FolderName = folders[i].Name
 				b, _ := json.Marshal(m)
-				if err := publish(b); err != nil {
+				if err := publish(m); err != nil {
 					log.Println("outlook: publish error:", err)
 				}
 			um, ok := m.toUnified(b)
 			if ok {
-				data, _ := json.Marshal(um)
-				publish(data)
+				publish(um)
 			}
 			}
 			if len(msgs) > 0 {

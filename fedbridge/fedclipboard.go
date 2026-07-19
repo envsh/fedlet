@@ -87,7 +87,7 @@ func clipWaitProc() {
 			if !clipDedupText(scc) {
 				log.Printf("clipboard: dedup text %q within 2s, skip", scc)
 			} else {
-				publish(channel_name, marshalClipEvent("text", "", scc, 0, 0, 0))
+				publish(channel_name, json.RawMessage(marshalClipEvent("text", "", scc, 0, 0, 0)))
 			}
 		case data, ok := <-chImage:
 			if !ok {
@@ -106,7 +106,7 @@ func clipWaitProc() {
 			if !clipDedupImage(data) {
 				log.Printf("clipboard: dedup image within 2s, skip")
 			} else {
-				publish(channel_name, marshalClipEvent("image", mime, "", len(data), w, h))
+				publish(channel_name, json.RawMessage(marshalClipEvent("image", mime, "", len(data), w, h)))
 			}
 		}
 	}

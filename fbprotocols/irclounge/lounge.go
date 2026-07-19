@@ -19,13 +19,13 @@ var ircloungeClient *Client
 var joinedMu sync.Mutex
 var joinedSet = make(map[string]bool)
 
-func SetPublishInfo(pubfn func([]byte) error) { pubfn_ = pubfn }
+func SetPublishInfo(pubfn func(any) error) { pubfn_ = pubfn }
 
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return nil
 	}
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
 func split2(s, sep string) []string {
@@ -110,14 +110,13 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 						}
 					}
 				}
-			if err := publish(event.Data); err != nil {
+			if err := publish(json.RawMessage(event.Data)); err != nil {
 				log.Printf("irclounge: publish error: %v", err)
 				pushError(err)
 			}
 			um, ok := loungeMsgToUnified(event.Data)
 			if ok {
-				umData, _ := json.Marshal(um)
-				publish(umData)
+				publish(um)
 			}
 
 			case "init":

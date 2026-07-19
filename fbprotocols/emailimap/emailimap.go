@@ -66,7 +66,7 @@ type stateData struct {
 }
 
 var (
-	publishFn func([]byte) error
+	publishFn func(any) error
 	muSend    sync.Mutex
 	smtpAddr  string
 	smtpUser  string
@@ -74,15 +74,15 @@ var (
 	mailFrom  string
 )
 
-func SetPublishInfo(fn func([]byte) error) {
+func SetPublishInfo(fn func(any) error) {
 	publishFn = fn
 }
 
-func publish(data []byte) error {
+func publish(v any) error {
 	if publishFn == nil {
 		return fmt.Errorf("emailimap: publish fn not set")
 	}
-	return publishFn(data)
+	return publishFn(v)
 }
 
 func Start(info string) {
@@ -443,13 +443,12 @@ func poll(username, password, server string, dirs []string) {
 			msgs := fetchMessages(c, uids, dir)
 			for _, m := range msgs {
 				b, _ := json.Marshal(m)
-				if err := publish(b); err != nil {
+				if err := publish(m); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
 			um, ok := m.toUnified(b)
 			if ok {
-				data, _ := json.Marshal(um)
-				publish(data)
+				publish(um)
 			}
 			}
 			log.Printf("emailimap: %s: %d messages", dir, len(msgs))
@@ -522,8 +521,7 @@ func poll(username, password, server string, dirs []string) {
 
 			msgs := fetchMessages(c, uids, dir)
 			for _, m := range msgs {
-				b, _ := json.Marshal(m)
-				if err := publish(b); err != nil {
+				if err := publish(m); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
 			}

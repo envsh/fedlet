@@ -28,8 +28,8 @@ var _ = RegisterProtocol(&ProtocolInfo{
 })
 
 func init() {
-	gomuks.SetPublishInfo(func(data []byte) error {
-		return publish(channel_name, data)
+	gomuks.SetPublishInfo(func(v any) error {
+		return publish(channel_name, v)
 	})
 	flag.StringVar(&gomuksInfo, "gomuks", "127.0.0.1:29325", "gomuks info")
 }

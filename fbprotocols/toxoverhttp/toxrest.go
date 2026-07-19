@@ -17,17 +17,17 @@ import (
 )
 
 /////
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return fmt.Errorf("pubfn not set")
 	}
 
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
-var pubfn_ func([]byte) error
+var pubfn_ func(any) error
 
-func SetPublishInfo(pubfn func([]byte) error) {
+func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
 func Start(info string) {
@@ -144,15 +144,14 @@ func poll_toxrest() {
 				log.Println("marshal error:", err)
 				continue
 			}
-			if err := publish(evJSON); err != nil {
+			if err := publish(ev); err != nil {
 				log.Println("publish error:", err)
 			} else {
 				published++
 			}
 			um, ok := ev.toUnified(evJSON)
 			if ok {
-				data, _ := json.Marshal(um)
-				publish(data)
+				publish(um)
 			}
 		}
 		if len(events) > 0 {

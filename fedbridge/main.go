@@ -42,27 +42,48 @@ var syncDir string
 var publishViaHTTP bool = true
 var channel_name = "reddit"
 
-func publish(channel string, data []byte) error {
-	if len(data) == 0 {
-		return fmt.Errorf("publish: empty data")
-	}
-	btime := time.Now()
-	err := publish2(channel, data)
-	if err != nil {
-		log.Println(channel, len(data), time.Since(btime), err)
-	}
-	// log.Println(channel, len(data), time.Since(btime), err)
-	var um fbshared.UnifiedMessage
-	if json.Unmarshal(data, &um) == nil && um.Protocol != "" {
+func publish(channel string, v any) error {
+	switch vv := v.(type) {
+	case fbshared.UnifiedMessage:
+		data, err := json.Marshal(vv)
+		if err != nil {
+			return fmt.Errorf("publish: marshal UnifiedMessage: %w", err)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("publish: empty UnifiedMessage")
+		}
+		btime := time.Now()
+		err = publishBytes(channel, data)
+		if err != nil {
+			log.Println(channel, len(data), time.Since(btime), err)
+		}
 		log.Printf("publish: %s protocol=%s msgtype=%s msgid=%s format=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
-			channel, um.Protocol, um.MsgType, um.MsgID, um.MsgFormat,
-			um.ChatID, um.ChatName,
-			um.UserID, um.Username,
-			len(um.Text), len(um.Attachments))
+			channel, vv.Protocol, vv.MsgType, vv.MsgID, vv.MsgFormat,
+			vv.ChatID, vv.ChatName,
+			vv.UserID, vv.Username,
+			len(vv.Text), len(vv.Attachments))
+		return err
+
+	case []byte:
+		panic(fmt.Sprintf("publish: raw []byte not allowed (channel=%s, len=%d)", channel, len(vv)))
+
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("publish: marshal %T: %w", v, err)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("publish: empty data")
+		}
+		btime := time.Now()
+		err = publishBytes(channel, data)
+		if err != nil {
+			log.Println(channel, len(data), time.Since(btime), err)
+		}
+		return err
 	}
-	return err
 }
-func publish2(channel string, data []byte) error {
+func publishBytes(channel string, data []byte) error {
 	if publishViaHTTP {
 		url := fmt.Sprintf("http://127.0.0.1:4004/p2pin/send?topic=%s", channel)
 		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(data))

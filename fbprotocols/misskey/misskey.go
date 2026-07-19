@@ -21,15 +21,15 @@ var (
 	curTL    string
 )
 
-func SetPublishInfo(pubfn func([]byte) error) {
+func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
 
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return nil
 	}
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
 func Start(host, token, timeline string) {
@@ -114,13 +114,12 @@ func pollLoop() {
 			}
 			data, _ := json.Marshal(ev)
 			log.Printf("misskey: @%s: %s", n.User.Username, truncate(n.Text, 80))
-			if err := publish(data); err != nil {
+			if err := publish(ev); err != nil {
 				log.Printf("misskey: publish error: %v", err)
 			}
 			um, ok := n.toUnified(data)
 			if ok {
-				umData, _ := json.Marshal(um)
-				publish(umData)
+				publish(um)
 			}
 		}
 

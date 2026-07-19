@@ -20,16 +20,16 @@ import (
 )
 
 /////
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return fmt.Errorf("pubfn not set")
 	}
 
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
 var (
-	pubfn_         func([]byte) error
+	pubfn_         func(any) error
 	muGomuks       sync.Mutex
 	gomuksConn     *websocket.Conn
 	gomuksSeq      int
@@ -40,7 +40,7 @@ var (
 	pendingSends = map[int]chan error{}
 )
 
-func SetPublishInfo(pubfn func([]byte) error) {
+func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
 
@@ -210,15 +210,14 @@ func gomuksEventLoop(c *websocket.Conn) {
 					continue
 				}
 			}
-			if err := publish(msg); err != nil {
+			if err := publish(json.RawMessage(msg)); err != nil {
 				log.Println("publish error:", err)
 			}
 			um, ok, err := gomuksMsgToUnified(msg)
 			if err != nil {
 				log.Println("gomuks: unified translate error:", err)
 			} else if ok {
-				data, _ := json.Marshal(um)
-				publish(data)
+				publish(um)
 			}
 
 		case <-pingTicker.C:

@@ -101,7 +101,7 @@ func (w *syncWatch) flush() {
 	for path, op := range pending {
 		if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 			w.watcher.Remove(path)
-			publish(channel_name, w.marshalEvent("remove", w.rel(path), 0, "", "", ""))
+			publish(channel_name, json.RawMessage(w.marshalEvent("remove", w.rel(path), 0, "", "", "")))
 			continue
 		}
 		stat, err := os.Stat(path)
@@ -121,7 +121,7 @@ func (w *syncWatch) flush() {
 		sha := fileSHA256(path)
 		chk := fileChunk(path)
 		mimeVal := fileMIME(path)
-		publish(channel_name, w.marshalEvent(ev, w.rel(path), stat.Size(), mimeVal, sha, chk))
+		publish(channel_name, json.RawMessage(w.marshalEvent(ev, w.rel(path), stat.Size(), mimeVal, sha, chk)))
 	}
 }
 

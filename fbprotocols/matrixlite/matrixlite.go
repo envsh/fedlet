@@ -21,15 +21,15 @@ var (
 	curClient *Client
 )
 
-func SetPublishInfo(pubfn func([]byte) error) {
+func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
 
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return nil
 	}
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
 func parseAuth(auth string) (token, user, password string) {
@@ -111,13 +111,12 @@ func pollLoop(baseURL, token, user, password string) {
 						log.Printf("matrixlite: event in room %s, msgtype %s", rid, rawEventMsgtype(m))
 					}
 					data, _ := json.Marshal(m)
-					if err := publish(data); err != nil {
+					if err := publish(m); err != nil {
 						log.Printf("matrixlite: publish error: %v", err)
 					}
 				um, ok := matrixEventToUnified(m, data)
 				if ok {
-					umData, _ := json.Marshal(um)
-					publish(umData)
+					publish(um)
 				}
 				}
 				continue

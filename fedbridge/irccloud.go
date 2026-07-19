@@ -43,8 +43,8 @@ var _ = RegisterProtocol(&ProtocolInfo{
 				info = string(b)
 			}
 		}
-		irccloud.SetPublishInfo(func(data []byte) error {
-			return publish(channel_name, data)
+		irccloud.SetPublishInfo(func(v any) error {
+			return publish(channel_name, v)
 		})
 		irccloud.Start(info)
 	},

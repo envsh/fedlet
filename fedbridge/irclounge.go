@@ -27,8 +27,8 @@ var _ = RegisterProtocol(&ProtocolInfo{
 })
 
 func init() {
-	irclounge.SetPublishInfo(func(data []byte) error {
-		return publish(channel_name, data)
+	irclounge.SetPublishInfo(func(v any) error {
+		return publish(channel_name, v)
 	})
 	flag.StringVar(&ircloungeServer, "irclounge", "http://localhost:9000", "The Lounge server URL")
 	flag.StringVar(&ircloungeAuth, "irclounge-auth", "", "Lounge user:password (omit for public mode)")

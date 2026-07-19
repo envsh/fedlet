@@ -19,8 +19,8 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	StartFn: func() {
 		cfg := outlookgraph.Config{ClientID: outlookClientID}
 		b, _ := json.Marshal(cfg)
-		outlookgraph.SetPublishInfo(func(data []byte) error {
-			return publish(channel_name, data)
+		outlookgraph.SetPublishInfo(func(v any) error {
+			return publish(channel_name, v)
 		})
 		outlookgraph.Start(string(b))
 	},

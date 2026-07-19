@@ -15,11 +15,11 @@ import (
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
-func publish(data []byte) error {
+func publish(v any) error {
 	if pubfn_ == nil {
 		return fmt.Errorf("pubfn not set")
 	}
-	return pubfn_(data)
+	return pubfn_(v)
 }
 
 var (
@@ -177,7 +177,7 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 			} else {
 				for oobMsg := range oobCh {
 					st.processMessage(oobMsg, cl, cfg)
-					if err := publish(oobMsg); err != nil {
+					if err := publish(json.RawMessage(oobMsg)); err != nil {
 						log.Println("OOB publish error:", err)
 					}
 				}
@@ -234,13 +234,12 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 		}
 	}
 
-	if err := publish(msg); err != nil {
+	if err := publish(json.RawMessage(msg)); err != nil {
 		log.Println("publish error:", err)
 	}
 	um, ok := irccloudMsgToUnified(msg)
 	if ok {
-		data, _ := json.Marshal(um)
-		publish(data)
+		publish(um)
 	}
 }
 
