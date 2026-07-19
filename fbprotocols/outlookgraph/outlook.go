@@ -428,9 +428,11 @@ func poll(cfg Config) {
 				if err := publish(b); err != nil {
 					log.Println("outlook: publish error:", err)
 				}
-				um := m.toUnified(b)
+			um, ok := m.toUnified(b)
+			if ok {
 				data, _ := json.Marshal(um)
 				publish(data)
+			}
 			}
 			if len(msgs) > 0 {
 				log.Printf("outlook: %s: %d new messages", folders[i].Name, len(msgs))
@@ -479,7 +481,7 @@ func LastErrs() []error {
 	return out
 }
 
-func (m *messageData) toUnified(raw []byte) fbshared.UnifiedMessage {
+func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Text:      m.BodyPreview,
 		MsgFormat: fbshared.FmtText,
@@ -496,5 +498,5 @@ func (m *messageData) toUnified(raw []byte) fbshared.UnifiedMessage {
 		um.Timestamp = t.UnixNano()
 	}
 	um.Raw = raw
-	return um
+	return um, true
 }

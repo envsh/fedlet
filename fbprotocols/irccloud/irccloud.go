@@ -237,9 +237,11 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 	if err := publish(msg); err != nil {
 		log.Println("publish error:", err)
 	}
-	um := irccloudMsgToUnified(msg)
-	data, _ := json.Marshal(um)
-	publish(data)
+	um, ok := irccloudMsgToUnified(msg)
+	if ok {
+		data, _ := json.Marshal(um)
+		publish(data)
+	}
 }
 
 func (st *streamState) flushPendingJoins(cl *Client) {
@@ -510,7 +512,7 @@ func LastErrs() []error {
 	return out
 }
 
-func irccloudMsgToUnified(msg []byte) fbshared.UnifiedMessage {
+func irccloudMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool) {
 	var h struct {
 		Type string `json:"type"`
 		EID  uint64 `json:"eid"`
@@ -524,23 +526,25 @@ func irccloudMsgToUnified(msg []byte) fbshared.UnifiedMessage {
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if h.Type == "buffer_msg" || h.Type == "buffer_me_msg" {
-		var body struct {
-			From string `json:"from"`
-			Chan string `json:"chan"`
-			Msg  string `json:"msg"`
-		}
-		if json.Unmarshal(msg, &body) == nil {
-			um.Username = body.From
-			um.UserID = body.From
-			um.ChatName = body.Chan
-			um.Text = body.Msg
-			um.MsgFormat = fbshared.FmtText
-		}
+	if h.Type != "buffer_msg" && h.Type != "buffer_me_msg" {
+		return um, false
+	}
+
+	var body struct {
+		From string `json:"from"`
+		Chan string `json:"chan"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(msg, &body) == nil {
+		um.UserName = body.From
+		um.UserID = body.From
+		um.ChatName = body.Chan
+		um.Text = body.Msg
+		um.MsgFormat = fbshared.FmtText
 	}
 
 	um.Raw = msg
-	return um
+	return um, true
 }
 
 func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {

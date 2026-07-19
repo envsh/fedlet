@@ -114,9 +114,11 @@ func pollLoop(baseURL, token, user, password string) {
 					if err := publish(data); err != nil {
 						log.Printf("matrixlite: publish error: %v", err)
 					}
-					um := matrixEventToUnified(m, data)
+				um, ok := matrixEventToUnified(m, data)
+				if ok {
 					umData, _ := json.Marshal(um)
 					publish(umData)
+				}
 				}
 				continue
 			}
@@ -335,7 +337,7 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 	return c.downloadMedia(mxcURL)
 }
 
-func matrixEventToUnified(m map[string]any, raw []byte) fbshared.UnifiedMessage {
+func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoMatrixLite,
 		MsgType:   fbshared.MsgTypeCreate,
@@ -373,7 +375,10 @@ func matrixEventToUnified(m map[string]any, raw []byte) fbshared.UnifiedMessage 
 		}
 	}
 
-	return um
+	if um.Text == "" {
+		return um, false
+	}
+	return um, true
 }
 
 func rawEventMsgtype(m map[string]any) string {

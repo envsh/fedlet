@@ -149,9 +149,11 @@ func poll_toxrest() {
 			} else {
 				published++
 			}
-			um := ev.toUnified(evJSON)
-			data, _ := json.Marshal(um)
-			publish(data)
+			um, ok := ev.toUnified(evJSON)
+			if ok {
+				data, _ := json.Marshal(um)
+				publish(data)
+			}
 		}
 		if len(events) > 0 {
 			// log.Println("published", published, "/", len(events))
@@ -271,7 +273,7 @@ func LastErrs() []error {
 	return out
 }
 
-func (ev *Event) toUnified(raw []byte) fbshared.UnifiedMessage {
+func (ev *Event) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 	return fbshared.UnifiedMessage{
 		Text:      ev.Data,
 		MsgFormat: fbshared.FmtText,
@@ -280,5 +282,5 @@ func (ev *Event) toUnified(raw []byte) fbshared.UnifiedMessage {
 		MsgID:     strconv.FormatUint(ev.ID, 10),
 		Timestamp: ev.Timestamp.UnixNano(),
 		Raw:       raw,
-	}
+	}, true
 }

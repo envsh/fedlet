@@ -114,9 +114,11 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 				log.Printf("irclounge: publish error: %v", err)
 				pushError(err)
 			}
-			um := loungeMsgToUnified(event.Data)
-			umData, _ := json.Marshal(um)
-			publish(umData)
+			um, ok := loungeMsgToUnified(event.Data)
+			if ok {
+				umData, _ := json.Marshal(um)
+				publish(umData)
+			}
 
 			case "init":
 				log.Println("irclounge: initial state loaded, parsing...")
@@ -266,7 +268,7 @@ func LastErrs() []error {
 	return out
 }
 
-func loungeMsgToUnified(data []byte) fbshared.UnifiedMessage {
+func loungeMsgToUnified(data []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoIRCLounge,
 		MsgType:   fbshared.MsgTypeCreate,
@@ -278,7 +280,7 @@ func loungeMsgToUnified(data []byte) fbshared.UnifiedMessage {
 		Chan int     `json:"chan"`
 	}
 	if json.Unmarshal(data, &raw) != nil {
-		return um
+		return um, false
 	}
 
 	um.MsgID = raw.Msg.MsgID
@@ -300,6 +302,10 @@ func loungeMsgToUnified(data []byte) fbshared.UnifiedMessage {
 		}
 	}
 
+	if um.Text == "" {
+		return um, false
+	}
+
 	um.Raw = data
-	return um
+	return um, true
 }

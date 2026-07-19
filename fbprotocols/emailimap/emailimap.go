@@ -446,9 +446,11 @@ func poll(username, password, server string, dirs []string) {
 				if err := publish(b); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
-				um := m.toUnified(b)
+			um, ok := m.toUnified(b)
+			if ok {
 				data, _ := json.Marshal(um)
 				publish(data)
+			}
 			}
 			log.Printf("emailimap: %s: %d messages", dir, len(msgs))
 
@@ -839,7 +841,7 @@ func LastErrs() []error {
 	return out
 }
 
-func (m *messageData) toUnified(raw []byte) fbshared.UnifiedMessage {
+func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Text:      m.BodyPreview,
 		HTML:      m.BodyHtml,
@@ -857,5 +859,5 @@ func (m *messageData) toUnified(raw []byte) fbshared.UnifiedMessage {
 		um.Timestamp = t.UnixNano()
 	}
 	um.Raw = raw
-	return um
+	return um, true
 }

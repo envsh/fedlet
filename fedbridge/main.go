@@ -54,8 +54,8 @@ func publish(channel string, data []byte) error {
 	// log.Println(channel, len(data), time.Since(btime), err)
 	var um fbshared.UnifiedMessage
 	if json.Unmarshal(data, &um) == nil && um.Protocol != "" {
-		log.Printf("publish: %s protocol=%s msgtype=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
-			channel, um.Protocol, um.MsgType,
+		log.Printf("publish: %s protocol=%s msgtype=%s msgid=%s format=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
+			channel, um.Protocol, um.MsgType, um.MsgID, um.MsgFormat,
 			um.ChatID, um.ChatName,
 			um.UserID, um.Username,
 			len(um.Text), len(um.Attachments))

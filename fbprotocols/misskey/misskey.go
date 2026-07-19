@@ -117,9 +117,11 @@ func pollLoop() {
 			if err := publish(data); err != nil {
 				log.Printf("misskey: publish error: %v", err)
 			}
-			um := n.toUnified(data)
-			umData, _ := json.Marshal(um)
-			publish(umData)
+			um, ok := n.toUnified(data)
+			if ok {
+				umData, _ := json.Marshal(um)
+				publish(umData)
+			}
 		}
 
 		if len(notes) > 0 {
@@ -224,7 +226,7 @@ func truncate(s string, n int) string {
 	return string(runes[:n]) + "..."
 }
 
-func (n *Note) toUnified(raw []byte) fbshared.UnifiedMessage {
+func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Text:      n.Text,
 		MsgFormat: fbshared.FmtText,
@@ -239,5 +241,5 @@ func (n *Note) toUnified(raw []byte) fbshared.UnifiedMessage {
 	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
 		um.Timestamp = t.UnixNano()
 	}
-	return um
+	return um, true
 }

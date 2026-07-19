@@ -213,9 +213,13 @@ func gomuksEventLoop(c *websocket.Conn) {
 			if err := publish(msg); err != nil {
 				log.Println("publish error:", err)
 			}
-			um, _ := gomuksMsgToUnified(msg)
-			data, _ := json.Marshal(um)
-			publish(data)
+			um, ok, err := gomuksMsgToUnified(msg)
+			if err != nil {
+				log.Println("gomuks: unified translate error:", err)
+			} else if ok {
+				data, _ := json.Marshal(um)
+				publish(data)
+			}
 
 		case <-pingTicker.C:
 			seq++
@@ -439,20 +443,17 @@ func LastErrs() []error {
 	return out
 }
 
-func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, error) {
+func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool, error) {
 	var resp struct {
 		Command string          `json:"command"`
 		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(msg, &resp); err != nil {
-		return fbshared.UnifiedMessage{}, err
+		return fbshared.UnifiedMessage{}, false, err
 	}
 
 	if resp.Command != "event" {
-		return fbshared.UnifiedMessage{
-			Protocol: fbshared.ProtoGomuks,
-			MsgType:  resp.Command,
-		}, nil
+		return fbshared.UnifiedMessage{}, false, nil
 	}
 
 	var ev struct {
@@ -466,16 +467,20 @@ func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, error) {
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(resp.Data, &ev); err != nil {
-		return fbshared.UnifiedMessage{}, err
+		return fbshared.UnifiedMessage{}, false, err
+	}
+
+	if ev.Content == nil || ev.Content.MsgType != "m.text" {
+		return fbshared.UnifiedMessage{}, false, nil
 	}
 
 	um := fbshared.UnifiedMessage{
-		Protocol: fbshared.ProtoGomuks,
-		MsgID:    ev.EventID,
-		UserID:   ev.Sender,
-		Username: ev.Sender,
-		ChatID:   ev.RoomID,
-		MsgType:  fbshared.MsgTypeCreate,
+		Protocol:  fbshared.ProtoGomuks,
+		MsgID:     ev.EventID,
+		UserID:    ev.Sender,
+		Username:  ev.Sender,
+		ChatID:    ev.RoomID,
+		MsgType:   fbshared.MsgTypeCreate,
 		MsgFormat: fbshared.FmtText,
 		Timestamp: time.Now().UnixNano(),
 	}
@@ -486,5 +491,5 @@ func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, error) {
 		um.Timestamp = ev.OriginServerTs * 1000000
 	}
 	um.Raw = msg
-	return um, nil
+	return um, true, nil
 }
