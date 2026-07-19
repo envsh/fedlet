@@ -44,7 +44,12 @@ var channel_name = "reddit"
 
 func publish(channel string, v any) error {
 	switch vv := v.(type) {
+	// 是否要使用后端解析还是UI端解析呢,后端解析部署麻烦
+	// 这个server层还是只做数据拉取,原样返回UI客户端,忽略统一化解析
 	case fbshared.UnifiedMessage:
+		if true {
+			return nil
+		}
 		data, err := json.Marshal(vv)
 		if err != nil {
 			return fmt.Errorf("publish: marshal UnifiedMessage: %w", err)

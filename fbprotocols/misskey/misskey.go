@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	pubfn_   func([]byte) error
+	pubfn_   func(any) error
 	muClient sync.Mutex
 	curHost  string
 	curToken string

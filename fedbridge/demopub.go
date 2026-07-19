@@ -12,7 +12,7 @@ func poll_demopub() {
 
 	for i := 0; ; i++ {
 		time.Sleep(15 * time.Second)
-		scc := fmt.Sprintf("{\"vvv\": ddddddd %v}", i)
+		scc := fmt.Sprintf(`{"vvv": "ddddddd %v"}`, i)
 		err := publish(channel_name, json.RawMessage(scc))
 		if err != nil {
 			log.Println(i, err)

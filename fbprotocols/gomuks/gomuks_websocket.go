@@ -211,12 +211,13 @@ func gomuksEventLoop(c *websocket.Conn) {
 				}
 			}
 			if err := publish(json.RawMessage(msg)); err != nil {
-				log.Println("publish error:", err)
+				log.Println("publish raw error:", err)
 			}
-			um, ok, err := gomuksMsgToUnified(msg)
-			if err != nil {
-				log.Println("gomuks: unified translate error:", err)
-			} else if ok {
+			ums := gomuksToUnified(msg)
+			if len(ums) == 0 {
+				log.Println("gomuks: no unified message from sync_complete")
+			}
+			for _, um := range ums {
 				publish(um)
 			}
 
@@ -442,53 +443,79 @@ func LastErrs() []error {
 	return out
 }
 
-func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool, error) {
+func gomuksToUnified(msg []byte) []fbshared.UnifiedMessage {
 	var resp struct {
 		Command string          `json:"command"`
 		Data    json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(msg, &resp); err != nil {
-		return fbshared.UnifiedMessage{}, false, err
+	if json.Unmarshal(msg, &resp) != nil {
+		return nil
 	}
 
-	if resp.Command != "event" {
-		return fbshared.UnifiedMessage{}, false, nil
+	if resp.Command != "sync_complete" {
+		return nil
 	}
 
+	var syncData struct {
+		Rooms map[string]struct {
+			Events []json.RawMessage `json:"events"`
+		} `json:"rooms"`
+	}
+	if json.Unmarshal(resp.Data, &syncData) != nil {
+		return nil
+	}
+
+	var result []fbshared.UnifiedMessage
+	for roomID, room := range syncData.Rooms {
+		for _, rawEv := range room.Events {
+			um := parseGomuksEvent(rawEv, roomID)
+			if um != nil {
+				result = append(result, *um)
+			}
+		}
+	}
+	return result
+}
+
+func parseGomuksEvent(raw json.RawMessage, roomID string) *fbshared.UnifiedMessage {
 	var ev struct {
-		EventID        string `json:"event_id"`
-		Sender         string `json:"sender"`
-		RoomID         string `json:"room_id"`
-		OriginServerTs int64  `json:"origin_server_ts"`
-		Content        *struct {
-			Body    string `json:"body"`
-			MsgType string `json:"msgtype"`
-		} `json:"content"`
+		EventID   string          `json:"event_id"`
+		Sender    string          `json:"sender"`
+		Type      string          `json:"type"`
+		Timestamp int64           `json:"timestamp"`
+		Content   json.RawMessage `json:"content"`
+		Decrypted json.RawMessage `json:"decrypted,omitempty"`
 	}
-	if err := json.Unmarshal(resp.Data, &ev); err != nil {
-		return fbshared.UnifiedMessage{}, false, err
+	if json.Unmarshal(raw, &ev) != nil {
+		return nil
+	}
+	if ev.Type != "m.room.message" {
+		return nil
+	}
+	if ev.Decrypted != nil {
+		return nil
 	}
 
-	if ev.Content == nil || ev.Content.MsgType != "m.text" {
-		return fbshared.UnifiedMessage{}, false, nil
+	var content struct {
+		Body    string `json:"body"`
+		Msgtype string `json:"msgtype"`
+	}
+	if json.Unmarshal(ev.Content, &content) != nil || content.Body == "" {
+		return nil
 	}
 
+	msgFormat := fbshared.FmtText
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoGomuks,
 		MsgID:     ev.EventID,
 		UserID:    ev.Sender,
 		Username:  ev.Sender,
-		ChatID:    ev.RoomID,
+		ChatID:    roomID,
 		MsgType:   fbshared.MsgTypeCreate,
-		MsgFormat: fbshared.FmtText,
-		Timestamp: time.Now().UnixNano(),
+		MsgFormat: msgFormat,
+		Text:      content.Body,
+		Timestamp: ev.Timestamp * int64(time.Millisecond),
+		Raw:       raw,
 	}
-	if ev.Content != nil {
-		um.Text = ev.Content.Body
-	}
-	if ev.OriginServerTs > 0 {
-		um.Timestamp = ev.OriginServerTs * 1000000
-	}
-	um.Raw = msg
-	return um, true, nil
+	return &um
 }
