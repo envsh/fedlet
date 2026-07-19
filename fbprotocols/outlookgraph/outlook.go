@@ -475,3 +475,23 @@ func LastErrs() []error {
 	}
 	return out
 }
+
+func (m *messageData) toUnified(raw []byte) fbshared.UnifiedMessage {
+	um := fbshared.UnifiedMessage{
+		Text:      m.BodyPreview,
+		MsgFormat: fbshared.FmtText,
+		Protocol:  fbshared.ProtoOutlookGraph,
+		ChatID:    m.FolderID,
+		ChatName:  m.FolderName,
+		Username:  m.From,
+		UserID:    m.From,
+		MsgType:   fbshared.MsgTypeCreate,
+		MsgID:     m.ID,
+		Timestamp: time.Now().UnixNano(),
+	}
+	if t, err := time.Parse(time.RFC3339, m.ReceivedDateTime); err == nil {
+		um.Timestamp = t.UnixNano()
+	}
+	um.Raw = raw
+	return um
+}

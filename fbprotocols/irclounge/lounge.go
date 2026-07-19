@@ -262,3 +262,41 @@ func LastErrs() []error {
 	}
 	return out
 }
+
+func loungeMsgToUnified(data []byte) fbshared.UnifiedMessage {
+	um := fbshared.UnifiedMessage{
+		Protocol:  fbshared.ProtoIRCLounge,
+		MsgType:   fbshared.MsgTypeCreate,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	var raw struct {
+		Msg  Message `json:"msg"`
+		Chan int     `json:"chan"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return um
+	}
+
+	um.MsgID = raw.Msg.MsgID
+	if raw.Msg.From != nil {
+		um.UserName = raw.Msg.From.Nick
+		um.UserID = raw.Msg.From.Nick
+	}
+	um.Text = raw.Msg.Text
+	um.MsgFormat = fbshared.FmtText
+	um.ChatID = strconv.Itoa(raw.Chan)
+
+	if raw.Msg.Type == "action" {
+		um.MsgType = "action"
+	}
+
+	if raw.Msg.Time != "" {
+		if t, err := time.Parse(time.RFC3339, raw.Msg.Time); err == nil {
+			um.Timestamp = t.UnixNano()
+		}
+	}
+
+	um.Raw = data
+	return um
+}

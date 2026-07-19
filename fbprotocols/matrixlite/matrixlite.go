@@ -332,6 +332,47 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 	return c.downloadMedia(mxcURL)
 }
 
+func matrixEventToUnified(m map[string]any, raw []byte) fbshared.UnifiedMessage {
+	um := fbshared.UnifiedMessage{
+		Protocol:  fbshared.ProtoMatrixLite,
+		MsgType:   fbshared.MsgTypeCreate,
+		MsgFormat: fbshared.FmtText,
+		Timestamp: time.Now().UnixNano(),
+		Raw:       raw,
+	}
+
+	if s, _ := m["event_id"].(string); s != "" {
+		um.MsgID = s
+	}
+	if s, _ := m["sender"].(string); s != "" {
+		um.UserID = s
+		um.Username = s
+	}
+	if s, _ := m["room_id"].(string); s != "" {
+		um.ChatID = s
+	}
+	if f, ok := m["origin_server_ts"].(float64); ok && f > 0 {
+		um.Timestamp = int64(f) * 1000000
+	}
+
+	if content, ok := m["content"].(map[string]any); ok {
+		if s, _ := content["body"].(string); s != "" {
+			um.Text = s
+		}
+		if s, _ := content["msgtype"].(string); s != "" {
+			um.MsgType = s
+		}
+		if s, _ := content["format"].(string); s == "org.matrix.custom.html" {
+			if s2, _ := content["formatted_body"].(string); s2 != "" {
+				um.HTML = s2
+				um.MsgFormat = fbshared.FmtHTML
+			}
+		}
+	}
+
+	return um
+}
+
 func rawEventMsgtype(m map[string]any) string {
 	content, _ := m["content"].(map[string]any)
 	mt, _ := content["msgtype"].(string)

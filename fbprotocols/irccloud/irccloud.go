@@ -507,6 +507,39 @@ func LastErrs() []error {
 	return out
 }
 
+func irccloudMsgToUnified(msg []byte) fbshared.UnifiedMessage {
+	var h struct {
+		Type string `json:"type"`
+		EID  uint64 `json:"eid"`
+	}
+	json.Unmarshal(msg, &h)
+
+	um := fbshared.UnifiedMessage{
+		Protocol:  fbshared.ProtoIRCCloud,
+		MsgID:     strconv.FormatUint(h.EID, 10),
+		MsgType:   h.Type,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	if h.Type == "buffer_msg" || h.Type == "buffer_me_msg" {
+		var body struct {
+			From string `json:"from"`
+			Chan string `json:"chan"`
+			Msg  string `json:"msg"`
+		}
+		if json.Unmarshal(msg, &body) == nil {
+			um.Username = body.From
+			um.UserID = body.From
+			um.ChatName = body.Chan
+			um.Text = body.Msg
+			um.MsgFormat = fbshared.FmtText
+		}
+	}
+
+	um.Raw = msg
+	return um
+}
+
 func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
 	if to == "" || msg == "" {
 		return fmt.Errorf("irccloud: empty to or message")

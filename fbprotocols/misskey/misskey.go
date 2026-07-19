@@ -220,3 +220,21 @@ func truncate(s string, n int) string {
 	}
 	return string(runes[:n]) + "..."
 }
+
+func (n *Note) toUnified(raw []byte) fbshared.UnifiedMessage {
+	um := fbshared.UnifiedMessage{
+		Text:      n.Text,
+		MsgFormat: fbshared.FmtText,
+		Protocol:  fbshared.ProtoMisskey,
+		Username:  n.User.Username,
+		UserID:    n.UserID,
+		MsgType:   fbshared.MsgTypeCreate,
+		MsgID:     n.ID,
+		Timestamp: time.Now().UnixNano(),
+		Raw:       raw,
+	}
+	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
+		um.Timestamp = t.UnixNano()
+	}
+	return um
+}

@@ -438,3 +438,53 @@ func LastErrs() []error {
 	}
 	return out
 }
+
+func gomuksMsgToUnified(msg []byte) (fbshared.UnifiedMessage, error) {
+	var resp struct {
+		Command string          `json:"command"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(msg, &resp); err != nil {
+		return fbshared.UnifiedMessage{}, err
+	}
+
+	if resp.Command != "event" {
+		return fbshared.UnifiedMessage{
+			Protocol: fbshared.ProtoGomuks,
+			MsgType:  resp.Command,
+		}, nil
+	}
+
+	var ev struct {
+		EventID        string `json:"event_id"`
+		Sender         string `json:"sender"`
+		RoomID         string `json:"room_id"`
+		OriginServerTs int64  `json:"origin_server_ts"`
+		Content        *struct {
+			Body    string `json:"body"`
+			MsgType string `json:"msgtype"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Data, &ev); err != nil {
+		return fbshared.UnifiedMessage{}, err
+	}
+
+	um := fbshared.UnifiedMessage{
+		Protocol: fbshared.ProtoGomuks,
+		MsgID:    ev.EventID,
+		UserID:   ev.Sender,
+		Username: ev.Sender,
+		ChatID:   ev.RoomID,
+		MsgType:  fbshared.MsgTypeCreate,
+		MsgFormat: fbshared.FmtText,
+		Timestamp: time.Now().UnixNano(),
+	}
+	if ev.Content != nil {
+		um.Text = ev.Content.Body
+	}
+	if ev.OriginServerTs > 0 {
+		um.Timestamp = ev.OriginServerTs * 1000000
+	}
+	um.Raw = msg
+	return um, nil
+}

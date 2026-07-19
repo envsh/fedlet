@@ -267,3 +267,15 @@ func LastErrs() []error {
 	}
 	return out
 }
+
+func (ev *Event) toUnified(raw []byte) fbshared.UnifiedMessage {
+	return fbshared.UnifiedMessage{
+		Text:      ev.Data,
+		MsgFormat: fbshared.FmtText,
+		Protocol:  fbshared.ProtoToxOverHttp,
+		MsgType:   ev.Type,
+		MsgID:     strconv.FormatUint(ev.ID, 10),
+		Timestamp: ev.Timestamp.UnixNano(),
+		Raw:       raw,
+	}
+}
