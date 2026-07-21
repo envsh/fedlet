@@ -284,7 +284,7 @@ func loungeMsgToUnified(data []byte) (fbshared.UnifiedMessage, bool) {
 
 	um.MsgID = raw.Msg.MsgID
 	if raw.Msg.From != nil {
-		um.UserName = raw.Msg.From.Nick
+		um.Username = raw.Msg.From.Nick
 		um.UserID = raw.Msg.From.Nick
 	}
 	um.Text = raw.Msg.Text

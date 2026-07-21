@@ -229,6 +229,7 @@ func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		Protocol:  fbshared.ProtoMisskey,
 		Username:  n.User.Username,
 		UserID:    n.UserID,
+		Usernick:  n.User.Name,
 		MsgID:     n.ID,
 		MsgType:   fbshared.MsgTypeCreate,
 	}

@@ -535,7 +535,7 @@ func irccloudMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool) {
 		Msg  string `json:"msg"`
 	}
 	if json.Unmarshal(msg, &body) == nil {
-		um.UserName = body.From
+		um.Username = body.From
 		um.UserID = body.From
 		um.ChatName = body.Chan
 		um.Text = body.Msg

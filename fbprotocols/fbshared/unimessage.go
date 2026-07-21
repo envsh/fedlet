@@ -56,7 +56,8 @@ type UnifiedMessage struct {
 	Gateway  string `json:"gateway,omitempty"`
 
 	Username string `json:"username,omitempty"`
-	UserID   string `json:"userid,omitempty"`
+	UserID   string `json:"userid,omitempty"`     // sometimes internal id
+	Usernick string `json:"usernick,omitempty"`  // display name/nick
 	Avatar   string `json:"avatar,omitempty"`
 
 	MsgType  string   `json:"msgtype,omitempty"`
