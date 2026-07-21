@@ -107,6 +107,12 @@ func pollLoop() {
 			if err := publish(n); err != nil {
 				log.Printf("misskey: publish error: %v", err)
 			}
+			um, ok := n.toUnified(nil)
+			if ok {
+				if err := publish(um); err != nil {
+					log.Printf("misskey: publish um error: %v", err)
+				}
+			}
 		}
 
 		if len(notes) > 0 {
@@ -214,6 +220,23 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
+	um := fbshared.UnifiedMessage{
+		Text:      n.Text,
+		MsgFormat: fbshared.FmtText,
+		Protocol:  fbshared.ProtoMisskey,
+		Username:  n.User.Username,
+		UserID:    n.UserID,
+		MsgID:     n.ID,
+		MsgType:   fbshared.MsgTypeCreate,
+	}
+	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
+		um.Timestamp = t.UnixNano()
+	}
+	um.Raw = raw
+	return um, true
 }
 
 
