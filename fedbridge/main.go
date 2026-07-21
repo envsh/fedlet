@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -42,6 +43,46 @@ var syncDir string
 
 var publishViaHTTP bool = true
 var channel_name = "reddit"
+var ntfyshTopic string
+var ntfyshServer string
+
+func publishNtfy(protocol, channel string, v any) {
+	if ntfyshTopic == "" {
+		return
+	}
+	var body string
+	var title string
+	switch vv := v.(type) {
+	case fbshared.UnifiedMessage:
+		title = protocol + ":" + channel
+		body = vv.Text
+	default:
+		data, _ := json.Marshal(v)
+		title = protocol + ":" + channel
+		body = string(data)
+	}
+	if body == "" {
+		return
+	}
+	url := ntfyshServer + "/" + ntfyshTopic
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		log.Printf("ntfysh: request error: %v", err)
+		return
+	}
+	req.Header.Set("Title", title)
+	req.Header.Set("Tags", protocol)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("ntfysh: publish error: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("ntfysh: status %d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+}
 
 func publish(protocol, channel string, v any) error {
 	switch vv := v.(type) {
@@ -63,6 +104,7 @@ func publish(protocol, channel string, v any) error {
 		if err != nil {
 			log.Println(channel, len(data), time.Since(btime), err)
 		}
+		publishNtfy(protocol, channel, vv)
 		log.Printf("publish: %s protocol=%s msgtype=%s msgid=%s format=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
 			channel, vv.Protocol, vv.MsgType, vv.MsgID, vv.MsgFormat,
 			vv.ChatID, vv.ChatName,
@@ -87,6 +129,7 @@ func publish(protocol, channel string, v any) error {
 		if err != nil {
 			log.Println(channel, len(data), time.Since(btime), err)
 		}
+		publishNtfy(protocol, channel, v)
 		return err
 	}
 }
@@ -119,7 +162,28 @@ func main() {
 	})
 	flag.StringVar(&usepeer, "peerno", usepeer, "use which peer as tunnel dest, suffix 5 chars")
 	flag.StringVar(&vlanpfx, "vlan", vlanpfx, "tun vlan ip prefix")
+	flag.StringVar(&ntfyshTopic, "ntfysh-topic", "", "ntfy.sh topic for dual-publish (empty=disabled)")
+	flag.StringVar(&ntfyshServer, "ntfysh-server", "https://ntfy.sh", "ntfy.sh server URL")
 	flag.Parse()
+
+	// ntfy.sh 参数校验
+	if ntfyshTopic != "" {
+		if len(ntfyshTopic) > 64 {
+			log.Fatalf("ntfysh-topic: 长度超过 64 字符: %q", ntfyshTopic)
+		}
+		for _, c := range ntfyshTopic {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '-' || c == '_') {
+				log.Fatalf("ntfysh-topic: 包含非法字符 %q (只允许字母数字和 - _)", ntfyshTopic)
+			}
+		}
+	}
+	if ntfyshServer != "" {
+		u, err := url.Parse(ntfyshServer)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			log.Fatalf("ntfysh-server: 无效的 URL %q (需要 http:// 或 https://)", ntfyshServer)
+		}
+	}
 
 	defer DDLog.ExitFlush()
 
