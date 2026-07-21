@@ -466,7 +466,8 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q file=%q event_id=%d",
 		chatType, idStr, message, fileName, e.ID)
 
-	if err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo); err != nil {
+	res, err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo)
+	if err != nil {
 		log.Printf("toxrestsim: dispatch send error: ttl=%v %v", sendTTL, err)
 
 		// retry ForeachSend
@@ -486,7 +487,7 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{"message_id": e.ID})
+	writeJSON(w, map[string]any{"local_msgid": e.ID, "proto_msgid": res.MsgID})
 }
 
 func writeErr(w http.ResponseWriter, msg string, code int) {

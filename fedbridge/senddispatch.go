@@ -35,7 +35,7 @@ type forwardReq struct {
 //	msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
 //	filedata: 文件字节流，nil 表示纯文本
 //	fileinfo: 文件元信息，nil 表示无附件
-func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	info, ok := ctypeRegistry[ctype]
 	log.Printf("senddispatch: ctype=%q to=%q msg=%q ok=%v canSend=%v",
 		ctype, to, msg, ok, ok && info.Capacities.CanSend)
@@ -43,7 +43,7 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 		req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo}
 		data, _ := json.Marshal(req)
 		log.Printf("senddispatch: forwardReq=%s", data)
-		return fmt.Errorf("senddispatch: no local sender for %q", ctype)
+		return fbshared.SendResult{}, fmt.Errorf("senddispatch: no local sender for %q", ctype)
 	}
 	if info.statusFn != nil {
 		st := info.Status()
@@ -54,12 +54,12 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 			data, _ := json.Marshal(req)
 			log.Printf("sendbr: backend %q not ready (running=%v connected=%v), forwardReq=%s",
 				info.Name, st.Running, st.ConnectedSince, data)
-			return fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
+			return fbshared.SendResult{}, fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
 		}
 	}
 	res, err := info.SendFn(to, msg, msgType, filedata, fileinfo)
 	log.Printf("senddispatch: ctype=%q msgid=%q result=%v", ctype, res.MsgID, err)
-	return err
+	return res, err
 }
 
 // 联系人类型常量（与 toxhttpd/qltox/eventpoller.cpp 定义一致）
