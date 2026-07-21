@@ -33,11 +33,11 @@ func publish(v any) error {
 
 var globalClientID string
 
-func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	ctx := context.Background()
 	token, err := getToken(ctx, globalClientID)
 	if err != nil {
-		return fmt.Errorf("outlook send: auth: %w", err)
+		return fbshared.SendResult{}, fmt.Errorf("outlook send: auth: %w", err)
 	}
 
 	payload := buildSendMailPayload(to, msg)
@@ -46,12 +46,12 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("outlook send: create draft: %w", err)
+		return fbshared.SendResult{}, fmt.Errorf("outlook send: create draft: %w", err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 201 {
-		return fmt.Errorf("outlook send: create draft: HTTP %d: %s", resp.StatusCode, string(body))
+		return fbshared.SendResult{}, fmt.Errorf("outlook send: create draft: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	var draft struct{ ID string `json:"id"` }
 	json.Unmarshal(body, &draft)
@@ -61,14 +61,14 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	req2.Header.Set("Authorization", "Bearer "+token)
 	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
-		return fmt.Errorf("outlook send: send failed (draft=%s): %w", draft.ID, err)
+		return fbshared.SendResult{}, fmt.Errorf("outlook send: send failed (draft=%s): %w", draft.ID, err)
 	}
 	resp2.Body.Close()
 	if resp2.StatusCode != 202 {
-		return fmt.Errorf("outlook send: send (draft=%s): HTTP %d", draft.ID, resp2.StatusCode)
+		return fbshared.SendResult{}, fmt.Errorf("outlook send: send (draft=%s): HTTP %d", draft.ID, resp2.StatusCode)
 	}
 	log.Printf("outlook send: sent draft ID=%s", draft.ID)
-	return nil
+	return fbshared.SendResult{}, nil
 }
 
 func buildSendMailPayload(to, msg string) []byte {

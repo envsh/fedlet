@@ -216,21 +216,21 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 	}
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	if to == "" || msg == "" {
-		return fmt.Errorf("irclounge: empty target or message")
+		return fbshared.SendResult{}, fmt.Errorf("irclounge: empty target or message")
 	}
 	muLounge.Lock()
 	cl := ircloungeClient
 	muLounge.Unlock()
 	if cl == nil {
-		return fmt.Errorf("irclounge: not connected")
+		return fbshared.SendResult{}, fmt.Errorf("irclounge: not connected")
 	}
 	channelID, err := strconv.Atoi(to)
 	if err != nil {
-		return fmt.Errorf("irclounge: invalid channel ID %q: %w", to, err)
+		return fbshared.SendResult{}, fmt.Errorf("irclounge: invalid channel ID %q: %w", to, err)
 	}
-	return cl.SendMessage(channelID, msg)
+	return fbshared.SendResult{}, cl.SendMessage(channelID, msg)
 }
 
 // protocol status

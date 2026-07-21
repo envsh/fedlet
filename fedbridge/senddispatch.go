@@ -57,8 +57,8 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 			return fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
 		}
 	}
-	err := info.SendFn(to, msg, msgType, filedata, fileinfo)
-	log.Printf("senddispatch: ctype=%q result=%v", ctype, err)
+	res, err := info.SendFn(to, msg, msgType, filedata, fileinfo)
+	log.Printf("senddispatch: ctype=%q msgid=%q result=%v", ctype, res.MsgID, err)
 	return err
 }
 

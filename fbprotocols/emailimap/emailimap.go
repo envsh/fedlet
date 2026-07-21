@@ -749,9 +749,9 @@ func deriveFrom(username string) string {
 	return username + "@unknown"
 }
 
-func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	if to == "" || msg == "" {
-		return fmt.Errorf("emailimap: empty to or message")
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: empty to or message")
 	}
 	muSend.Lock()
 	addr := smtpAddr
@@ -761,10 +761,10 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	muSend.Unlock()
 
 	if addr == "" {
-		return fmt.Errorf("emailimap: SMTP not configured")
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: SMTP not configured")
 	}
 	if from == "" {
-		return fmt.Errorf("emailimap: from address not configured")
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: from address not configured")
 	}
 
 	var recipients []string
@@ -775,7 +775,7 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 		}
 	}
 	if len(recipients) == 0 {
-		return fmt.Errorf("emailimap: no valid recipients")
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: no valid recipients")
 	}
 
 	subject := msgType
@@ -795,14 +795,14 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("emailimap: invalid SMTP addr %q: %w", addr, err)
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: invalid SMTP addr %q: %w", addr, err)
 	}
 
 	auth := smtp.PlainAuth("", user, pass, host)
 	if err := smtp.SendMail(addr, auth, from, recipients, buf.Bytes()); err != nil {
-		return fmt.Errorf("emailimap: %w", err)
+		return fbshared.SendResult{}, fmt.Errorf("emailimap: %w", err)
 	}
-	return nil
+	return fbshared.SendResult{}, nil
 }
 
 // protocol status

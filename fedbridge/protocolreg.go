@@ -24,7 +24,7 @@ type ProtocolInfo struct {
 	Name       string
 	Ctypes     []string
 	Capacities ProtocolCapacities
-	SendFn     func(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error
+	SendFn     func(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error)
 	// DlMediaFn downloads media identified by an mxc:// URL.
 	// Caller must close the returned io.ReadCloser.
 	DlMediaFn func(mxcURL string) (io.ReadCloser, string, error)

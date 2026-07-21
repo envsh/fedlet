@@ -8,3 +8,7 @@ type MediaDataInfo struct {
 	Filename string
 	MsgType  string
 }
+
+type SendResult struct {
+	MsgID string
+}

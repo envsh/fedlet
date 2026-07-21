@@ -546,27 +546,27 @@ func irccloudMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool) {
 	return um, true
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	if to == "" || msg == "" {
-		return fmt.Errorf("irccloud: empty to or message")
+		return fbshared.SendResult{}, fmt.Errorf("irccloud: empty to or message")
 	}
 	muIrc.Lock()
 	cl := ircClient
 	sk := ircSessionKey
 	muIrc.Unlock()
 	if cl == nil {
-		return fmt.Errorf("irccloud: not connected")
+		return fbshared.SendResult{}, fmt.Errorf("irccloud: not connected")
 	}
 	if sk == "" {
-		return fmt.Errorf("irccloud: no session key")
+		return fbshared.SendResult{}, fmt.Errorf("irccloud: no session key")
 	}
 	parts := strings.SplitN(to, ":", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("irccloud: invalid target %q (need cid:channel)", to)
+		return fbshared.SendResult{}, fmt.Errorf("irccloud: invalid target %q (need cid:channel)", to)
 	}
 	cid, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return fmt.Errorf("irccloud: invalid cid %q: %w", parts[0], err)
+		return fbshared.SendResult{}, fmt.Errorf("irccloud: invalid cid %q: %w", parts[0], err)
 	}
-	return cl.Say(sk, cid, parts[1], msg)
+	return fbshared.SendResult{}, cl.Say(sk, cid, parts[1], msg)
 }

@@ -193,19 +193,19 @@ func sendToOldAPI(to, msg, msgType string) (int, []byte, error) {
 //   msgType: 联系人类型常量（"unktox_friend"/"unktox_conference"/"unktox_group"），
 //            新 API 直接 POST /api/messages/send?type={msgType}&id={to}&message={msg}，
 //            404 时 fallback 到旧 API，按 msgType 映射到不同端点和参数名
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	if to == "" || msg == "" {
-		return fmt.Errorf("toxoverhttp: empty to or message")
+		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: empty to or message")
 	}
 	if toxrest_url == "" {
-		return fmt.Errorf("toxoverhttp: server URL not configured")
+		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: server URL not configured")
 	}
 	v := url.Values{"type": {msgType}, "id": {to}, "message": {msg}}
 	target := toxrest_url + "/api/messages/send"
 	log.Printf("toxoverhttp: POST %s type=%q id=%q msg=%q", target, msgType, to, msg)
 	resp, err := http.PostForm(target, v)
 	if err != nil {
-		return fmt.Errorf("toxoverhttp: %w", err)
+		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -214,28 +214,28 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) e
 	if resp.StatusCode == http.StatusNotFound {
 		code, fbBody, fbErr := sendToOldAPI(to, msg, msgType)
 		if fbErr != nil {
-			return fmt.Errorf("toxoverhttp: fallback: %w", fbErr)
+			return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: fallback: %w", fbErr)
 		}
 		if code != http.StatusOK {
-			return fmt.Errorf("toxoverhttp: fallback status %d: %s",
+			return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: fallback status %d: %s",
 				code, strings.TrimSpace(string(fbBody)))
 		}
 		var fbResult struct{ Error string `json:"error"` }
 		if json.Unmarshal(fbBody, &fbResult) == nil && fbResult.Error != "" {
-			return fmt.Errorf("toxoverhttp: fallback: %s", fbResult.Error)
+			return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: fallback: %s", fbResult.Error)
 		}
-		return nil
+		return fbshared.SendResult{}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("toxoverhttp: status %d: %s",
+		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: status %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var result struct{ Error string `json:"error"` }
 	if json.Unmarshal(body, &result) == nil && result.Error != "" {
-		return fmt.Errorf("toxoverhttp: %s", result.Error)
+		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: %s", result.Error)
 	}
-	return nil
+	return fbshared.SendResult{}, nil
 }
 
 // protocol status

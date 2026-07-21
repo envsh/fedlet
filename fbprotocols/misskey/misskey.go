@@ -118,9 +118,9 @@ func pollLoop() {
 	}
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) error {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	if msg == "" {
-		return fmt.Errorf("misskey: empty message")
+		return fbshared.SendResult{}, fmt.Errorf("misskey: empty message")
 	}
 	visibility := "home"
 	switch to {
@@ -131,14 +131,14 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) e
 	host, token := curHost, curToken
 	muClient.Unlock()
 	if host == "" || token == "" {
-		return fmt.Errorf("misskey: not configured")
+		return fbshared.SendResult{}, fmt.Errorf("misskey: not configured")
 	}
 	log.Printf("misskey: sending [%s]: %s", visibility, truncate(msg, 80))
 	noteID, err := SendNote(host, token, msg, visibility)
 	if err == nil {
 		log.Printf("misskey: sent note_id=%s", noteID)
 	}
-	return err
+	return fbshared.SendResult{MsgID: noteID}, err
 }
 
 func stateFilePath() string {

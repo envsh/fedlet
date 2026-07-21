@@ -275,25 +275,25 @@ func sendGomuksUpload(filedata []byte, fileinfo *fbshared.MediaDataInfo) (json.R
 	return content, nil
 }
 
-func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
 	log.Printf("gomuks: Send roomID=%q msg=%q msgType=%q", roomID, msg, msgType)
 	if roomID == "" || msg == "" {
-		return fmt.Errorf("gomuks: empty roomID or message")
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: empty roomID or message")
 	}
 
 	if len(filedata) > 0 {
 		if fileinfo == nil {
-			return fmt.Errorf("gomuks: filedata present but fileinfo is nil")
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: filedata present but fileinfo is nil")
 		}
 
 		content, err := sendGomuksUpload(filedata, fileinfo)
 		if err != nil {
-			return fmt.Errorf("gomuks: upload: %w", err)
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: upload: %w", err)
 		}
 
 		var mapped map[string]any
 		if err := json.Unmarshal(content, &mapped); err != nil {
-			return fmt.Errorf("gomuks: upload_media response decode: %w", err)
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: upload_media response decode: %w", err)
 		}
 
 		muGomuks.Lock()
@@ -302,7 +302,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 		seq := gomuksSeq
 		muGomuks.Unlock()
 		if conn == nil {
-			return fmt.Errorf("gomuks: not connected")
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: not connected")
 		}
 
 		cmd := map[string]any{
@@ -327,18 +327,18 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 		}()
 
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			return fmt.Errorf("gomuks: send file msg write: %w", err)
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: send file msg write: %w", err)
 		}
 
 		select {
 		case err := <-ch:
 			if err != nil {
-				return fmt.Errorf("gomuks: send file: %w", err)
+				return fbshared.SendResult{}, fmt.Errorf("gomuks: send file: %w", err)
 			}
 			log.Printf("gomuks: sent file %s to %s", fileinfo.Filename, roomID)
-			return nil
+			return fbshared.SendResult{}, nil
 		case <-time.After(30 * time.Second):
-			return fmt.Errorf("gomuks: send file msg timeout")
+			return fbshared.SendResult{}, fmt.Errorf("gomuks: send file msg timeout")
 		}
 	}
 
@@ -348,7 +348,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 	seq := gomuksSeq
 	muGomuks.Unlock()
 	if conn == nil {
-		return fmt.Errorf("gomuks: not connected")
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: not connected")
 	}
 	cmd := map[string]any{
 		"command":    "send_message",
@@ -360,7 +360,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 	}
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		return fmt.Errorf("gomuks: marshal error: %w", err)
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: marshal error: %w", err)
 	}
 
 	ch := make(chan error, 1)
@@ -374,14 +374,14 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 	}()
 
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		return err
+		return fbshared.SendResult{}, err
 	}
 
 	select {
 	case err := <-ch:
-		return err
+		return fbshared.SendResult{}, err
 	case <-time.After(30 * time.Second):
-		return fmt.Errorf("gomuks: send timeout")
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: send timeout")
 	}
 }
 
