@@ -29,7 +29,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 
 func init() {
 	matrixlite.SetPublishInfo(func(v any) error {
-		return publish(channel_name, v)
+		return publish("matrixlite", channel_name, v)
 	})
 	flag.StringVar(&matrixURL, "matrix-url", "", "Matrix server URL or domain (e.g. https://matrix.example.com or matrix.example.com)")
 	flag.StringVar(&matrixAuth, "matrix-auth", "", "Matrix session token, or user:password (e.g. @user:example.com:pass)")

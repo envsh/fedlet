@@ -103,23 +103,9 @@ func pollLoop() {
 			if n.Text == "" {
 				continue
 			}
-			ev := map[string]any{
-				"type":   "misskey_note",
-				"id":     n.ID,
-				"text":   n.Text,
-				"user":   n.User.Username,
-				"name":   n.User.Name,
-				"userId": n.UserID,
-				"time":   n.CreatedAt,
-			}
-			data, _ := json.Marshal(ev)
 			log.Printf("misskey: @%s: %s", n.User.Username, truncate(n.Text, 80))
-			if err := publish(ev); err != nil {
+			if err := publish(n); err != nil {
 				log.Printf("misskey: publish error: %v", err)
-			}
-			um, ok := n.toUnified(data)
-			if ok {
-				publish(um)
 			}
 		}
 
@@ -225,20 +211,4 @@ func truncate(s string, n int) string {
 	return string(runes[:n]) + "..."
 }
 
-func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
-	um := fbshared.UnifiedMessage{
-		Text:      n.Text,
-		MsgFormat: fbshared.FmtText,
-		Protocol:  fbshared.ProtoMisskey,
-		Username:  n.User.Username,
-		UserID:    n.UserID,
-		MsgType:   fbshared.MsgTypeCreate,
-		MsgID:     n.ID,
-		Timestamp: time.Now().UnixNano(),
-		Raw:       raw,
-	}
-	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
-		um.Timestamp = t.UnixNano()
-	}
-	return um, true
-}
+

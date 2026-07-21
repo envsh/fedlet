@@ -32,7 +32,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 
 func init() {
 	misskey.SetPublishInfo(func(v any) error {
-		return publish(channel_name, v)
+		return publish("misskey", channel_name, v)
 	})
 	flag.StringVar(&misskeyHost, "misskey", "https://misskey.io", "Misskey instance URL")
 	flag.StringVar(&misskeyToken, "misskey-token", "", "Misskey API token")

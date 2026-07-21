@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -42,7 +43,7 @@ var syncDir string
 var publishViaHTTP bool = true
 var channel_name = "reddit"
 
-func publish(channel string, v any) error {
+func publish(protocol, channel string, v any) error {
 	switch vv := v.(type) {
 	// 是否要使用后端解析还是UI端解析呢,后端解析部署麻烦
 	// 这个server层还是只做数据拉取,原样返回UI客户端,忽略统一化解析
@@ -77,6 +78,7 @@ func publish(channel string, v any) error {
 		if err != nil {
 			return fmt.Errorf("publish: marshal %T: %w", v, err)
 		}
+		os.WriteFile("/tmp/fedbrg_"+protocol+".json", data, 0644)
 		if len(data) == 0 {
 			return fmt.Errorf("publish: empty data")
 		}

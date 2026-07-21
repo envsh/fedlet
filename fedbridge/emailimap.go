@@ -33,7 +33,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 		}
 		b, _ := json.Marshal(cfg)
 		emailimap.SetPublishInfo(func(v any) error {
-			return publish(channel_name, v)
+			return publish("emailimap", channel_name, v)
 		})
 		emailimap.Start(string(b))
 	},

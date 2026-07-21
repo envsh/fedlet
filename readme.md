@@ -1,4 +1,3 @@
-o 
 
 * fednet/p2put 在server端可能是集成的，也可能是独立进程
   server端有点重的，可能需要接入多种协议消息流，转换为fednet消息
@@ -17,6 +16,7 @@ o
     irccloud无法连接非irc.irccloud.com的服务端！！！没法用
 	github.com/microsoftgraph/msgraph-sdk-go/models 编译该包内存炸了，有问题
 	不要引入该包。
+	本协议组实现,注重拉取与透明转发消息,不做二次格式化.这样客户端只处理标准消息格式即可.
 
 * fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
   客户端也要使用，必须轻量
@@ -26,7 +26,7 @@ o
 
 * web UI端
 
-### 语言选择
+### 编程语言选择
 
 * 客户端可以使用V
 * 服务端不可使用V，编译部署复杂度问题
