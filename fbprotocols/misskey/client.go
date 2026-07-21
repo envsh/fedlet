@@ -35,12 +35,18 @@ func apiPost(host, endpoint string, body, out any) error {
 	return nil
 }
 
-func SendNote(host, token, text, visibility string) error {
-	return apiPost(host, "notes/create", noteCreateReq{
+type noteCreateResp struct {
+	ID string `json:"id"`
+}
+
+func SendNote(host, token, text, visibility string) (string, error) {
+	var resp noteCreateResp
+	err := apiPost(host, "notes/create", noteCreateReq{
 		I:          token,
 		Text:       text,
 		Visibility: visibility,
-	}, nil)
+	}, &resp)
+	return resp.ID, err
 }
 
 func timelineEndpoint(timeline string) string {

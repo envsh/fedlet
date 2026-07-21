@@ -122,9 +122,10 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) e
 	if msg == "" {
 		return fmt.Errorf("misskey: empty message")
 	}
-	visibility := to
-	if visibility == "" {
-		visibility = "home"
+	visibility := "home"
+	switch to {
+	case "public", "home", "followers", "specified":
+		visibility = to
 	}
 	muClient.Lock()
 	host, token := curHost, curToken
@@ -132,8 +133,12 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) e
 	if host == "" || token == "" {
 		return fmt.Errorf("misskey: not configured")
 	}
-	log.Printf("misskey: send [%s]: %s", visibility, truncate(msg, 80))
-	return SendNote(host, token, msg, visibility)
+	log.Printf("misskey: sending [%s]: %s", visibility, truncate(msg, 80))
+	noteID, err := SendNote(host, token, msg, visibility)
+	if err == nil {
+		log.Printf("misskey: sent note_id=%s", noteID)
+	}
+	return err
 }
 
 func stateFilePath() string {
