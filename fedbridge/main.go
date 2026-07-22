@@ -55,16 +55,19 @@ func publishNtfy(protocol, channel string, v any) {
 	switch vv := v.(type) {
 	case fbshared.UnifiedMessage:
 		title = protocol + ":" + channel
-		body = vv.Text
+		bcc, err := json.Marshal(vv)
+		if err != nil { panic(err) }
+		body = string(bcc)
 	default:
 		data, _ := json.Marshal(v)
 		title = protocol + ":" + channel
 		body = string(data)
+		panic("not support")
 	}
 	if body == "" {
 		return
 	}
-	url := ntfyshServer + "/" + ntfyshTopic
+	url := ntfyshServer + "/" + ntfyshTopic + "?up=1"
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		log.Printf("ntfysh: request error: %v", err)
@@ -80,7 +83,7 @@ func publishNtfy(protocol, channel string, v any) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("ntfysh: status %d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		log.Printf("ntfysh: status %d body=%s len=%v", resp.StatusCode,  strings.TrimSpace(string(respBody)), len(body))
 	}
 }
 
@@ -89,9 +92,6 @@ func publish(protocol, channel string, v any) error {
 	// 是否要使用后端解析还是UI端解析呢,后端解析部署麻烦
 	// 这个server层还是只做数据拉取,原样返回UI客户端,忽略统一化解析
 	case fbshared.UnifiedMessage:
-		if true {
-			return nil
-		}
 		data, err := json.Marshal(vv)
 		if err != nil {
 			return fmt.Errorf("publish: marshal UnifiedMessage: %w", err)
@@ -100,16 +100,18 @@ func publish(protocol, channel string, v any) error {
 			return fmt.Errorf("publish: empty UnifiedMessage")
 		}
 		btime := time.Now()
-		err = publishBytes(channel, data)
+		if false {
+			err = publishBytes(channel, data)
+		}
 		if err != nil {
 			log.Println(channel, len(data), time.Since(btime), err)
 		}
-		publishNtfy(protocol, channel, vv)
 		log.Printf("publish: %s protocol=%s msgtype=%s msgid=%s format=%s chat=%s/%s user=%s/%s len(text)=%d attachments=%d",
 			channel, vv.Protocol, vv.MsgType, vv.MsgID, vv.MsgFormat,
 			vv.ChatID, vv.ChatName,
 			vv.UserID, vv.Username,
 			len(vv.Text), len(vv.Attachments))
+		publishNtfy(protocol, channel, vv)
 		return err
 
 	case []byte:
@@ -129,7 +131,7 @@ func publish(protocol, channel string, v any) error {
 		if err != nil {
 			log.Println(channel, len(data), time.Since(btime), err)
 		}
-		publishNtfy(protocol, channel, v)
+		// publishNtfy(protocol, channel, v)
 		return err
 	}
 }
