@@ -1,4 +1,4 @@
-package main
+package fbvirtun
 
 import (
 	"encoding/binary"
@@ -69,12 +69,12 @@ func handleUDP4(pkt []byte, ihl int, srcIP, dstIP [4]byte) {
 	}
 
 	dstAddr := net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort))
-	if strings.HasPrefix(dstAddr, localPeerIP+":") {
+	if strings.HasPrefix(dstAddr, LocalPeerIP+":") {
 		// self good goon
 	} else if id := peeridByConnIP(dstAddr); id != "" {
 		dstAddr = net.JoinHostPort(id, itoaU16(dstPort))
 	} else {
-		DDLog.Printf("no route to %s myip %s", dstAddr, localPeerIP)
+		DDLog.Printf("no route to %s myip %s", dstAddr, LocalPeerIP)
 		return
 	}
 

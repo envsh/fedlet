@@ -1,4 +1,4 @@
-package main
+package fbvirtun
 
 import (
 	"encoding/binary"
@@ -163,8 +163,8 @@ func peeridByConnIP(ipport string) string {
 	ids := p2put.GetClusterPeers()
 	sort.Strings(ids)
 	for _, id := range ids {
-		hostPart := stringToHostPart(id)
-		mappedIP := vlanpfx + strconv.Itoa(hostPart)
+		hostPart := StringToHostPart(id)
+		mappedIP := VlanPfx + strconv.Itoa(hostPart)
 		peerips[mappedIP] = id
 	}
 	return peerips[rawIP]
@@ -180,12 +180,12 @@ func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tc
 	}
 
 	dstAddr := net.JoinHostPort(net.IP(dstIP[:]).String(), itoaU16(dstPort))
-	if strings.HasPrefix(dstAddr, localPeerIP+":") {
+	if strings.HasPrefix(dstAddr, LocalPeerIP+":") {
 		// self good goon
 	} else if id := peeridByConnIP(dstAddr); id != "" {
 		dstAddr = net.JoinHostPort(id, itoaU16(dstPort))
 	} else {
-		DDLog.Printf("no route to %s myip %s", dstAddr, localPeerIP)
+		DDLog.Printf("no route to %s myip %s", dstAddr, LocalPeerIP)
 		return nil
 	}
 	log.Printf("tun: TCP NAT new [%s]:%d → [%s]:%d <x> %s [+]",
@@ -413,12 +413,12 @@ func buildPacket6(srcIP, dstIP [16]byte, tcpSeg []byte) []byte {
 }
 
 func writeTun(pkt []byte) error {
-	if tunov == nil {
+	if Tunov == nil {
 		return nil
 	}
 	buf := make([]byte, tunBufSize)
 	n := copy(buf[tunOffset:], pkt)
-	_, err := tunov.Write([][]byte{buf[:tunOffset+n]}, tunOffset)
+	_, err := Tunov.Write([][]byte{buf[:tunOffset+n]}, tunOffset)
 	if err != nil {
 		log.Printf("tun: write error: %v", err)
 	}

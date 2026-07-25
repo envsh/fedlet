@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envsh/fedlet/fbvirtun"
+
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/envsh/libp2px/dlog"
 	"github.com/envsh/libp2px/p2put"
@@ -189,33 +191,35 @@ func main() {
 
 	defer DDLog.ExitFlush()
 
-	initVirTun(cfg.KeyFile)
-	defer cleanupDarwinRoutes()
+	fbvirtun.VlanPfx = vlanpfx
+
+	fbvirtun.InitVirTun(cfg.KeyFile)
+	defer fbvirtun.CleanupDarwinRoutes()
 
 	go func() {
-		if tunov == nil {
+		if fbvirtun.Tunov == nil {
 			return
 		}
 		for {
 			board, err := p2put.CollectBoard()
 			if err == nil {
 				localPeerID = board.PeerID
-				hostPart := stringToHostPart(board.PeerID)
+				hostPart := fbvirtun.StringToHostPart(board.PeerID)
 				ip := vlanpfx + strconv.Itoa(hostPart)
-				localPeerIP = ip
+				fbvirtun.LocalPeerIP = ip
 				log.Printf("virtun: computed IP from peer_id: %s", ip)
-				if err := setupSeedVirtIP(ip); err != nil {
+				if err := fbvirtun.SetupSeedVirtIP(ip); err != nil {
 					log.Printf("virtun: %v", err)
 				} else {
 					log.Printf("virtun: %s configured and up from peer_id", ip)
 				}
-				if ipv6Available() {
+				if fbvirtun.IPv6Available() {
 					for _, pfx := range ipv6Prefixes {
 						addr := pfx + strconv.Itoa(hostPart)
-						if localPeerIPv6 == "" {
-							localPeerIPv6 = addr
+						if fbvirtun.LocalPeerIPv6 == "" {
+							fbvirtun.LocalPeerIPv6 = addr
 						}
-						if err := setupSeedVirtIP(addr); err != nil {
+						if err := fbvirtun.SetupSeedVirtIP(addr); err != nil {
 							log.Printf("virtun: %s: %v", addr, err)
 						} else {
 							log.Printf("virtun: %s configured and up", addr)

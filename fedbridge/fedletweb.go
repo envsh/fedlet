@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/envsh/fedlet/fbvirtun"
+
 	"github.com/envsh/libp2px/p2put"
 )
 
@@ -25,8 +27,6 @@ type peerEntry struct {
 var (
 	currentPeerID string
 	localPeerID   string
-	localPeerIP   string
-	localPeerIPv6 string
 )
 
 var ipv6Prefixes = []string{
@@ -42,8 +42,8 @@ func getPeerList() []peerEntry {
 	sort.Strings(ids)
 	out := make([]peerEntry, 0, len(ids))
 	for i, id := range ids {
-		hostPart := stringToHostPart(id)
-		ip := vlanpfx + strconv.Itoa(hostPart)
+		hostPart := fbvirtun.StringToHostPart(id)
+		ip := fbvirtun.VlanPfx + strconv.Itoa(hostPart)
 		out = append(out, peerEntry{No: i, ID: id, Name: id, IP: ip})
 	}
 	return out
@@ -208,6 +208,6 @@ func handlePeer(w http.ResponseWriter, r *http.Request) {
 		"peer":     currentPeerID,
 		"peers":    pl,
 		"local_id": localPeerID,
-		"local_ip": localPeerIP,
+		"local_ip": fbvirtun.LocalPeerIP,
 	})
 }

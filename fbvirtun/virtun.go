@@ -1,4 +1,4 @@
-package main
+package fbvirtun
 
 import (
 	"bufio"
@@ -31,14 +31,27 @@ https://github.com/tun2proxy/tun2proxy 似乎是针对特定场景的实现，�
 */
 
 var (
-	tunov         tun.Device
+	Tunov         tun.Device
+	VlanPfx       string
+	LocalPeerIP   string
+	LocalPeerIPv6 string
 	configuredIPs sync.Map // ? => ?
 	tunMTU        int
 	tunOffset     int
 	peerIPMap     map[string]string
 	peerIPMu      sync.RWMutex
 	tunBufSize    int
+	DDLog         = log.New(os.Stderr, "[DDLog] ", log.LstdFlags)
 )
+
+type PeerEntry struct {
+	No   int
+	ID   string
+	Name string
+	IP   string
+}
+
+var PeerListFunc func() []PeerEntry
 
 /*
 sudo setcap cap_net_admin+eip main
@@ -80,7 +93,7 @@ func setupDarwinRoutes() {
 	}
 }
 
-func cleanupDarwinRoutes() {
+func CleanupDarwinRoutes() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
@@ -116,14 +129,14 @@ func cleanupDarwinRoutes() {
 //       sa_family_t af;           // AF_INET
 //   }
 
-func initVirTun(keyFile string) error {
+func InitVirTun(keyFile string) error {
 	t, err := tun.CreateTUN(findAvailableUTUN(), 1900)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
 		log.Println("    On MacOS, sudo chown root:wheel main && sudo chmod u+s main")
 		return fmt.Errorf("create tun: %w", err)
 	} else {
-		tunov = t
+		Tunov = t
 		tunMTU = 1900
 		tunOffset = 0
 		if runtime.GOOS == "darwin" {
@@ -149,14 +162,14 @@ func initVirTun(keyFile string) error {
 			tunOffset = 12
 		}
 		tunBufSize = tunMTU + tunOffset + 4
-		ifname, _ := tunov.Name()
+		ifname, _ := Tunov.Name()
 		log.Println("tundev created", ifname)
 	}
 
 	go tunReadLoop()
 
 	go func() {
-		if tunov == nil {
+		if Tunov == nil {
 			return
 		}
 		for {
@@ -164,8 +177,8 @@ func initVirTun(keyFile string) error {
 				return
 			} // disable peer ip, not used for our new tun2peerid
 			time.Sleep(2 * time.Second)
-			for _, p := range getPeerList() {
-				ip := vlanpfx + strconv.Itoa(stringToHostPart(p.ID))
+			for _, p := range PeerListFunc() {
+				ip := VlanPfx + strconv.Itoa(StringToHostPart(p.ID))
 				peerIPMu.Lock()
 				if peerIPMap == nil {
 					peerIPMap = make(map[string]string)
@@ -212,7 +225,7 @@ func addIPToTun(ip string) error {
 	is6 := strings.Contains(ip, ":")
 	switch runtime.GOOS {
 	case "linux":
-		ifname, err := tunov.Name()
+		ifname, err := Tunov.Name()
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
@@ -236,7 +249,7 @@ func addIPToTun(ip string) error {
 		}
 		return netlink.AddrAdd(link, addr)
 	case "android":
-		ifname, err := tunov.Name()
+		ifname, err := Tunov.Name()
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
@@ -258,7 +271,7 @@ func addIPToTun(ip string) error {
 		}
 		return nil
 	case "darwin":
-		ifname, err := tunov.Name()
+		ifname, err := Tunov.Name()
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
@@ -279,7 +292,7 @@ func addIPToTun(ip string) error {
 		if is6 {
 			is6str = "6"
 		}
-		out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, vlanpfx, ip, is6str).CombinedOutput()
+		out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, VlanPfx, ip, is6str).CombinedOutput()
 		if err != nil {
 			log.Fatalf("virtun: %s", strings.TrimSpace(string(out)))
 		}
@@ -302,11 +315,11 @@ func addIPToTun(ip string) error {
 	return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 }
 
-func setupSeedVirtIP(ip string) error {
+func SetupSeedVirtIP(ip string) error {
 	return addIPToTun(ip)
 }
 
-func ipv6Available() bool {
+func IPv6Available() bool {
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
 		return true
 	}
@@ -325,7 +338,7 @@ func ipv6Available() bool {
 	return true
 }
 
-func stringToHostPart(s string) int {
+func StringToHostPart(s string) int {
 	tbl := crc64.MakeTable(crc64.ECMA)
 	h := crc64.Checksum([]byte(s), tbl)
 	return int(h%253) + 2
@@ -440,23 +453,23 @@ func onesComplementSumFold(data []byte, initial uint32) uint16 {
 //	buffer layout with offset=4.
 //	https://git.zx2c4.com/wireguard-go/tree/tun/tun_darwin.go
 func tunReadLoop() {
-	if tunov == nil {
+	if Tunov == nil {
 		return
 	}
-	for localPeerIP == "" {
+	for LocalPeerIP == "" {
 		time.Sleep(100 * time.Millisecond)
 	}
-	localIP := net.ParseIP(localPeerIP)
+	localIP := net.ParseIP(LocalPeerIP)
 	var localIP6 net.IP
-	if localPeerIPv6 != "" {
-		localIP6 = net.ParseIP(localPeerIPv6)
+	if LocalPeerIPv6 != "" {
+		localIP6 = net.ParseIP(LocalPeerIPv6)
 	}
 	buf := make([]byte, tunBufSize)
 	bufs := [][]byte{buf}
 	sizes := make([]int, 1)
 
 	for {
-		_, err := tunov.Read(bufs, sizes, tunOffset)
+		_, err := Tunov.Read(bufs, sizes, tunOffset)
 		n := sizes[0]
 		if err != nil {
 			time.Sleep(100 * time.Millisecond)
@@ -505,7 +518,7 @@ func tunReadLoop() {
 					fixUDPChecksum(pkt, ihl)
 				}
 			}
-			tunov.Write(bufs[:1], tunOffset)
+			Tunov.Write(bufs[:1], tunOffset)
 			log.Printf("tun: hairpin v%d src=%s dst=%s proto=%d len=%d [+]",
 				version, srcIP, dstIP, proto, n)
 
