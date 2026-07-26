@@ -47,6 +47,7 @@ var publishViaHTTP bool = true
 var channel_name = "reddit"
 var ntfyshTopic string
 var ntfyshServer string
+var ntfyRetryAfter time.Time
 
 func publishNtfy(protocol, channel string, v any) {
 	if ntfyshTopic == "" {
@@ -83,9 +84,18 @@ func publishNtfy(protocol, channel string, v any) {
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode == 200 {
+		ntfyRetryAfter = time.Time{}
+	} else {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("ntfysh: status %d body=%s len=%v", resp.StatusCode,  strings.TrimSpace(string(respBody)), len(body))
+		retryAfter := resp.Header.Get("Retry-After")
+		log.Printf("ntfysh: status %d retry-after=%s body=%s len=%v",
+			resp.StatusCode, retryAfter, strings.TrimSpace(string(respBody)), len(body))
+		if resp.StatusCode == 429 && retryAfter != "" {
+			if sec, err := strconv.Atoi(retryAfter); err == nil {
+				ntfyRetryAfter = time.Now().Add(time.Duration(sec) * time.Second)
+			}
+		}
 	}
 }
 

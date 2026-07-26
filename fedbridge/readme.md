@@ -20,3 +20,8 @@ drasil depend quic-go, conflict with libp2p's quick-go version
 make sure libp2px/myvendor/go-libp2p used.
 
 drasil's quic-go depend cannot remove
+
+### todos
+
+- [ ] protocols multiple instance support
+- [ ] protocols config simple by json/yaml, less hard code build code integrate
