@@ -59,7 +59,9 @@ func publishNtfy(protocol, channel string, v any) {
 	case fbshared.UnifiedMessage:
 		title = protocol + ":" + channel
 		bcc, err := json.Marshal(vv)
-		if err != nil { panic(err) }
+		if err != nil {
+			panic(err)
+		}
 		body = string(bcc)
 	default:
 		data, _ := json.Marshal(v)
@@ -124,6 +126,7 @@ func publish(protocol, channel string, v any) error {
 			vv.UserID, vv.Username,
 			len(vv.Text), len(vv.Attachments))
 		publishNtfy(protocol, channel, vv)
+		publishWebPush(protocol, channel, vv)
 		return err
 
 	case []byte:
@@ -200,6 +203,10 @@ func main() {
 	}
 
 	defer DDLog.ExitFlush()
+
+	if err := initWebpush(); err != nil {
+		log.Println(err)
+	}
 
 	fbvirtun.VlanPfx = vlanpfx
 
