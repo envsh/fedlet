@@ -492,6 +492,10 @@ func gomuksToUnified(msg []byte) []fbshared.UnifiedMessage {
 
 	var syncData struct {
 		Rooms map[string]struct {
+			Meta struct {
+				Name   *string `json:"name"`
+				Avatar *string `json:"avatar"`
+			} `json:"meta"`
 			Events []json.RawMessage `json:"events"`
 		} `json:"rooms"`
 	}
@@ -501,8 +505,15 @@ func gomuksToUnified(msg []byte) []fbshared.UnifiedMessage {
 
 	var result []fbshared.UnifiedMessage
 	for roomID, room := range syncData.Rooms {
+		var roomName, roomIcon string
+		if room.Meta.Name != nil {
+			roomName = *room.Meta.Name
+		}
+		if room.Meta.Avatar != nil {
+			roomIcon = *room.Meta.Avatar
+		}
 		for _, rawEv := range room.Events {
-			um := parseGomuksEvent(rawEv, roomID)
+			um := parseGomuksEvent(rawEv, roomID, roomName, roomIcon)
 			if um != nil {
 				result = append(result, *um)
 			}
@@ -511,7 +522,7 @@ func gomuksToUnified(msg []byte) []fbshared.UnifiedMessage {
 	return result
 }
 
-func parseGomuksEvent(raw json.RawMessage, roomID string) *fbshared.UnifiedMessage {
+func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomIcon string) *fbshared.UnifiedMessage {
 	var ev struct {
 		EventID   string          `json:"event_id"`
 		Sender    string          `json:"sender"`
@@ -545,6 +556,8 @@ func parseGomuksEvent(raw json.RawMessage, roomID string) *fbshared.UnifiedMessa
 		UserID:    ev.Sender,
 		Username:  ev.Sender,
 		ChatID:    roomID,
+		ChatName:  roomName,
+		ChanIcon:  roomIcon,
 		MsgType:   fbshared.MsgTypeCreate,
 		MsgFormat: msgFormat,
 		Text:      content.Body,

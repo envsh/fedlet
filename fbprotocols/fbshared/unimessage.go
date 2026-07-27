@@ -58,7 +58,8 @@ type UnifiedMessage struct {
 	Username string `json:"username,omitempty"`
 	UserID   string `json:"userid,omitempty"`     // sometimes internal id
 	Usernick string `json:"usernick,omitempty"`  // display name/nick
-	Avatar   string `json:"avatar,omitempty"`
+	UsrIcon  string `json:"usr_icon,omitempty"`
+	ChanIcon string `json:"chan_icon,omitempty"`
 
 	MsgType  string   `json:"msgtype,omitempty"`
 	MsgID    string   `json:"msgid,omitempty"`
