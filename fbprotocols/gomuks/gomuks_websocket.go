@@ -36,6 +36,10 @@ var (
 	authToken      string
 	imageAuthToken string
 
+	gomuksHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	gomuksDialer     = &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	writeMu          sync.Mutex
+
 	pendingMu    sync.Mutex
 	pendingSends = map[int]chan error{}
 )
@@ -58,7 +62,6 @@ const gomuksHost = "127.0.0.1:29325"
 
 func poll_gomuks() {
 	statusRunning.Store(true)
-	statusConnectedSince.Store(time.Now())
 	defer statusRunning.Store(false)
 
 	for {
@@ -85,7 +88,7 @@ func poll_gomuks() {
 		header.Set("Cookie", "gomuks_auth=" + token)
 
 		u := fmt.Sprintf("ws://%s/_gomuks/websocket", gomuksHost)
-		c, resp, err := websocket.DefaultDialer.Dial(u, header)
+		c, resp, err := gomuksDialer.Dial(u, header)
 		if err != nil {
 			if resp != nil {
 				log.Println("ws dial error: status=", resp.Status, ", err=", err)
@@ -101,6 +104,8 @@ func poll_gomuks() {
 		muGomuks.Lock()
 		gomuksConn = c
 		muGomuks.Unlock()
+		statusConnectedSince.Store(time.Now())
+		statusReconnTimes.Add(1)
 		log.Println("ws connected")
 		gomuksEventLoop(c)
 		log.Println("ws disconnected, reconnecting...")
@@ -118,7 +123,7 @@ func doGomuksAuth(authHeader string) string {
 	}
 	req.Header.Set("Authorization", authHeader)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := gomuksHTTPClient.Do(req)
 	if err != nil {
 		log.Println("auth error:", err)
 		pushError(err)
@@ -151,18 +156,34 @@ func gomuksEventLoop(c *websocket.Conn) {
 		muGomuks.Lock()
 		gomuksConn = nil
 		muGomuks.Unlock()
+
+		pendingMu.Lock()
+		for _, ch := range pendingSends {
+			select {
+			case ch <- fmt.Errorf("gomuks: disconnected"):
+			default:
+			}
+			close(ch)
+		}
+		pendingSends = map[int]chan error{}
+		pendingMu.Unlock()
+
+		writeMu.Lock()
 		c.Close()
+		writeMu.Unlock()
 	}()
 
 	var lastReceivedID int
 	var seq int
-	pingTicker := time.NewTicker(15 * time.Second)
+	const pongWait = 60 * time.Second
+	pingTicker := time.NewTicker(pongWait / 2)
 	defer pingTicker.Stop()
 
 	msgCh := make(chan []byte, 64)
 
 	go func() {
 		for {
+			c.SetReadDeadline(time.Now().Add(pongWait))
 			_, msg, err := c.ReadMessage()
 			if err != nil {
 				log.Println("ws read error:", err)
@@ -177,6 +198,7 @@ func gomuksEventLoop(c *websocket.Conn) {
 	for {
 		select {
 		case msg, ok := <-msgCh:
+			lastReceivedID++
 			if !ok {
 				return
 			}
@@ -231,9 +253,15 @@ func gomuksEventLoop(c *websocket.Conn) {
 				},
 			}
 			data, _ := json.Marshal(ping)
-			if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
+			writeMu.Lock()
+			err := c.WriteMessage(websocket.TextMessage, data)
+			writeMu.Unlock()
+			if err != nil {
 				log.Println("ping error:", err)
 				pushError(err)
+				writeMu.Lock()
+				c.Close()
+				writeMu.Unlock()
 				return
 			}
 		}
@@ -257,7 +285,7 @@ func sendGomuksUpload(filedata []byte, fileinfo *fbshared.MediaDataInfo) (json.R
 		req.Header.Set("Content-Type", fileinfo.MimeType)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := gomuksHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("gomuks: upload: %w", err)
 	}
@@ -326,7 +354,10 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 			pendingMu.Unlock()
 		}()
 
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		writeMu.Lock()
+		err = conn.WriteMessage(websocket.TextMessage, data)
+		writeMu.Unlock()
+		if err != nil {
 			return fbshared.SendResult{}, fmt.Errorf("gomuks: send file msg write: %w", err)
 		}
 
@@ -373,7 +404,10 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 		pendingMu.Unlock()
 	}()
 
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	writeMu.Lock()
+	err = conn.WriteMessage(websocket.TextMessage, data)
+	writeMu.Unlock()
+	if err != nil {
 		return fbshared.SendResult{}, err
 	}
 
@@ -398,7 +432,7 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 	if tok != "" {
 		u += "&image_auth=" + url.QueryEscape(tok)
 	}
-	resp, err := http.Get(u)
+	resp, err := gomuksHTTPClient.Get(u)
 	if err != nil {
 		return nil, "", fmt.Errorf("gomuks: %w", err)
 	}
