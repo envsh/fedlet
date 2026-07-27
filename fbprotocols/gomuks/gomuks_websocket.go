@@ -44,6 +44,26 @@ var (
 	pendingSends = map[int]chan error{}
 )
 
+type chanCacheEntry struct {
+	Name  string
+	Icon  string
+	Topic string
+}
+
+type usrCacheEntry struct {
+	Nick  string
+	Icon  string
+	Topic string
+}
+
+var (
+	chanCacheMu sync.RWMutex
+	chanCache   = map[string]chanCacheEntry{}
+
+	usrCacheMu sync.RWMutex
+	usrCache   = map[string]usrCacheEntry{}
+)
+
 func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
@@ -503,6 +523,56 @@ func gomuksToUnified(msg []byte) []fbshared.UnifiedMessage {
 		return nil
 	}
 
+	chanCacheMu.Lock()
+	for roomID, room := range syncData.Rooms {
+		if room.Meta.Name != nil && *room.Meta.Name != "" {
+			entry := chanCache[roomID]
+			entry.Name = *room.Meta.Name
+			chanCache[roomID] = entry
+		}
+		if room.Meta.Avatar != nil && *room.Meta.Avatar != "" {
+			entry := chanCache[roomID]
+			entry.Icon = *room.Meta.Avatar
+			chanCache[roomID] = entry
+		}
+	}
+	chanCacheMu.Unlock()
+
+	usrCacheMu.Lock()
+	for _, room := range syncData.Rooms {
+		for _, rawEv := range room.Events {
+			var ev struct {
+				Sender   string          `json:"sender"`
+				Type     string          `json:"type"`
+				StateKey *string         `json:"state_key"`
+				Content  json.RawMessage `json:"content"`
+			}
+			if json.Unmarshal(rawEv, &ev) != nil {
+				continue
+			}
+			if ev.Type != "m.room.member" || ev.StateKey == nil {
+				continue
+			}
+			userID := *ev.StateKey
+			var content struct {
+				DisplayName string `json:"displayname"`
+				AvatarURL   string `json:"avatar_url"`
+			}
+			if json.Unmarshal(ev.Content, &content) != nil {
+				continue
+			}
+			entry := usrCache[userID]
+			if content.DisplayName != "" {
+				entry.Nick = content.DisplayName
+			}
+			if content.AvatarURL != "" {
+				entry.Icon = content.AvatarURL
+			}
+			usrCache[userID] = entry
+		}
+	}
+	usrCacheMu.Unlock()
+
 	var result []fbshared.UnifiedMessage
 	for roomID, room := range syncData.Rooms {
 		var roomName, roomIcon string
@@ -549,12 +619,33 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		return nil
 	}
 
+	if roomName == "" || roomIcon == "" {
+		chanCacheMu.RLock()
+		cached := chanCache[roomID]
+		chanCacheMu.RUnlock()
+		if roomName == "" {
+			roomName = cached.Name
+		}
+		if roomIcon == "" {
+			roomIcon = cached.Icon
+		}
+	}
+
+	var usernick, usrIcon string
+	usrCacheMu.RLock()
+	cached := usrCache[ev.Sender]
+	usrCacheMu.RUnlock()
+	usernick = cached.Nick
+	usrIcon = cached.Icon
+
 	msgFormat := fbshared.FmtText
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoGomuks,
 		MsgID:     ev.EventID,
 		UserID:    ev.Sender,
 		Username:  ev.Sender,
+		Usernick:  usernick,
+		UsrIcon:   usrIcon,
 		ChatID:    roomID,
 		ChatName:  roomName,
 		ChanIcon:  roomIcon,
