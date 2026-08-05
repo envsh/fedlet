@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,11 +39,20 @@ var (
 	imageAuthToken string
 
 	gomuksHTTPClient = &http.Client{Timeout: 10 * time.Second}
-	gomuksDialer     = &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	gomuksDialer     = &websocket.Dialer{HandshakeTimeout: 10 * time.Second, NetDialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}).DialContext}
 	writeMu          sync.Mutex
 
 	pendingMu    sync.Mutex
 	pendingSends = map[int]chan error{}
+
+	gomuksRunID      string
+	gomuksListenerID uint64
+	lastRecvNegID    atomic.Int64
+)
+
+const (
+	gomuksPongWait  = 30 * time.Second
+	gomuksPingEvery = gomuksPongWait / 2
 )
 
 type chanCacheEntry struct {
@@ -95,6 +106,7 @@ func poll_gomuks() {
 		}
 
 		authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+		gomuksHTTPClient.CloseIdleConnections()
 		token := doGomuksAuth(authHeader)
 		if token == "" {
 			time.Sleep(10 * time.Second)
@@ -108,6 +120,16 @@ func poll_gomuks() {
 		header.Set("Cookie", "gomuks_auth=" + token)
 
 		u := fmt.Sprintf("ws://%s/_gomuks/websocket", gomuksHost)
+		if gomuksRunID != "" && lastRecvNegID.Load() < 0 {
+			q := url.Values{}
+			q.Set("run_id", gomuksRunID)
+			q.Set("last_received_event", strconv.FormatInt(lastRecvNegID.Load(), 10))
+			if prev := gomuksListenerID; prev != 0 {
+				q.Set("prev_listener_id", strconv.FormatUint(prev, 10))
+			}
+			u += "?" + q.Encode()
+			log.Printf("gomuks: resuming ws run_id=%s last_received_event=%d", gomuksRunID, lastRecvNegID.Load())
+		}
 		c, resp, err := gomuksDialer.Dial(u, header)
 		if err != nil {
 			if resp != nil {
@@ -193,15 +215,17 @@ func gomuksEventLoop(c *websocket.Conn) {
 		writeMu.Unlock()
 	}()
 
-	var lastReceivedID int
-	var seq int
-	const pongWait = 60 * time.Second
-	pingTicker := time.NewTicker(pongWait / 2)
-	defer pingTicker.Stop()
+	done := make(chan struct{})
+	defer close(done)
 
-	msgCh := make(chan []byte, 64)
+	const pongWait = gomuksPongWait
+	msgCh := make(chan []byte, 512)
+
+	go pingLoop(c, done)
 
 	go func() {
+		sendTimer := time.NewTimer(pongWait)
+		defer sendTimer.Stop()
 		for {
 			c.SetReadDeadline(time.Now().Add(pongWait))
 			_, msg, err := c.ReadMessage()
@@ -211,65 +235,125 @@ func gomuksEventLoop(c *websocket.Conn) {
 				close(msgCh)
 				return
 			}
-			msgCh <- msg
+			if !sendTimer.Stop() {
+				select {
+				case <-sendTimer.C:
+				default:
+				}
+			}
+			sendTimer.Reset(pongWait)
+			select {
+			case msgCh <- msg:
+			case <-sendTimer.C:
+				log.Println("ws read stuck (buffer full), aborting")
+				pushError(fmt.Errorf("ws read stuck (buffer full)"))
+				close(msgCh)
+				return
+			}
 		}
 	}()
 
 	for {
-		select {
-		case msg, ok := <-msgCh:
-			lastReceivedID++
+		msg, ok := <-msgCh
+		if !ok {
+			return
+		}
+		var resp struct {
+			Command   string          `json:"command"`
+			RequestID int             `json:"request_id"`
+			Data      json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(msg, &resp) != nil {
+			continue
+		}
+		switch {
+		case resp.RequestID == 0 && resp.Command == "image_auth_token":
+			var tok string
+			if json.Unmarshal(resp.Data, &tok) == nil {
+				muGomuks.Lock()
+				imageAuthToken = tok
+				muGomuks.Unlock()
+				log.Printf("gomuks: received image_auth_token")
+			}
+			continue
+		case resp.Command == "run_id":
+			var rd struct {
+				RunID      string `json:"run_id"`
+				ListenerID uint64 `json:"listener_id"`
+			}
+			if json.Unmarshal(resp.Data, &rd) == nil {
+				if gomuksRunID != "" && gomuksRunID != rd.RunID {
+					log.Printf("gomuks: server run changed %s -> %s, resetting resume state", gomuksRunID, rd.RunID)
+					lastRecvNegID.Store(0)
+					gomuksListenerID = 0
+				}
+				gomuksRunID = rd.RunID
+				gomuksListenerID = rd.ListenerID
+				log.Printf("gomuks: received run_id=%s listener_id=%d", rd.RunID, rd.ListenerID)
+			}
+			continue
+		case resp.Command == "pong":
+			continue
+		case resp.RequestID > 0:
+			pendingMu.Lock()
+			ch, ok := pendingSends[resp.RequestID]
+			pendingMu.Unlock()
 			if !ok {
-				return
+				continue
 			}
-			var resp struct {
-				Command   string          `json:"command"`
-				RequestID int             `json:"request_id"`
-				Data      json.RawMessage `json:"data"`
+			if resp.Command == "error" {
+				var errStr string
+				json.Unmarshal(resp.Data, &errStr)
+				ch <- fmt.Errorf("gomuks: %s", errStr)
+			} else {
+				ch <- nil
 			}
-			if json.Unmarshal(msg, &resp) == nil {
-				if resp.RequestID == 0 && resp.Command == "image_auth_token" {
-					var tok string
-					if json.Unmarshal(resp.Data, &tok) == nil {
-						muGomuks.Lock()
-						imageAuthToken = tok
-						muGomuks.Unlock()
-						log.Printf("gomuks: received image_auth_token")
-					}
-					continue
+			continue
+		case resp.RequestID == 0 && isGomuksControl(resp.Command):
+			continue
+		}
+		if resp.RequestID < 0 {
+			req := int64(resp.RequestID)
+			for {
+				old := lastRecvNegID.Load()
+				if req >= old {
+					break
 				}
-				pendingMu.Lock()
-				ch, ok := pendingSends[resp.RequestID]
-				pendingMu.Unlock()
-				if ok {
-					if resp.Command == "error" {
-						var errStr string
-						json.Unmarshal(resp.Data, &errStr)
-						ch <- fmt.Errorf("gomuks: %s", errStr)
-					} else {
-						ch <- nil
-					}
-					continue
+				if lastRecvNegID.CompareAndSwap(old, req) {
+					break
 				}
 			}
-			if err := publish(json.RawMessage(msg)); err != nil {
-				log.Println("publish raw error:", err)
-			}
-			ums := gomuksToUnified(msg)
-			if len(ums) == 0 {
+		}
+		if err := publish(json.RawMessage(msg)); err != nil {
+			log.Println("publish raw error:", err)
+		}
+		ums := gomuksToUnified(msg)
+		if len(ums) == 0 {
+			if resp.Command == "sync_complete" {
 				log.Println("gomuks: no unified message from sync_complete")
 			}
-			for _, um := range ums {
-				publish(um)
-			}
+		}
+		for _, um := range ums {
+			publish(um)
+		}
+	}
+}
 
-		case <-pingTicker.C:
+func pingLoop(c *websocket.Conn, done <-chan struct{}) {
+	var seq int64
+	ticker := time.NewTicker(gomuksPingEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
 			seq++
 			ping := map[string]any{
 				"command":    "ping",
 				"request_id": seq,
 				"data": map[string]any{
-					"last_received_id": lastReceivedID,
+					"last_received_id": lastRecvNegID.Load(),
 				},
 			}
 			data, _ := json.Marshal(ping)
@@ -286,6 +370,14 @@ func gomuksEventLoop(c *websocket.Conn) {
 			}
 		}
 	}
+}
+
+func isGomuksControl(cmd string) bool {
+	switch cmd {
+	case "client_state", "sync_status", "init_complete", "error", "response":
+		return true
+	}
+	return false
 }
 
 func sendGomuksUpload(filedata []byte, fileinfo *fbshared.MediaDataInfo) (json.RawMessage, error) {

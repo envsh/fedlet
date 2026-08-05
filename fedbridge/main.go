@@ -43,6 +43,8 @@ type serviceCapacities struct {
 
 var syncDir string
 
+var httpClient30s = &http.Client{Timeout: 30 * time.Second}
+
 var publishViaHTTP bool = true
 var channel_name = "reddit"
 var ntfyshTopic string
@@ -80,7 +82,7 @@ func publishNtfy(protocol, channel string, v any) {
 	}
 	req.Header.Set("Title", title)
 	req.Header.Set("Tags", protocol)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient30s.Do(req)
 	if err != nil {
 		log.Printf("ntfysh: publish error: %v", err)
 		return
@@ -153,7 +155,7 @@ func publish(protocol, channel string, v any) error {
 func publishBytes(channel string, data []byte) error {
 	if publishViaHTTP {
 		url := fmt.Sprintf("http://127.0.0.1:4004/p2pin/send?topic=%s", channel)
-		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(data))
+		resp, err := httpClient30s.Post(url, "application/octet-stream", bytes.NewReader(data))
 		if err != nil {
 			return err
 		}

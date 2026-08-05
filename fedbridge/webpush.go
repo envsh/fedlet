@@ -106,6 +106,7 @@ func publishWebPush(protocol, channel string, v any) {
 	}
 	opts := *webpushOpts
 	opts.Topic = ntfyshTopic
+	opts.HTTPClient = httpClient30s
 	resp, err := webpush.SendNotification(data, webpushSub, &opts)
 	if err != nil {
 		log.Printf("webpush: %v", err)
