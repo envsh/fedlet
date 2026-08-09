@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envsh/fedlet/fbvirtun"
+	// "github.com/envsh/fedlet/fbvirtun"
+
+	"github.com/envsh/libp2px/fbvirtun"
 
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/envsh/libp2px/dlog"
