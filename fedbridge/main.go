@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envsh/toxera/fedkey"
+
 	// "github.com/envsh/fedlet/fbvirtun"
 
 	"github.com/envsh/libp2px/fbvirtun"
@@ -216,6 +218,8 @@ func main() {
 
 	fbvirtun.InitVirTun(cfg.KeyFile)
 	defer fbvirtun.CleanupDarwinRoutes()
+	go runSoftunMain(localPeerIDFromKeyFile(cfg.KeyFile))
+	go runSoftunPhyport(9559) // 9339+2
 
 	go func() {
 		if fbvirtun.Tunov == nil {
@@ -283,6 +287,21 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+// localPeerIDFromKeyFile 从 fedkey keyfile(如 key.txt)提取本地 libp2p peer ID。
+// 与 p2put 的 host ID(h.ID())同源:同一 ed25519 种子 → 相同 protobuf 编码 → 相同 base58。
+func localPeerIDFromKeyFile(keyFile string) string {
+	kr, err := fedkey.LoadKeyRing(keyFile, true)
+	if err != nil {
+		log.Printf("localpeerid: load keyring %s: %v", keyFile, err)
+		return ""
+	}
+	pid := kr.Libp2pPeerID(fedkey.Libp2pEd25519)
+	if pid == "" {
+		log.Printf("localpeerid: empty peer id from %s", keyFile)
+	}
+	return pid
 }
 
 /*
