@@ -221,6 +221,11 @@ func main() {
 	go runSoftunMain(localPeerIDFromKeyFile(cfg.KeyFile))
 	go runSoftunPhyport(9559) // 9339+2
 
+	// 注册节点初始化事件回调(检测循环启动前)
+	nodeBus.On("bootready", onBootReady)
+	nodeBus.On("target-peer", onTargetPeer)
+
+	// 检测循环:host 未就绪 1s 重试,就绪后发射 bootready(成功即退出,天然单次)
 	go func() {
 		if fbvirtun.Tunov == nil {
 			return
@@ -228,31 +233,7 @@ func main() {
 		for {
 			board, err := p2put.CollectBoard()
 			if err == nil {
-				localPeerID = board.PeerID
-				hostPart := fbvirtun.StringToHostPart(board.PeerID)
-				ip := vlanpfx + strconv.Itoa(hostPart)
-				fbvirtun.LocalPeerIP = ip
-				log.Printf("virtun: computed IP from peer_id: %s", ip)
-				if err := fbvirtun.SetupSeedVirtIP(ip); err != nil {
-					log.Printf("virtun: %v", err)
-				} else {
-					log.Printf("virtun: %s configured and up from peer_id", ip)
-				}
-				if fbvirtun.IPv6Available() {
-					for _, pfx := range ipv6Prefixes {
-						addr := pfx + strconv.Itoa(hostPart)
-						if fbvirtun.LocalPeerIPv6 == "" {
-							fbvirtun.LocalPeerIPv6 = addr
-						}
-						if err := fbvirtun.SetupSeedVirtIP(addr); err != nil {
-							log.Printf("virtun: %s: %v", addr, err)
-						} else {
-							log.Printf("virtun: %s configured and up", addr)
-						}
-					}
-				} else {
-					log.Printf("virtun: IPv6 not available (kernel disabled), skipping")
-				}
+				nodeBus.Emit("bootready", board.PeerID)
 				return
 			}
 			log.Printf("virtun: collect board: %v (retry in 1s)", err)
@@ -337,8 +318,7 @@ func waitPeerCome(srv *pbtunnel.DriftServer, peerid string) {
 		for _, p := range pl {
 			if strings.HasSuffix(p.ID, usepeer) {
 				peerid = p.ID
-				srv.SwitchPeer(peerid)
-				currentPeerID = peerid
+				nodeBus.Emit("target-peer", peerid)
 				log.Println("swito peered ", peerid, time.Since(btime))
 				break
 			}
