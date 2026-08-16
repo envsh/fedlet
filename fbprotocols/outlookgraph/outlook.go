@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,9 +129,13 @@ type messageData struct {
 	FolderID         string   `json:"folderId"`
 	FolderName       string   `json:"folderName"`
 	HasAttachments   bool     `json:"hasAttachments"`
+	Size             int64    `json:"size,omitempty"`
 }
 
 const graphAPI = "https://graph.microsoft.com/v1.0"
+
+// graphClient 统一 HTTP 客户端;http.DefaultClient 无超时,网络挂死会阻塞 poll 循环。
+var graphClient = &http.Client{Timeout: 15 * time.Second}
 
 type deltaPage struct {
 	Context   string            `json:"@odata.context"`
@@ -142,9 +148,19 @@ type rawMsg struct {
 	ID               string `json:"id"`
 	Removed          *struct{} `json:"@removed,omitempty"`
 	Subject          *string   `json:"subject"`
+	// 服务端限制:官方文档定义 bodyPreview = message body 的前 255 个字符(纯文本格式)。这是微软侧的硬截断,无法用该字段拿到完整正文(已由官方文档 + SO 实证确认)。
 	BodyPreview      *string   `json:"bodyPreview"`
 	ReceivedDateTime *string   `json:"receivedDateTime"`
 	HasAttachments   *bool     `json:"hasAttachments"`
+	Body             *struct {
+		Content     *string `json:"content"`
+		ContentType *string `json:"contentType"`
+	} `json:"body,omitempty"`
+	SingleValueExtendedProperties []struct {
+		ID    string `json:"id"`
+		Value string `json:"value"`
+	} `json:"singleValueExtendedProperties,omitempty"`
+	Size int64 `json:"size,omitempty"`
 	From             *struct {
 		EmailAddress *struct {
 			Address *string `json:"address"`
@@ -331,6 +347,81 @@ func pollDelta(ctx context.Context, token, deltaLink string) ([]messageData, str
 	return msgs, deltaLink, nil
 }
 
+// fetchMessageSize 通过单条 GET 获取 PidTagMessageSize(整封邮件属性总字节数)。
+// delta 查询不支持扩展属性 expand(官方实证),故仅此处用普通 GET。
+func fetchMessageSize(ctx context.Context, token, msgID string) (int64, error) {
+	u := graphAPI + "/me/messages/" + msgID +
+		"?$select=id&$expand=singleValueExtendedProperties(" +
+		url.QueryEscape("$filter=id eq 'Long 0x0E08'") + ")"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return 0, fmt.Errorf("get message size: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := graphClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("get message size: request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("get message size: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("get message size: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var rm rawMsg
+	if err := json.Unmarshal(body, &rm); err != nil {
+		return 0, fmt.Errorf("get message size: parse response: %w", err)
+	}
+	for _, p := range rm.SingleValueExtendedProperties {
+		if strings.Contains(strings.ToLower(p.ID), "0x0e08") {
+			n, err := strconv.ParseInt(strings.TrimSpace(p.Value), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse size %q: %w", p.Value, err)
+			}
+			rm.Size = n
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("PidTagMessageSize not present")
+}
+
+// fetchMessageBody 获取完整正文(纯文本)。独立实现,暂不接入主流程。
+func fetchMessageBody(ctx context.Context, token, msgID string) (content, contentType string, err error) {
+	u := graphAPI + "/me/messages/" + msgID + "?$select=id,body"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("get message body: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Prefer", `outlook.body-content-type="text"`)
+	resp, err := graphClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("get message body: request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("get message body: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("get message body: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var rm rawMsg
+	if err := json.Unmarshal(body, &rm); err != nil {
+		return "", "", fmt.Errorf("get message body: parse response: %w", err)
+	}
+	if rm.Body == nil || rm.Body.Content == nil {
+		return "", "", fmt.Errorf("no body in response")
+	}
+	ct := ""
+	if rm.Body.ContentType != nil {
+		ct = *rm.Body.ContentType
+	}
+	return *rm.Body.Content, ct, nil
+}
+
 func Start(info string) {
 	var cfg Config
 	if err := json.Unmarshal([]byte(info), &cfg); err != nil {
@@ -424,6 +515,12 @@ func poll(cfg Config) {
 			for _, m := range msgs {
 				m.FolderID = folders[i].ID
 				m.FolderName = folders[i].Name
+				if sz, err := fetchMessageSize(ctx, token, m.ID); err != nil {
+					log.Printf("outlook: %s: size fetch %s: %v", folders[i].Name, m.ID, err)
+				} else {
+					m.Size = sz
+					log.Printf("outlook: %s: msg=%s size=%d bytes", folders[i].Name, m.ID, sz)
+				}
 				b, _ := json.Marshal(m)
 				if err := publish(m); err != nil {
 					log.Println("outlook: publish error:", err)

@@ -52,6 +52,7 @@ func runSoftunPhyport(port int) {
 	for {
 		c, err := lsner.Accept()
 		if err != nil {
+			log.Println("softun accept error", port)
 			break
 		}
 		peerid := currentPeerID
