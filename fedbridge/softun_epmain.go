@@ -10,11 +10,25 @@ import (
 	"strconv"
     "time"
 	"context"
+	"sync"
 
     // "github.com/envsh/libp2px/p2put"
     "github.com/envsh/libp2px/softun"
 	// _ "github.com/envsh/libp2px/softun"
 )
+
+type safeConn struct {
+	net.Conn
+	closeOnce sync.Once
+}
+
+func (s *safeConn) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		err = s.Conn.Close()
+	})
+	return err
+}
 
 func runSoftunMain(locid string) {
     // ── 0. 启动 libp2px（p2put 内部已有真实网络层）──
@@ -51,7 +65,7 @@ func runSoftunPhyport(port int) {
 		log.Panicln(err)
 	}
 	log.Println("softun listen phy:", lsner.Addr())
-	for cno:=9; ; cno++ {
+	for cno := 9; ; cno++ {
 		c, err := lsner.Accept()
 		if err != nil {
 			log.Println("softun accept error", port)
@@ -66,8 +80,11 @@ func runSoftunPhyport(port int) {
 		}
 		peerIP := vlanpfx + strconv.Itoa(softun.StringToHostPart(peerid))
 		go func(c net.Conn) {
-			defer log.Println("softun cno done", cno)
-			defer c.Close()
+			xlen := int64(0)
+			// todo delay close very long, ~5min
+			defer log.Println("softun cno done", cno, xlen)
+			scLocal := &safeConn{Conn: c}
+			defer scLocal.Close()
 			// need about ~4min
 			// conn, err := softun.Device().Dial("tcp", peerIP+":9229")
 			ctx, cancel := context.Background(), func(){}
@@ -81,12 +98,27 @@ func runSoftunPhyport(port int) {
 				return
 			}
 			log.Println("softun p2conn", cno, conn.RemoteAddr())
-			defer conn.Close()
-			go io.Copy(conn, c)
-			_, err = io.Copy(c, conn)
+			scRemote := &safeConn{Conn: conn}
+			defer scRemote.Close()
+			go func() {
+				xn, err := io.Copy(scRemote, scLocal)
+				if err != nil {
+					log.Println("softun xfer1", cno, xn, err)
+				}else{
+					log.Println("softun xfer1 done", cno, xn)
+				}
+				// scLocal.Close()
+				scRemote.Close()
+			}()
+			xn, err := io.Copy(scLocal, scRemote)
+			xlen = xn
 			if err != nil {
-				log.Println("softun xfer", err)
+				log.Println("softun xfer2", cno, xn, err)
+			} else {
+				log.Println("softun xfer2 done", cno, xn)
 			}
+			scLocal.Close()
+			// scRemote.Close()
 		}(c)
 	}
 	log.Println("softun phyport done", port)
