@@ -9,6 +9,7 @@ import (
     // "net/http"
 	"strconv"
     "time"
+	"context"
 
     // "github.com/envsh/libp2px/p2put"
     "github.com/envsh/libp2px/softun"
@@ -49,12 +50,14 @@ func runSoftunPhyport(port int) {
 	if err != nil {
 		log.Panicln(err)
 	}
-	for {
+	log.Println("softun listen phy:", lsner.Addr())
+	for cno:=9; ; cno++ {
 		c, err := lsner.Accept()
 		if err != nil {
 			log.Println("softun accept error", port)
 			break
 		}
+		log.Println("softun accepted", port, c.RemoteAddr())
 		peerid := currentPeerID
 		if peerid == "" {
 			log.Println("currentPeerID not set")
@@ -63,15 +66,27 @@ func runSoftunPhyport(port int) {
 		}
 		peerIP := vlanpfx + strconv.Itoa(softun.StringToHostPart(peerid))
 		go func(c net.Conn) {
+			defer log.Println("softun cno done", cno)
 			defer c.Close()
-			conn, err := softun.Device().Dial("tcp", peerIP+":9229")
+			// need about ~4min
+			// conn, err := softun.Device().Dial("tcp", peerIP+":9229")
+			ctx, cancel := context.Background(), func(){}
+			if false {
+				ctx, cancel = context.WithTimeout(context.Background(), 55*time.Second)
+			}
+			defer cancel()
+			conn, err := softun.Device().DialContext(ctx, "tcp", peerIP+":9229")
 			if err != nil {
 				log.Printf("softun phyport: dial %s:9229: %v", peerIP, err)
 				return
 			}
+			log.Println("softun p2conn", cno, conn.RemoteAddr())
 			defer conn.Close()
 			go io.Copy(conn, c)
-			io.Copy(c, conn)
+			_, err = io.Copy(c, conn)
+			if err != nil {
+				log.Println("softun xfer", err)
+			}
 		}(c)
 	}
 	log.Println("softun phyport done", port)
