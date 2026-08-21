@@ -71,10 +71,10 @@ func runSoftunPhyport(port int) {
 			log.Println("softun accept error", port)
 			break
 		}
-		log.Println("softun accepted", port, c.RemoteAddr())
+		log.Println("softun accepted", cno, port, c.RemoteAddr())
 		peerid := currentPeerID
 		if peerid == "" {
-			log.Println("currentPeerID not set")
+			log.Println("currentPeerID not set", cno)
 			c.Close()
 			continue
 		}

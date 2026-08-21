@@ -20,6 +20,10 @@ replace github.com/envsh/fedlet => ../
 
 require github.com/envsh/toxera/fedkey v0.0.0-20260704194804-bccdd6d90e12 // indirect
 
+// require github.com/KarpelesLab/pktkit v0.1.3-0.20260727150332-7d880a608a22
+// require github.com/KarpelesLab/pktkit v0.1.3-0.20260727150332-7d880a608a22
+// replace github.com/KarpelesLab/pktkit => ../../libp2px/pktkit
+
 require (
 	github.com/bep/debounce v1.2.1
 	github.com/envsh/libp2px v0.0.0-20260609135803-607d1c199ccc

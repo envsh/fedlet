@@ -4,5 +4,6 @@ use (
 	.
 	../../go-toxcore/fedkey
 	../../libp2px
+//	../../libp2px/pktkit
 	// ../../go-toxcore/p2put
 )
