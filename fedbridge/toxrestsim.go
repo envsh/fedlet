@@ -72,6 +72,7 @@ func init() {
 	http.HandleFunc("/api/self", handleSelf)
 	http.HandleFunc("/api/switchpeer", handleSwitchPeer)
 	http.HandleFunc("/api/messages/send", handleMessageSend)
+	http.HandleFunc("/api/messages/redact", handleMessageRedact)
 	http.HandleFunc("/api/translate", handleTranslate)
 	http.HandleFunc("/api/media_download", handleMediaDownload)
 }
@@ -488,6 +489,21 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{"local_msgid": e.ID, "proto_msgid": res.MsgID})
+}
+
+// POST /api/messages/redact — 尚未实现
+func handleMessageRedact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(r.Body, 286))
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	log.Printf("toxrestsim: POST /api/messages/redact query=%q body=%q", r.URL.RawQuery, body)
+	writeErr(w, "not implemented", http.StatusNotImplemented)
 }
 
 func writeErr(w http.ResponseWriter, msg string, code int) {
