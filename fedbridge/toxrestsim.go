@@ -491,19 +491,53 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"local_msgid": e.ID, "proto_msgid": res.MsgID})
 }
 
-// POST /api/messages/redact — 尚未实现
+// POST /api/messages/redact  form: type, id, message_id[, reason]
 func handleMessageRedact(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var body []byte
-	if r.Body != nil {
-		body, _ = io.ReadAll(io.LimitReader(r.Body, 286))
-		r.Body = io.NopCloser(bytes.NewReader(body))
+	if err := r.ParseForm(); err != nil {
+		writeErr(w, "failed to parse form: "+err.Error(), http.StatusBadRequest)
+		return
 	}
-	log.Printf("toxrestsim: POST /api/messages/redact query=%q body=%q", r.URL.RawQuery, body)
-	writeErr(w, "not implemented", http.StatusNotImplemented)
+
+	chatType := r.FormValue("type")
+	idStr := r.FormValue("id")
+	msgID := r.FormValue("message_id")
+	reason := r.FormValue("reason")
+
+	if chatType == "" || idStr == "" || msgID == "" {
+		log.Printf("toxrestsim: POST /api/messages/redact: missing params type=%q id=%q message_id=%q", chatType, idStr, msgID)
+		writeErr(w, "missing required parameters: type, id, message_id", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("toxrestsim: POST /api/messages/redact type=%q id=%q message_id=%q reason=%q",
+		chatType, idStr, msgID, reason)
+
+	redactTTL := r.FormValue("ttl")
+
+	res, err := DispatchRedact(chatType, idStr, msgID, reason)
+	if err != nil {
+		log.Printf("toxrestsim: dispatch redact error: ttl=%v type=%q id=%q message_id=%q reason=%q %v",
+			redactTTL, chatType, idStr, msgID, reason, err)
+
+		if (redactTTL == "" || redactTTL == "0") && (
+			strings.Contains(err.Error(), "not connected") ||
+			// 当前运行二进制未编译相应的模块
+			strings.Contains(err.Error(), "no local sender for")) {
+			err = ForeachRedact(chatType, idStr, msgID, reason)
+			if err != nil {
+				log.Printf("toxrestsim: foreach redact error: %v", err)
+			}
+		}
+		if err != nil {
+			writeErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true, "proto_msgid": res.MsgID})
 }
 
 func writeErr(w http.ResponseWriter, msg string, code int) {

@@ -555,6 +555,64 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 	return resp.Body, resp.Header.Get("Content-Type"), nil
 }
 
+func Redact(roomID, eventID, reason string) (fbshared.SendResult, error) {
+	if roomID == "" || eventID == "" {
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: empty roomID or eventID")
+	}
+	muGomuks.Lock()
+	conn := gomuksConn
+	gomuksSeq++
+	seq := gomuksSeq
+	muGomuks.Unlock()
+	if conn == nil {
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: not connected")
+	}
+
+	data := map[string]any{
+		"room_id":  roomID,
+		"event_id": eventID,
+	}
+	if reason != "" {
+		data["reason"] = reason
+	}
+	cmd := map[string]any{
+		"command":    "redact_event",
+		"request_id": seq,
+		"data":       data,
+	}
+	payload, err := json.Marshal(cmd)
+	if err != nil {
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: marshal error: %w", err)
+	}
+
+	ch := make(chan error, 1)
+	pendingMu.Lock()
+	pendingSends[seq] = ch
+	pendingMu.Unlock()
+	defer func() {
+		pendingMu.Lock()
+		delete(pendingSends, seq)
+		pendingMu.Unlock()
+	}()
+
+	writeMu.Lock()
+	err = conn.WriteMessage(websocket.TextMessage, payload)
+	writeMu.Unlock()
+	if err != nil {
+		return fbshared.SendResult{}, err
+	}
+
+	select {
+	case err := <-ch:
+		if err != nil {
+			return fbshared.SendResult{}, err
+		}
+		return fbshared.SendResult{MsgID: eventID}, nil
+	case <-time.After(30 * time.Second):
+		return fbshared.SendResult{}, fmt.Errorf("gomuks: redact timeout")
+	}
+}
+
 // protocol status
 var (
 	statusRunning        atomic.Bool

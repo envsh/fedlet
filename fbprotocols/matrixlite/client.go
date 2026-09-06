@@ -634,6 +634,32 @@ type whoamiResp struct {
 	UserID string `json:"user_id"`
 }
 
+func (c *Client) RedactMessage(roomID, eventID, reason string) (fbshared.SendResult, error) {
+	txnID := atomic.AddInt64(&c.txnID, 1)
+	u := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/redact/%s/%d",
+		c.baseURL, url.PathEscape(roomID), url.PathEscape(eventID), txnID)
+
+	body, _ := json.Marshal(map[string]string{"reason": reason})
+
+	resp, err := c.doRequest(http.MethodPut, u, body)
+	if err != nil {
+		return fbshared.SendResult{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fbshared.SendResult{}, fmt.Errorf("matrixlite: redact HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+	var rr struct {
+		EventID string `json:"event_id"`
+	}
+	if err := json.Unmarshal(raw, &rr); err != nil {
+		return fbshared.SendResult{}, fmt.Errorf("matrixlite: redact decode: %w: %s", err, string(raw))
+	}
+	log.Printf("matrixlite: redacted %s in %s -> %s", eventID, roomID, rr.EventID)
+	return fbshared.SendResult{MsgID: rr.EventID}, nil
+}
+
 func (c *Client) whoami() (string, error) {
 	resp, err := c.doRequest(http.MethodGet, "/_matrix/client/v3/account/whoami", nil)
 	if err != nil {

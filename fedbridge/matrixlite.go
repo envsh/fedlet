@@ -15,6 +15,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeMatrix},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     matrixlite.Send,
+	RedactFn:   matrixlite.Redact,
 	DlMediaFn:  matrixlite.DownloadMedia,
 	StartFn:    func() { matrixlite.Start(matrixURL, matrixAuth) },
 	statusFn: func() ProtocolStatus {

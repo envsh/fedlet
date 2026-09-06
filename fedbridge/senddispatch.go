@@ -62,6 +62,33 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 	return res, err
 }
 
+// DispatchRedact 按联系人类型分发撤回请求。
+//
+//	ctype:   联系人类型常量（同 DispatchSend）
+//	to:      目标标识（friend ID / room ID 等）
+//	msgID:   要撤回的消息 ID
+//	reason:  撤回原因（可空）
+func DispatchRedact(ctype, to, msgID, reason string) (fbshared.SendResult, error) {
+	info, ok := ctypeRegistry[ctype]
+	log.Printf("senddispatch: redact ctype=%q to=%q msgid=%q ok=%v canRedact=%v",
+		ctype, to, msgID, ok, ok && info.RedactFn != nil)
+	if !ok {
+		return fbshared.SendResult{}, fmt.Errorf("senddispatch: no local sender for %q", ctype)
+	}
+	if info.RedactFn == nil {
+		return fbshared.SendResult{}, fmt.Errorf("senddispatch: protocol %q does not support redact", info.Name)
+	}
+	if info.statusFn != nil {
+		st := info.Status()
+		if !st.Running || (st.Running && st.ConnectedSince.IsZero()) {
+			return fbshared.SendResult{}, fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
+		}
+	}
+	res, err := info.RedactFn(to, msgID, reason)
+	log.Printf("senddispatch: redact ctype=%q msgid=%q result=%v", ctype, msgID, err)
+	return res, err
+}
+
 // 联系人类型常量（与 toxhttpd/qltox/eventpoller.cpp 定义一致）
 const (
 	TypeImapMail      = "imap_mail"
@@ -78,6 +105,62 @@ const (
 	TypeMisskeyNote   = "misskey_note"
 	TypeOutlookEvent  = "outlook_event"
 )
+
+// return when first success
+// maybe infinite msgs !!!
+func ForeachRedact(ctype, to, msgID, reason string) error {
+	var err0 error
+	btime := time.Now()
+	pl := getPeerList()
+	if len(pl) == 0 {
+		return fmt.Errorf("foreachredact: no peers available")
+	}
+	for _, p := range pl {
+		peerid := p.ID
+		log.Println("swito peered ", peerid, time.Since(btime))
+		htcli := pbtunnel.NewHttpClient(peerid)
+
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		w.WriteField("type", ctype)
+		w.WriteField("id", to)
+		w.WriteField("message_id", msgID)
+		w.WriteField("reason", reason)
+		w.WriteField("ttl", "1") // cutoff infinite loop, used in handleMessageRedact
+		w.Close()
+
+		req, err := http.NewRequest(http.MethodPost,
+			"http://127.0.0.1:4004/api/messages/redact?ttl=1", &buf)
+		if err != nil {
+			err0 = err
+			log.Println(err, peerid)
+			continue
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+
+		resp, err := htcli.Do(req)
+		err0 = err
+		var scc string
+		if resp != nil {
+			slurp, _ := io.ReadAll(resp.Body)
+			scc = string(slurp)
+			resp.Body.Close()
+			if len(slurp) > 99 {
+				slurp = slurp[:99]
+			}
+			log.Println("rethttp:", string(slurp), peerid)
+		}
+		if err0 != nil {
+			log.Println(err0, peerid)
+		} else if resp.StatusCode != 200 {
+			err0 = fmt.Errorf("foreachredact: peer %s returned HTTP %d", peerid, resp.StatusCode)
+			log.Println(resp.StatusCode, scc, peerid)
+		} else {
+			break
+		}
+	}
+	return err0
+}
 
 // return when first success
 // maybe infinite msgs !!!

@@ -336,6 +336,19 @@ func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
 	return c.downloadMedia(mxcURL)
 }
 
+func Redact(roomID, eventID, reason string) (fbshared.SendResult, error) {
+	if roomID == "" || eventID == "" {
+		return fbshared.SendResult{}, fmt.Errorf("matrixlite: empty roomID or eventID")
+	}
+	muClient.Lock()
+	c := curClient
+	muClient.Unlock()
+	if c == nil {
+		return fbshared.SendResult{}, fmt.Errorf("matrixlite: no active session")
+	}
+	return c.RedactMessage(roomID, eventID, reason)
+}
+
 func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoMatrixLite,
