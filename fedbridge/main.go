@@ -264,10 +264,44 @@ func main() {
 	}()
 	defer proxy.Close()
 
-	err := http.ListenAndServe(":4004", nil)
+	err := http.ListenAndServe(":4004", logUnknownRoute(http.DefaultServeMux))
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+const maxLogBody = 286
+
+// statusRecorder 捕获响应状态码，用于判断是否为 404。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// logUnknownRoute 仅当请求未匹配任何路由(404)时记录方法、URL、参数和 body。
+func logUnknownRoute(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(io.LimitReader(r.Body, maxLogBody+1))
+			// 保留未读部分，避免截断下游 handler 的 body
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+		}
+		next.ServeHTTP(rec, r)
+		if rec.status == http.StatusNotFound {
+			if len(body) > maxLogBody {
+				body = body[:maxLogBody]
+			}
+			log.Printf("HTTP 404 %s %s query=%q body=%q remote=%s",
+				r.Method, r.URL.Path, r.URL.RawQuery, body, r.RemoteAddr)
+		}
+	})
 }
 
 // localPeerIDFromKeyFile 从 fedkey keyfile(如 key.txt)提取本地 libp2p peer ID。
