@@ -97,7 +97,8 @@ func pollLoop() {
 }
 
 // processThreads 对 d 中的帖子按 (tid, reply_num) 复合 key 单次 map 查询去重:
-// 未发布过的组合才 publish 并记录;已发布过则跳过(dup)。IsTop 置顶帖保持跳过。
+// 未发布过的组合:立即 publish 线程 metadata,随后马上执行新回复流程;
+// 已发布过则跳过(dup)。IsTop 置顶帖保持跳过。
 func processThreads(kw string, d *FrsData, state threadState, now time.Time) (newN, dupN int) {
 	checked, dup, n := 0, 0, 0
 	for i := range d.ThreadList {
@@ -118,11 +119,37 @@ func processThreads(kw string, d *FrsData, state threadState, now time.Time) (ne
 			log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, err)
 		}
 		state[key] = now.Unix()
+		processThreadReplies(kw, d.Forum, t)
 	}
 	if dup > 0 {
 		log.Printf("bdtieba: [%s] dedupe skipped %d/%d (new=%d)", forumName(d.Forum, kw), dup, checked, n)
 	}
 	return n, dup
+}
+
+const newPostReplies = 5
+
+// processThreadReplies 立即为新 key 的帖子拉取最新 newPostReplies 楼,
+// 经 pid 去重(ProcessLatestPosts,内部日志+持久化)后逐个 publish。
+func processThreadReplies(kw string, f Forum, t *Thread) {
+	posts, err := ProcessLatestPosts(t.Tid, newPostReplies)
+	if err != nil {
+		log.Printf("bdtieba: posts %q tid=%d error: %v", kw, t.Tid, err)
+		return
+	}
+	for i := range posts {
+		if err := publish(publishPostPayload(f, t, &posts[i])); err != nil {
+			log.Printf("bdtieba: publish post %q tid=%d pid=%d error: %v", kw, t.Tid, posts[i].ID, err)
+		}
+	}
+}
+
+func publishPostPayload(f Forum, t *Thread, p *Post) map[string]any {
+	return map[string]any{
+		"forum":  f,
+		"thread": t,
+		"post":   p,
+	}
 }
 
 // publishPayload builds the raw (non-unified) payload sent to downstream.

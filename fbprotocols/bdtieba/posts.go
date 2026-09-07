@@ -115,8 +115,7 @@ func FetchPosts(tid int64, pn, rn int) (*PbData, error) {
 	req.Header.Set("Referer", fmt.Sprintf("https://tieba.baidu.com/p/%d", tid))
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("bdtieba: get tid=%d: %w", tid, err)
 	}

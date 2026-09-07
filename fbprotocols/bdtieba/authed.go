@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Auth status values reported by TiebaAuth.AuthStatus.
@@ -59,7 +58,7 @@ type TiebaAuth struct {
 func NewTiebaAuth() *TiebaAuth {
 	a := &TiebaAuth{
 		status: AuthStatusEmpty,
-		hc:     &http.Client{Timeout: 15 * time.Second},
+		hc:     hc,
 	}
 	a.loadAuth()
 	return a

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"time"
 )
@@ -13,6 +14,27 @@ const (
 	frsBaseURL = "https://tieba.baidu.com/mg/f/getFrsData"
 	mobileUA   = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 )
+
+// hc is the package-wide HTTP client shared by all requests. It keeps the
+// session cookies set by Baidu (IS_NEW_USER/TIEBAUID/BAIDUID) in an in-memory
+// jar and reuses persistent HTTP/2 connections, so each getFrsData/getPbData
+// call presents a consistent anonymous session instead of a fresh one.
+var hc = func() *http.Client {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		panic("bdtieba: cookiejar: " + err.Error())
+	}
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Jar:     jar,
+		Transport: &http.Transport{
+			ForceAttemptHTTP2:   true,
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+	}
+}()
 
 // FetchFrs fetches page pn of the thread list of forum kw.
 // rn is the requested number of items per request (default 30).
@@ -44,8 +66,7 @@ func FetchFrs(kw string, pn, rn int) (*FrsData, error) {
 	req.Header.Set("Referer", "https://tieba.baidu.com/")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("bdtieba: get %q: %w", kw, err)
 	}
