@@ -140,9 +140,12 @@ func FetchPosts(tid int64, pn, rn int) (*PbData, error) {
 	return &out.Data, nil
 }
 
+// postState 帖子(pid)排重集合:pid → 首见时间戳(72h 过期)。
+type postState map[int64]int64
+
 var (
 	pstateMu sync.Mutex
-	pstate   = stateData{}
+	pstate   = postState{}
 )
 
 func pstatePath() string {
@@ -158,7 +161,7 @@ func loadPstate() {
 	if err != nil {
 		return
 	}
-	var s stateData
+	var s postState
 	if err := json.Unmarshal(data, &s); err != nil {
 		log.Printf("bdtieba: posts state parse error: %v", err)
 		return
@@ -189,7 +192,7 @@ func ensurePstate() {
 	if pstate != nil {
 		return
 	}
-	pstate = stateData{}
+	pstate = postState{}
 	loadPstate()
 	prunePstate(time.Now())
 	if len(pstate) > 0 {
