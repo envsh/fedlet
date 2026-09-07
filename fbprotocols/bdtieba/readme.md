@@ -22,6 +22,19 @@
 - 不存在的吧名返回空（`thread_list=0`、`forum=None`），不做模糊检索
 - 返回的 `data.forum.name` / `data.forum.id` 是规范吧名与 fid
 
+### 排序参数 sort_type（2026-09 实测，getFrsData）
+
+`FetchFrs` **不传 sort_type**，使用贴吧默认排序：置顶帖恒在最前，其后按最后回复时间（`last_time_int` 降序）。
+
+| sort_type | 排序 | 实测 |
+|---|---|---|
+| 0（默认） | 置顶 + 最后回复时间降序 | 首页默认序 |
+| 1 | 置顶 + 发布时间降序（新帖在前） | 需抓"新帖流"时传 `&sort_type=1` |
+| 2 | 与 0 完全一致 | 无独立语义 |
+| 3 | 返回非 JSON | 不可用 |
+
+当前实现主动不传该参数 → 维持默认排序；如后续需要"新帖优先"，在 `FetchFrs` 的 URL 加 `sort_type=1` 即可（一行改动，本仓库暂不启用）。
+
 ### 实测响应字段
 
 `data.forum`（id/name）、`data.thread_list[]`：

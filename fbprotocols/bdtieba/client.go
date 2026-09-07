@@ -16,6 +16,17 @@ const (
 
 // FetchFrs fetches page pn of the thread list of forum kw.
 // rn is the requested number of items per request (default 30).
+//
+// The endpoint accepts a sort_type query parameter but FetchFrs intentionally
+// does NOT send it, so Tieba applies its default ordering (equivalent to
+// sort_type=0): pin threads first, then by last-reply time (last_time_int
+// descending). Measured sort_type values (2026-09, getFrsData):
+//
+//	0  default: pin first, then last-reply time desc
+//	1  create/publish time desc (newest threads first); for a "new thread
+//	   stream" ordering, pass &sort_type=1 explicitly
+//	2  identical to 0 (no distinct meaning)
+//	3  non-JSON/error response (unusable)
 func FetchFrs(kw string, pn, rn int) (*FrsData, error) {
 	if pn <= 0 {
 		pn = 1
