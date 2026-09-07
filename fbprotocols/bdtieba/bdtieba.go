@@ -2,11 +2,11 @@ package bdtieba
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,8 +39,16 @@ func publish(v any) error {
 	return pubfn_(v)
 }
 
-// threadState 帖子排重集合:key="tid.reply_num",值=首见时间戳(原 int64 语义,72h 过期)。
-type threadState map[string]int64
+// threadSeen 记录一个 tid 的排重状态。ReplyNum 为该帖已处理的回复数;
+// ReplyNum<0 表示从旧版本状态文件迁移而来,回复基线未知(仅去重、不补拉)。
+// Seen 为首见时间戳(72h 过期)。
+type threadSeen struct {
+	ReplyNum int64 `json:"reply_num"`
+	Seen     int64 `json:"seen"`
+}
+
+// threadState 帖子排重集合:key=tid,保证每个帖子 metadata 只 publish 一次。
+type threadState map[int64]*threadSeen
 
 func Start(kws []string, interval time.Duration) {
 	if len(kws) == 0 {
@@ -99,9 +107,10 @@ func pollLoop() {
 	}
 }
 
-// processThreads 对 d 中的帖子按 (tid, reply_num) 复合 key 单次 map 查询去重:
-// 未发布过的组合:立即 publish 线程 metadata,随后马上执行新回复流程;
-// 已发布过则跳过(dup)。IsTop 置顶帖保持跳过。
+// processThreads 按 tid 去重,保证每个帖子 metadata 只 publish 一次:
+// 首见:发布 metadata + 执行新回复流程;
+// 已见且 reply_num 增加:不重发 metadata,仅执行回复增量流程(pid 去重只发新楼);
+// 已见且 reply_num 未变(或迁移基线未知):跳过。IsTop 置顶帖保持跳过。
 func processThreads(kw string, d *FrsData, state threadState, now time.Time) (newN, dupN int) {
 	checked, dup, n := 0, 0, 0
 	// 请求与列表排序保持不变(置顶优先+last_time_int 降序),仅反向遍历:
@@ -112,19 +121,36 @@ func processThreads(kw string, d *FrsData, state threadState, now time.Time) (ne
 			continue
 		}
 		checked++
-		key := fmt.Sprintf("%d.%d", t.Tid, t.ReplyNum)
-		if _, seen := state[key]; seen {
-			dup++
-			continue
+		prev, seen := state[t.Tid]
+		if seen {
+			if prev == nil {
+				// 防御:正常由 loadState 过滤,此处视为已见,仅校准基线。
+				state[t.Tid] = &threadSeen{ReplyNum: t.ReplyNum, Seen: now.Unix()}
+				dup++
+				continue
+			}
+			if prev.ReplyNum < 0 {
+				// 旧格式迁移:基线未知,首轮校准为当前值(不发布、不补拉),
+				// 保留 Seen 时间戳;下次 reply_num 增加即可触发回复增量。
+				prev.ReplyNum = t.ReplyNum
+				dup++
+				continue
+			}
+			if t.ReplyNum <= prev.ReplyNum {
+				dup++
+				continue
+			}
 		}
 		n++
-		log.Printf("bdtieba: [%s] %s (tid=%d reply=%d) %s",
-			forumName(d.Forum, kw), truncate(t.Title, 80), t.Tid, t.ReplyNum, authorNick(t.Author))
-		if err := publish(publishPayload(d.Forum, t)); err != nil {
-			log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, err)
+		if !seen {
+			log.Printf("bdtieba: [%s] %s (tid=%d reply=%d) %s",
+				forumName(d.Forum, kw), truncate(t.Title, 80), t.Tid, t.ReplyNum, authorNick(t.Author))
+			if err := publish(publishPayload(d.Forum, t)); err != nil {
+				log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, err)
+			}
 		}
-		state[key] = now.Unix()
 		processThreadReplies(kw, d.Forum, t)
+		state[t.Tid] = &threadSeen{ReplyNum: t.ReplyNum, Seen: now.Unix()}
 	}
 	if dup > 0 {
 		log.Printf("bdtieba: [%s] dedupe skipped %d/%d (new=%d)", forumName(d.Forum, kw), dup, checked, n)
@@ -192,9 +218,9 @@ func truncate(s string, n int) string {
 
 func pruneState(state threadState, now time.Time) {
 	cutoff := now.Add(-dedupeExpiry).Unix()
-	for key, seen := range state {
-		if seen < cutoff {
-			delete(state, key)
+	for tid, e := range state {
+		if e != nil && e.Seen < cutoff {
+			delete(state, tid)
 		}
 	}
 }
@@ -212,21 +238,43 @@ func loadState(path string) threadState {
 	if err != nil {
 		return threadState{}
 	}
+
+	// 新格式:{"<tid>": {"reply_num": N, "seen": T}}。key 为纯数字,
+	// 而旧格式 key 含点,json 反序列化到 map[int64] 会失败,自动走旧格式分支。
 	var s threadState
-	if err := json.Unmarshal(data, &s); err != nil {
+	if err := json.Unmarshal(data, &s); err == nil && s != nil {
+		for tid, e := range s {
+			if e == nil {
+				delete(s, tid)
+			}
+		}
+		return s
+	}
+
+	// 旧格式:{"tid.reply_num": timestamp} → 迁移为 tid{ReplyNum:-1, Seen:timestamp}。
+	// ReplyNum=-1 表示回复基线未知:仅保留"已发布 metadata"去重,不触发补拉。
+	var old map[string]int64
+	if err := json.Unmarshal(data, &old); err != nil && len(data) > 0 {
 		log.Printf("bdtieba: load state parse error: %v", err)
 		return threadState{}
 	}
-	if s == nil {
-		return threadState{}
-	}
-	for k := range s {
-		if !strings.ContainsRune(k, '.') {
-			log.Printf("bdtieba: old state format ignored, starting fresh")
-			return threadState{}
+	s2 := make(threadState, len(old))
+	for k, v := range old {
+		if dot := strings.IndexByte(k, '.'); dot > 0 {
+			k = k[:dot]
+		}
+		tid, err := strconv.ParseInt(k, 10, 64)
+		if err != nil || tid <= 0 {
+			continue
+		}
+		if _, ok := s2[tid]; !ok {
+			s2[tid] = &threadSeen{ReplyNum: -1, Seen: v}
 		}
 	}
-	return s
+	if len(s2) > 0 {
+		log.Printf("bdtieba: migrated %d tids from old state format", len(s2))
+	}
+	return s2
 }
 
 func saveState(path string, s threadState) {

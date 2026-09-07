@@ -65,6 +65,7 @@
 - 循环拉取：每个 kw 单独 `FetchFrs`（rn=30, pn=1），无批量接口
 - 间隔：请求间 60s、整轮 600s（周期已按需求扩大 10 倍）
 - tid 排重 3 天窗口（内存 map + 持久化 `~/.config/fedlet/bdtieba-state.json`，>72h 清理）
+- **tid 级去重（仅 metadata）**：每个帖子 metadata 只 publish 一次；`reply_num` 增加时**不重发 metadata**，仅发布回复增量（楼层 pid 去重兜底）；`reply_num` 未变则跳过。旧版 `tid.reply_num` 状态文件自动迁移（ReplyNum=-1 基线未知），升级不重复发帖
 - 跳过 `is_top=1` 置顶帖
 - 推送格式：`{"forum": {"id","name"}, "thread": {原始字段}}`（非 UnifiedMessage）
 - 新帖带日志输出
