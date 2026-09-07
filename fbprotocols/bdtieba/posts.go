@@ -243,7 +243,8 @@ func postText(p *Post) string {
 }
 
 // FetchLatestPosts returns the newest n floors of thread tid, ordered by time
-// descending (newest first). n<=0 defaults to 5; each request pulls up to 30
+// ascending (oldest first, i.e. lowest floor first). n<=0 defaults to 5; each
+// request pulls up to 30
 // floors (endpoint cap), so walks older pages only when more than one page is
 // needed. Pure fetch: no dedupe, no logging, no publishing.
 func FetchLatestPosts(tid int64, n int) ([]Post, error) {
@@ -283,6 +284,11 @@ func FetchLatestPosts(tid int64, n int) ([]Post, error) {
 	sort.Slice(collected, func(i, j int) bool { return collected[i].Time > collected[j].Time })
 	if len(collected) > n {
 		collected = collected[:n]
+	}
+	// return in chronological (ascending floor) order so callers watermark/log
+	// and publish oldest→newest, matching on-page reading order.
+	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
+		collected[i], collected[j] = collected[j], collected[i]
 	}
 	return collected, nil
 }

@@ -101,7 +101,9 @@ func pollLoop() {
 // 已发布过则跳过(dup)。IsTop 置顶帖保持跳过。
 func processThreads(kw string, d *FrsData, state threadState, now time.Time) (newN, dupN int) {
 	checked, dup, n := 0, 0, 0
-	for i := range d.ThreadList {
+	// 请求与列表排序保持不变(置顶优先+last_time_int 降序),仅反向遍历:
+	// 发布/日志顺序 = 最久未回复在前,与楼层回复的返回顺序修复一致。
+	for i := len(d.ThreadList) - 1; i >= 0; i-- {
 		t := &d.ThreadList[i]
 		if t.IsTop == 1 {
 			continue
