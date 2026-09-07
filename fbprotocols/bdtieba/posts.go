@@ -3,7 +3,6 @@ package bdtieba
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -107,26 +106,12 @@ func FetchPosts(tid int64, pn, rn int) (*PbData, error) {
 	}
 	u := fmt.Sprintf("%s?kz=%d&pn=%d&rn=%d", pbBaseURL, tid, pn, rn)
 
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("bdtieba: build request tid=%d: %w", tid, err)
-	}
-	req.Header.Set("User-Agent", mobileUA)
-	req.Header.Set("Referer", fmt.Sprintf("https://tieba.baidu.com/p/%d", tid))
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := hc.Do(req)
+	body, status, err := getRaw(u, fmt.Sprintf("https://tieba.baidu.com/p/%d", tid))
 	if err != nil {
 		return nil, fmt.Errorf("bdtieba: get tid=%d: %w", tid, err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("bdtieba: read tid=%d: %w", tid, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bdtieba: tid=%d http %d %s", tid, resp.StatusCode, truncate(string(body), 200))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("bdtieba: tid=%d http %d %s", tid, status, truncate(string(body), 200))
 	}
 
 	var out PbResp

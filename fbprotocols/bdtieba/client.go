@@ -36,6 +36,40 @@ var hc = func() *http.Client {
 	}
 }()
 
+// getRaw is the shared request path: it blocks on the rate-limit gate, builds
+// the anonymous mobile-API request, performs it via hc (reusing the session
+// cookie jar and HTTP/2 connections), triggers backoff on a bfe 403 and resets
+// it on success. It returns the raw body and status code.
+func getRaw(u, referer string) ([]byte, int, error) {
+	waitRateGate()
+
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", mobileUA)
+	req.Header.Set("Referer", referer)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("Server") == "bfe" {
+		noteRateLimit()
+	} else if resp.StatusCode == http.StatusOK {
+		clearRateLimit()
+	}
+	return body, resp.StatusCode, nil
+}
+
 // FetchFrs fetches page pn of the thread list of forum kw.
 // rn is the requested number of items per request (default 30).
 //
@@ -58,26 +92,12 @@ func FetchFrs(kw string, pn, rn int) (*FrsData, error) {
 	}
 	u := fmt.Sprintf("%s?kw=%s&rn=%d&pn=%d", frsBaseURL, url.QueryEscape(kw), rn, pn)
 
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("bdtieba: build request %q: %w", kw, err)
-	}
-	req.Header.Set("User-Agent", mobileUA)
-	req.Header.Set("Referer", "https://tieba.baidu.com/")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := hc.Do(req)
+	body, status, err := getRaw(u, "https://tieba.baidu.com/")
 	if err != nil {
 		return nil, fmt.Errorf("bdtieba: get %q: %w", kw, err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("bdtieba: read %q: %w", kw, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bdtieba: %q http %d %s", kw, resp.StatusCode, truncate(string(body), 200))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("bdtieba: %q http %d %s", kw, status, truncate(string(body), 200))
 	}
 
 	var out FrsResp

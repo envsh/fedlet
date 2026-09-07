@@ -156,6 +156,12 @@
 - `vcode_md5` 留空即可；如服务端要求验证码（vcode 错误码），程序不自动打码，报错提示人工处理
 - 2026 年网页前端会附加 `_BSK` 加密参数（由 tbs 经 JS 生成）；本实现按免 `_BSK` 的参考方案（2024 实测有效）落地，如后续被强制校验需另行移植该 JS 算法
 
+### 匿名读退避（bfe 403）
+
+- 匿名 `mg/*` 端点超频返回 HTTP 403、`Server: bfe`、空响应体（无可解码内容）。
+- 社区参照：app 接口 `c.tieba.baidu.com` RPS 上限国内 CDN 20~30、港/海外节点 ~10（aiotieba/TiebaMonitor）；`mg/*` 按 IP 速率限流，实测并发突发约半数 403、间隔 ~1s 串行即恢复。
+- 桥内自动**全局退避（不重试）**：连续 403 时阻塞 2s→4s→8s→10s（×2 封顶，见 `throttle.go`），成功回落 2s；正常 60s 级轮询不受影响。
+
 ## 当前状态
 
 - ✅ 已实现：`types.go`（结构体）、`client.go`（FetchFrs）、`bdtieba.go`（Start/pollLoop/排重/状态）、`urls.go`（URL 拼接）、`authed.go`（Cookie 认证 + 发帖/回帖/删除/删后重发）
