@@ -7,11 +7,11 @@ import (
 )
 
 const (
-	// rateBase is the first cooldown after a bfe 403. Measured recovery is
-	// ~1s spacing, so 2s is ample for the 60s+ poll cadence.
-	rateBase = 2 * time.Second
+	// rateBase is the first cooldown after a bfe 403. Measured recovery was
+	// ~1s spacing, doubled to be safe on sustained-burst penalties.
+	rateBase = 4 * time.Second
 	rateMult = 2
-	rateMax  = 10 * time.Second // 2 -> 4 -> 8 -> 10 cap
+	rateMax  = 20 * time.Second // 4 -> 8 -> 16 -> 20 cap
 )
 
 var (

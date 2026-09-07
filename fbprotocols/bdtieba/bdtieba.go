@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ const (
 	defaultInterval = 600 * time.Second
 )
 
-var defaultKws = []string{"linux", "android", "个人电脑", "游戏吧", "gpt", "ai人工智能"}
+var defaultKws = []string{"linux", "android", "个人电脑", "游戏吧", "gpt", "ai人工智能", "2ch", "方便面", "吊图", "孙笑川"}
 
 var (
 	pubfn_      func(any) error
@@ -76,6 +77,8 @@ func pollLoop() {
 	}
 
 	for {
+		// 每轮随机打乱吧表顺序,降低 WAF 对固定扫描顺序的可预测性。
+		rand.Shuffle(len(kws), func(i, j int) { kws[i], kws[j] = kws[j], kws[i] })
 		for _, kw := range kws {
 			data, err := FetchFrs(kw, 1, 30)
 			if err != nil {
