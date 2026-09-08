@@ -19,7 +19,7 @@ const (
 	defaultInterval = 600 * time.Second
 )
 
-var defaultKws = []string{"linux", "android", "个人电脑", "游戏吧", "gpt", "ai人工智能", "2ch", "方便面", "吊图", "孙笑川"}
+var defaultKws = []string{"linux", "android", "个人电脑", "游戏吧", "gpt", "ai人工智能", "2ch", "方便面", "吊图", "孙笑川", "图拉丁"}
 
 var (
 	pubfn_      func(any) error
@@ -41,10 +41,12 @@ func publish(v any) error {
 
 // threadSeen 记录一个 tid 的排重状态。ReplyNum 为该帖已处理的回复数;
 // ReplyNum<0 表示从旧版本状态文件迁移而来,回复基线未知(仅去重、不补拉)。
-// Seen 为首见时间戳(72h 过期)。
+// Seen 为首见时间戳(72h 过期)。LastPid 为增量基线:上次处理所见最大楼层 pid;
+// 0 表示未初始化(新帖/迁移),此时 FetchLatestPosts 不做过滤按旧"最新N"行为拉取。
 type threadSeen struct {
 	ReplyNum int64 `json:"reply_num"`
 	Seen     int64 `json:"seen"`
+	LastPid  int64 `json:"last_pid,omitempty"`
 }
 
 // threadState 帖子排重集合:key=tid,保证每个帖子 metadata 只 publish 一次。
@@ -149,8 +151,12 @@ func processThreads(kw string, d *FrsData, state threadState, now time.Time) (ne
 				log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, err)
 			}
 		}
-		processThreadReplies(kw, d.Forum, t)
-		state[t.Tid] = &threadSeen{ReplyNum: t.ReplyNum, Seen: now.Unix()}
+		var basePID int64
+		if prev != nil {
+			basePID = prev.LastPid
+		}
+		maxPID := processThreadReplies(kw, d.Forum, t, basePID)
+		state[t.Tid] = &threadSeen{ReplyNum: t.ReplyNum, Seen: now.Unix(), LastPid: maxPID}
 	}
 	if dup > 0 {
 		log.Printf("bdtieba: [%s] dedupe skipped %d/%d (new=%d)", forumName(d.Forum, kw), dup, checked, n)
@@ -158,21 +164,35 @@ func processThreads(kw string, d *FrsData, state threadState, now time.Time) (ne
 	return n, dup
 }
 
+// newPostReplies 是处理每个帖子时向调用端下发的回复楼数上限。
+//
+// 语义说明:
+//   - FetchLatestPosts 每次请求已拉取最新 30 楼(postPageSize),此处仅截取前
+//     newPostReplies 条发布,请求成本固定为 1 次/帖,不受此值影响;
+//   - 若两轮轮询间隔(默认 600s)内某帖新增回复超过此值,中间楼层将既不发布
+//     也不补发(其 pid 不进入 posts 去重集合),属已知的"C 不补"遗漏窗口;
+//   - 已发布楼层的 pid 均写入 posts 去重状态;下轮最新楼窗口与上轮重叠部分
+//     会被 pid 去重跳过,不会重复发布;
+//   - 如需缩小遗漏窗口,可将此值提升至 <=30(与单请求可得的楼层上限对齐),
+//     请求次数不变。
 const newPostReplies = 5
 
-// processThreadReplies 立即为新 key 的帖子拉取最新 newPostReplies 楼,
-// 经 pid 去重(ProcessLatestPosts,内部日志+持久化)后逐个 publish。
-func processThreadReplies(kw string, f Forum, t *Thread) {
-	posts, err := ProcessLatestPosts(t.Tid, newPostReplies)
+// processThreadReplies 立即为帖 t 按基线 basePID 拉取最新回复楼
+// (FetchLatestPosts 先按 pid>basePID 过滤已处理楼层),经 pid 去重
+// (ProcessLatestPosts,内部日志+持久化)后逐个 publish,并返回本次所见最大 pid
+// 供调用方推进 LastPid 基线(即使全部去重也前移,避免重复扫描)。
+func processThreadReplies(kw string, f Forum, t *Thread, basePID int64) int64 {
+	posts, maxPID, err := ProcessLatestPosts(t.Tid, basePID, newPostReplies)
 	if err != nil {
 		log.Printf("bdtieba: posts %q tid=%d error: %v", kw, t.Tid, err)
-		return
+		return basePID
 	}
 	for i := range posts {
 		if err := publish(publishPostPayload(f, t, &posts[i])); err != nil {
 			log.Printf("bdtieba: publish post %q tid=%d pid=%d error: %v", kw, t.Tid, posts[i].ID, err)
 		}
 	}
+	return maxPID
 }
 
 func publishPostPayload(f Forum, t *Thread, p *Post) map[string]any {

@@ -242,12 +242,13 @@ func postText(p *Post) string {
 	return strings.TrimSpace(sb.String())
 }
 
-// FetchLatestPosts returns the newest n floors of thread tid, ordered by time
-// ascending (oldest first, i.e. lowest floor first). n<=0 defaults to 5; each
-// request pulls up to 30
-// floors (endpoint cap), so walks older pages only when more than one page is
+// FetchLatestPosts returns the latest floors of thread tid. basePID>0 filters
+// out already-processed floors (pid<=basePID) BEFORE the newest-n truncation,
+// so the window only surfaces incremental replies. basePID<=0 skips the filter
+// (legacy behavior). n<=0 defaults to 5. Each request pulls up to 30 floors
+// (endpoint cap), so it walks older pages only when more than one page is
 // needed. Pure fetch: no dedupe, no logging, no publishing.
-func FetchLatestPosts(tid int64, n int) ([]Post, error) {
+func FetchLatestPosts(tid int64, basePID int64, n int) ([]Post, error) {
 	if tid <= 0 {
 		return nil, fmt.Errorf("bdtieba: invalid tid %d", tid)
 	}
@@ -281,7 +282,24 @@ func FetchLatestPosts(tid int64, n int) ([]Post, error) {
 	if len(collected) == 0 {
 		return nil, nil
 	}
+	return trimToLatest(collected, basePID, n), nil
+}
+
+// trimToLatest sorts by time desc, drops already-processed floors (pid<=basePID)
+// when basePID>0, keeps at most n newest, and reverses to ascending order. Pure
+// helper so the filter/truncate semantics are testable offline.
+func trimToLatest(collected []Post, basePID int64, n int) []Post {
 	sort.Slice(collected, func(i, j int) bool { return collected[i].Time > collected[j].Time })
+	// 截取前先按增量基线过滤:丢弃已处理(pid<=basePID)楼层,窗口只对齐新增。
+	if basePID > 0 {
+		kept := collected[:0]
+		for _, p := range collected {
+			if p.ID > basePID {
+				kept = append(kept, p)
+			}
+		}
+		collected = kept
+	}
 	if len(collected) > n {
 		collected = collected[:n]
 	}
@@ -290,29 +308,35 @@ func FetchLatestPosts(tid int64, n int) ([]Post, error) {
 	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
 		collected[i], collected[j] = collected[j], collected[i]
 	}
-	return collected, nil
+	return collected
 }
 
-// ProcessLatestPosts fetches the newest n floors of thread tid (see
-// FetchLatestPosts), keeps the persistent post-id dedupe set, logs every new
-// floor and returns it. It does not publish.
-func ProcessLatestPosts(tid int64, n int) ([]Post, error) {
+// ProcessLatestPosts fetches the latest floors of thread tid with incremental
+// baseline basePID (see FetchLatestPosts), keeps the persistent post-id dedupe
+// set, logs every new floor and returns it plus the highest pid seen this round
+// (advances the caller's LastPid baseline even when all floors dedupe). It does
+// not publish.
+func ProcessLatestPosts(tid int64, basePID int64, n int) ([]Post, int64, error) {
 	ensurePstate()
 
-	posts, err := FetchLatestPosts(tid, n)
+	posts, err := FetchLatestPosts(tid, basePID, n)
 	if err != nil {
-		return nil, err
+		return nil, basePID, err
 	}
 	if len(posts) == 0 {
-		return nil, nil
+		return nil, basePID, nil
 	}
 
 	pstateMu.Lock()
 	checked, dup := 0, 0
+	maxPID := basePID
 	var out []Post
 	for i := range posts {
 		p := &posts[i]
 		checked++
+		if p.ID > maxPID {
+			maxPID = p.ID
+		}
 		if _, seen := pstate[p.ID]; seen {
 			dup++
 			continue
@@ -330,5 +354,5 @@ func ProcessLatestPosts(tid int64, n int) ([]Post, error) {
 		savePstate()
 	}
 	pstateMu.Unlock()
-	return out, nil
+	return out, maxPID, nil
 }
