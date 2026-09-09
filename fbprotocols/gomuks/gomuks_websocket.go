@@ -480,7 +480,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 			}
 			log.Printf("gomuks: sent file %s to %s", fileinfo.Filename, roomID)
 			return fbshared.SendResult{}, nil
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			return fbshared.SendResult{}, fmt.Errorf("gomuks: send file msg timeout")
 		}
 	}
@@ -526,7 +526,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 	select {
 	case err := <-ch:
 		return fbshared.SendResult{}, err
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		return fbshared.SendResult{}, fmt.Errorf("gomuks: send timeout")
 	}
 }
