@@ -150,6 +150,80 @@ func TestNotifyParse(t *testing.T) {
 	}
 }
 
+// TestParseNotificationsPage covers the SSR /notifications page feed: the
+// page embeds initialState.entities.notifications inside js-initialData; items
+// are parsed newest-first and rendered from content.verb + actor + preview.
+func TestParseNotificationsPage(t *testing.T) {
+	const page = `<html><body><script id="js-initialData" type="application/json">` +
+		`{"initialState":{"entities":{"notifications":{` +
+		`"2079":{"id":2079,"type":"notification","createTime":1788501603,"isRead":true,"mergeCount":1,"content":{` +
+		`"verb":"回复了回答下你的评论","actors":[{"name":"王大飞","urlToken":"wdf"}]},` +
+		`"target":{"type":"comment","content":"<p>至少30-50年。</p>","target":{` +
+		`"excerpt":"问题摘要","question":{"title":"Q题","id":9}}}}` +
+		`,"1930":{"id":1930,"type":"notification","createTime":1789000000,"isRead":false,"mergeCount":1,"content":{` +
+		`"verb":"关注了你","actors":{"link":"https://www.zhihu.com/people/x","type":"member","urlToken":"x","name":"看不见汽车的地方"}},` +
+		`"target":{"type":"people"}}` +
+		`}}},"subAppName":"web","spanName":"notifications"}` +
+		`</script></body></html>`
+
+	items, err := parseNotificationsPage([]byte(page))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].ID != 1930 || items[1].ID != 2079 {
+		t.Fatalf("items not sorted newest-first: %+v", items)
+	}
+	if got := ActorName(items[0].Actor); got != "看不见汽车的地方" {
+		t.Fatalf("object-form actor = %q", got)
+	}
+	if got := items[0].ActionText; got != "看不见汽车的地方 关注了你" {
+		t.Fatalf("follow action_text = %q", got)
+	}
+	if got := items[1].ActionText; got != "王大飞 回复了回答下你的评论：至少30-50年。" {
+		t.Fatalf("comment action_text = %q", got)
+	}
+	if got := ActorName(items[1].Actor); got != "王大飞" {
+		t.Fatalf("list-form actor = %q", got)
+	}
+	if items[1].IsRead != true || items[1].CreatedTime != 1788501603 {
+		t.Fatalf("comment item fields: %+v", items[1])
+	}
+}
+
+func TestParseNotificationsPageMissingData(t *testing.T) {
+	_, err := parseNotificationsPage([]byte("<html><title>消息 - 知乎</title></html>"))
+	if !errors.Is(err, errUnverifiable) {
+		t.Fatalf("want errUnverifiable, got %v", err)
+	}
+}
+
+func TestFlexInt64(t *testing.T) {
+	var cases = []struct {
+		raw  string
+		want int64
+		ok   bool
+	}{
+		{`2079`, 2079, true},
+		{`"2079207104758409068"`, 2079207104758409068, true},
+		{`null`, 0, true},
+		{`"abc"`, 0, false},
+		{`{}`, 0, false},
+	}
+	for _, c := range cases {
+		var f flexInt64
+		err := json.Unmarshal([]byte(c.raw), &f)
+		if (err == nil) != c.ok {
+			t.Fatalf("Unmarshal(%s) err=%v, want ok=%v", c.raw, err, c.ok)
+		}
+		if err == nil && int64(f) != c.want {
+			t.Fatalf("Unmarshal(%s) = %d, want %d", c.raw, int64(f), c.want)
+		}
+	}
+}
+
 func TestStatePrune(t *testing.T) {
 	s := newState()
 	now := time.Now()
@@ -783,6 +857,9 @@ func TestGetRawHTML200ClassifiesUnverifiable(t *testing.T) {
 	if !errors.Is(err, errUnverifiable) {
 		t.Fatalf("err=%v, want errUnverifiable", err)
 	}
+	if !strings.Contains(err.Error(), meURL) {
+		t.Fatalf("err=%q must carry the requested url %q", err, meURL)
+	}
 	if status != http.StatusOK {
 		t.Fatalf("status=%d, want 200", status)
 	}
@@ -884,25 +961,58 @@ func TestVerifySessionHTMLMapsErrNotLoggedIn(t *testing.T) {
 
 func TestHandleRoundErrUnverifiableDemotes(t *testing.T) {
 	resetLoginGateway()
+	setupGatewaySession()
 	defer resetLoginGateway()
 
-	sess.mu.Lock()
-	sess.status = AuthStatusReady
-	sess.mu.Unlock()
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
 
-	origUI := startLoginUIFn
-	defer func() { startLoginUIFn = origUI }()
 	uiSpy := 0
+	probeSession = func() error { return ErrNotLoggedIn }
 	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
 
 	state := newState()
 	handleRoundErr(state, fmt.Errorf("zhihu: notifications: %w (http 200: <html>...)", errUnverifiable))
 
-	if got := AuthStatus(); got != AuthStatusEmpty {
-		t.Fatalf("status=%q, want empty (demoted)", got)
+	if got := AuthStatus(); got != AuthStatusInvalid {
+		t.Fatalf("status=%q, want invalid (rejected probe demotes)", got)
 	}
 	if uiSpy != 1 {
-		t.Fatalf("HTML round error should open the login UI, got %d", uiSpy)
+		t.Fatalf("HTML round error on a dead session should open the login UI, got %d", uiSpy)
+	}
+	sess.mu.Lock()
+	z := sess.zC0
+	sess.mu.Unlock()
+	if z != "" {
+		t.Fatalf("rejected z_c0 must be dropped, got %q", z)
+	}
+}
+
+func TestHandleRoundErrUnverifiableLiveKeeps(t *testing.T) {
+	resetLoginGateway()
+	setupGatewaySession()
+	defer resetLoginGateway()
+
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+
+	uiSpy := 0
+	probeSession = func() error { return nil }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	state := newState()
+	handleRoundErr(state, fmt.Errorf("zhihu: notifications: %w (http 200: <html>...)", errUnverifiable))
+
+	if uiSpy != 0 {
+		t.Fatalf("risk-control shed on a live session must not open the login UI, got %d", uiSpy)
+	}
+	authMu.Lock()
+	defer authMu.Unlock()
+	if !reLogin.nextAt.IsZero() {
+		t.Fatalf("live session armed the re-login cooldown: nextAt=%s", reLogin.nextAt)
+	}
+	if status := AuthStatus(); status != AuthStatusReady {
+		t.Fatalf("live session should stay ready, status=%q", status)
 	}
 }
 

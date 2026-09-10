@@ -215,6 +215,16 @@ func notifyRound(state *zhihuState) {
 		return
 	}
 	now := time.Now()
+	// First successful sync: seed the dedupe set with whatever is already
+	// there (typically the read history the page server-renders) instead of
+	// re-publishing the whole backlog as "new".
+	if len(state.Notifications) == 0 {
+		for i := range resp.Data {
+			state.Notifications[stringIt(resp.Data[i].ID)] = now.Unix()
+		}
+		log.Printf("zhihu: notifications first sync, marked %d existing events seen", len(resp.Data))
+		return
+	}
 	published := 0
 	for i := range resp.Data {
 		it := &resp.Data[i]
@@ -267,11 +277,12 @@ func handleSessionLost(state *zhihuState) {
 // go through the login gateway; everything else is surfaced as a status error.
 func handleRoundErr(state *zhihuState, err error) {
 	if errors.Is(err, errUnverifiable) {
-		// A 200-HTML answer means the session cannot be trusted: demote the
-		// status (in-memory only, no disk write) and pause the feeds through
-		// the login gateway.
-		setAuthStatus(AuthStatusEmpty)
-		handleSessionLost(state)
+		// A 200-HTML answer is ambiguous: dead sessions and throttled-but-alive
+		// accounts are both shed to HTML. Probe the session instead of demoting
+		// blindly — a live session must not be paused "pending re-login" on
+		// every throttled tick.
+		log.Printf("zhihu: feed answer 200 html; verifying session first (may be risk-control shed)")
+		ensureSession(time.Now(), false)
 		return
 	}
 	if isSessionErr(err) {
@@ -298,17 +309,21 @@ func ensureSession(now time.Time, force bool) {
 	// an already-logged-in session the QR endpoint would otherwise refuse with
 	// 403 "已登录用户不允许此操作" and we'd be stuck with a dead login page.
 	if sess.hasZ() {
-		if err := probeSession(); err == nil {
+		perr := probeSession()
+		if perr == nil {
 			authMu.Lock()
 			reLogin.nextAt = time.Time{}
 			authMu.Unlock()
 			return
-		} else if !errors.Is(err, ErrNotLoggedIn) {
-			log.Printf("zhihu: session check transient error, session kept: %v", err)
-			pushError(err)
+		}
+		if !errors.Is(perr, ErrNotLoggedIn) {
+			log.Printf("zhihu: session check transient error, session kept: %v", perr)
+			pushError(perr)
 			return
 		}
-		// Really rejected: drop the creds so the login gateway takes over.
+		// Really rejected: demote + drop the creds so the login gateway takes
+		// over.
+		markSessionInvalid(perr)
 		sess.mu.Lock()
 		sess.zC0 = ""
 		sess.mu.Unlock()

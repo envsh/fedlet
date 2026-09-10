@@ -365,11 +365,19 @@ func (s *webSession) captureCookies(h http.Header) {
 	}
 }
 
-// getRaw performs an API request on www.zhihu.com: waits on the rate gate,
-// injects the browser headers, the shared cookie and the x-zse-93/96 signature,
-// classifies 403 (risk control -> backoff) and 401 (session expiry). It returns
-// the raw body and HTTP status.
+// getRaw performs an API request on www.zhihu.com with the default hot-list
+// page referer. See getRawRef.
 func getRaw(method, u string, body []byte, needAuth bool) ([]byte, int, error) {
+	return getRawRef(method, u, body, needAuth, apiReferer)
+}
+
+// getRawRef performs an API request on www.zhihu.com: waits on the rate gate,
+// injects the browser headers, the shared cookie, the per-feed page Referer and
+// the x-zse-93/96 signature, and classifies 403 (risk control -> backoff) and
+// 401 (session expiry). It returns the raw body and HTTP status. The referer
+// matters: the notifications endpoint presents itself as an in-page fetch of
+// /notifications and serves an HTML decoy to callers that claim another page.
+func getRawRef(method, u string, body []byte, needAuth bool, ref string) ([]byte, int, error) {
 	waitRateGate()
 
 	var rdr io.Reader
@@ -389,7 +397,14 @@ func getRaw(method, u string, body []byte, needAuth bool) ([]byte, int, error) {
 
 	req.Header.Set("User-Agent", zhihuWebUA)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Referer", apiReferer)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Referer", ref)
+	req.Header.Set("sec-ch-ua", secChUa)
+	req.Header.Set("sec-ch-ua-mobile", secChUaMobile)
+	req.Header.Set("sec-ch-ua-platform", secChUaPlatform)
+	req.Header.Set("sec-fetch-dest", "empty")
+	req.Header.Set("sec-fetch-mode", "cors")
+	req.Header.Set("sec-fetch-site", "same-origin")
 	req.Header.Set("Cookie", sess.cookieHeader())
 	if xsrf := sess.getXsrf(); xsrf != "" {
 		req.Header.Set("x-xsrftoken", xsrf)
@@ -399,6 +414,7 @@ func getRaw(method, u string, body []byte, needAuth bool) ([]byte, int, error) {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://www.zhihu.com")
 	}
 	for k, v := range signZhihuRequest(u, sess.signDC0(), string(body)) {
 		req.Header.Set(k, v)
@@ -419,22 +435,26 @@ func getRaw(method, u string, body []byte, needAuth bool) ([]byte, int, error) {
 	case http.StatusOK:
 		if looksHTML(respBody) {
 			noteRateLimit()
+			msg := truncate(string(respBody), 160)
+			if t := htmlTitle(respBody); t != "" {
+				msg = fmt.Sprintf("title=%q %s", t, msg)
+			}
 			return respBody, resp.StatusCode,
-				fmt.Errorf("%w http 200: %s", errUnverifiable, truncate(string(respBody), 160))
+				fmt.Errorf("%w http 200 %s: %s", errUnverifiable, u, msg)
 		}
 		clearRateLimit()
 	case http.StatusUnauthorized:
 		if !needAuth {
 			return respBody, resp.StatusCode,
-				fmt.Errorf("zhihu: http 401 %s", truncate(string(respBody), 160))
+				fmt.Errorf("zhihu: http 401 %s %s", u, truncate(string(respBody), 160))
 		}
-		markSessionInvalid(errors.New("zhihu: session rejected (401)"))
+		markSessionInvalid(fmt.Errorf("zhihu: session rejected (401) %s", u))
 		return respBody, resp.StatusCode, ErrNotLoggedIn
 	case http.StatusForbidden:
 		if isRiskControl(respBody) {
 			noteRateLimit()
 		} else {
-			return respBody, resp.StatusCode, fmt.Errorf("zhihu: http %d %s", resp.StatusCode, truncate(string(respBody), 200))
+			return respBody, resp.StatusCode, fmt.Errorf("zhihu: http %d %s %s", resp.StatusCode, u, truncate(string(respBody), 200))
 		}
 	}
 	return respBody, resp.StatusCode, nil
@@ -447,9 +467,33 @@ func isRiskControl(body []byte) bool {
 		strings.Contains(s, "验证") || len(body) < 200
 }
 
+// htmlTitleRE extracts the document <title> for log classification (a WAF
+// challenge page vs zhihu's own SPA/login page).
+var htmlTitleRE = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
+// htmlTitle returns the trimmed <title> text of an HTML response (<=80 chars).
+func htmlTitle(b []byte) string {
+	m := htmlTitleRE.FindSubmatch(b)
+	if len(m) < 2 {
+		return ""
+	}
+	s := strings.TrimSpace(string(m[1]))
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
+}
+
 // getJSON is a small helper: GET a signed endpoint, require 200 and unmarshal.
 func getJSON(data any, u string, needAuth bool) error {
-	body, status, err := getRaw(http.MethodGet, u, nil, needAuth)
+	return getJSONRef(data, u, needAuth, apiReferer)
+}
+
+// getJSONRef is getJSON with an explicit page Referer for per-feed browser
+// parity (the notifications feed must present itself as a fetch of
+// /notifications, not the hot-list page).
+func getJSONRef(data any, u string, needAuth bool, ref string) error {
+	body, status, err := getRawRef(http.MethodGet, u, nil, needAuth, ref)
 	if err != nil {
 		return err
 	}
