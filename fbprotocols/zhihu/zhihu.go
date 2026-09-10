@@ -293,7 +293,11 @@ var (
 // failures (network / 5xx) are kept as-is: they never touch the cooldown or pop
 // the login window.
 func ensureSession(now time.Time, force bool) {
-	if AuthStatus() == AuthStatusReady {
+	// A live z_c0 outranks the status flags: the session may have been demoted
+	// by a transient 403 while still valid. Probe the stored creds first — for
+	// an already-logged-in session the QR endpoint would otherwise refuse with
+	// 403 "已登录用户不允许此操作" and we'd be stuck with a dead login page.
+	if sess.hasZ() {
 		if err := probeSession(); err == nil {
 			authMu.Lock()
 			reLogin.nextAt = time.Time{}
@@ -304,7 +308,10 @@ func ensureSession(now time.Time, force bool) {
 			pushError(err)
 			return
 		}
-		log.Printf("zhihu: session check failed, scheduling re-login")
+		// Really rejected: drop the creds so the login gateway takes over.
+		sess.mu.Lock()
+		sess.zC0 = ""
+		sess.mu.Unlock()
 	}
 	scheduleLogin(now, force)
 }
@@ -324,7 +331,7 @@ func scheduleLogin(now time.Time, force bool) {
 		log.Printf("zhihu: start login UI: %v", err)
 		return
 	}
-	openLoginBrowser(url)
+	openLoginBrowserOnce(url)
 	log.Printf("zhihu: login UI available at %s", url)
 }
 

@@ -191,14 +191,28 @@ func parseQrBegin(body []byte) (token, link string, expiresAt int64, err error) 
 	if token == "" {
 		token = r.QrcodeToken
 	}
-	link = r.URL
+	// ZHIHU++ parity: the QR bitmap encodes `link` (the App scan handshake).
+	// `url` is a browser-page fallback and must never be the primary content.
+	link = r.Link
 	if link == "" {
-		link = r.Link
+		link = r.URL
 	}
 	if token == "" {
 		return "", "", 0, errors.New("zhihu: qr begin returned no token")
 	}
 	return token, link, r.ExpiresAt, nil
+}
+
+// errAlreadyLoggedIn marks the qrBegin 403 PERMISSION_ERROR "已登录用户不允许
+// 此操作" that zhihu returns when a login QR is requested for a session that is
+// already authenticated.
+var errAlreadyLoggedIn = errors.New("zhihu: already logged in")
+
+// alreadyLoggedInRefused reports the qrBegin HTTP 403 whose body carries the
+// "已登录用户不允许此操作" PERMISSION_ERROR — zhihu refuses to issue a login QR
+// for a session that is already authenticated.
+func alreadyLoggedInRefused(status int, body []byte) bool {
+	return status == http.StatusForbidden && strings.Contains(string(body), "已登录用户")
 }
 
 // qrBegin obtains a new scan token and the display URL from the official
@@ -215,12 +229,16 @@ func qrBegin() (token, url string, expiresAt int64, err error) {
 	}
 	if status != http.StatusOK {
 		log.Printf("zhihu: qr begin http %d: cookies=%s body=%s", status, sess.cookieState(), truncate(string(body), 200))
+		if alreadyLoggedInRefused(status, body) {
+			return "", "", 0, errAlreadyLoggedIn
+		}
 		return "", "", 0, fmt.Errorf("二维码获取失败(HTTP %d):知乎未认可本次登录票据,请稍后刷新重试,或改用「手机号+验证码」登录", status)
 	}
 	token, url, expiresAt, err = parseQrBegin(body)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("zhihu: %w", err)
 	}
+	log.Printf("zhihu: qr begin ok token=%s link=%dch raw=%s", token, len(url), string(body))
 	return token, url, expiresAt, nil
 }
 

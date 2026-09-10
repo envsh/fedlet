@@ -18,6 +18,7 @@ package zhihu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -108,6 +110,7 @@ func (s *loginState) reset() {
 var ui struct {
 	mu     sync.Mutex
 	active bool
+	opened bool
 	lnAddr string
 	stop   chan struct{}
 	state  *loginState
@@ -118,25 +121,40 @@ var ui struct {
 // a second call while one UI is already running returns the existing URL.
 func startLoginUI() (string, error) {
 	ui.mu.Lock()
-	if ui.active {
+	if ui.active && uiAddrUsable(ui.lnAddr) {
 		url := "http://" + ui.lnAddr + "/"
 		ui.mu.Unlock()
 		return url, nil
 	}
-	ui.active = true
-	ui.state = &loginState{stage: stageIdle}
-	ui.stop = make(chan struct{})
+	// Previous instance (if any) is dead/unusable: clear markers, build fresh.
+	ui.active = false
+	ui.opened = false
+	ui.lnAddr = ""
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		ui.active = false
 		ui.mu.Unlock()
 		return "", fmt.Errorf("zhihu: login listen: %w", err)
 	}
-	ui.lnAddr = ln.Addr().String()
-	url := "http://" + ui.lnAddr + "/"
+	addr := ln.Addr().String()
+	if !uiAddrUsable(addr) {
+		_ = ln.Close()
+		ui.mu.Unlock()
+		return "", fmt.Errorf("zhihu: login listener unusable addr %q", addr)
+	}
+	ui.lnAddr = addr
+	ui.active = true
+	ui.opened = false
+	ui.state = &loginState{stage: stageIdle}
+	ui.stop = make(chan struct{})
+	url := "http://" + addr + "/"
 	ui.mu.Unlock()
 
+	// uiAddrUsable accepts only a real, bound loopback endpoint: a non-empty
+	// 127.0.0.1 host with a numeric port above 0. Anything else (the empty
+	// address, a port-0 placeholder, a non-loopback host) is rejected so the
+	// "http://host:0/" style invalid links can never be produced or reused.
+	// -- see uiAddrUsable below.
 	mux := http.NewServeMux()
 	ls := ui.state
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -271,22 +289,69 @@ func startLoginUI() (string, error) {
 	go func() {
 		_ = srv.Serve(ln)
 	}()
+	// Hand the URL to the browser only once the listener accepts: dial until
+	// ready or give up (2s) instead of racing the Serve goroutine above.
+	if !waitServing(addr, 2*time.Second) {
+		_ = srv.Close()
+		ui.mu.Lock()
+		ui.active, ui.opened = false, false
+		ui.mu.Unlock()
+		return "", errors.New("zhihu: login server did not start serving")
+	}
 	go func() {
 		select {
 		case <-ui.stop:
 		case <-time.After(loginTimeout): // hard cap: exit even if abandoned
 		}
+		// Invalidate immediately: any concurrent relogin must build a fresh
+		// instance, never reuse a URL that is about to die.
+		ui.mu.Lock()
+		ui.active = false
+		ui.opened = false
+		ui.lnAddr = ""
+		ui.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 		ui.mu.Lock()
-		ui.active = false
+		ui.state = nil
 		ui.mu.Unlock()
 	}()
 	// Kick off the QR flow immediately; the page just displays it.
 	go runQRFlow(ls)
 
 	return url, nil
+}
+
+// uiAddrUsable accepts only a real, bound loopback endpoint: a non-empty
+// 127.0.0.1 host with a numeric port above 0. Anything else — the empty
+// address, a port-0 placeholder, a non-loopback host — is rejected so invalid
+// "http://host:0/" style links can never be produced or reused as a live URL.
+func uiAddrUsable(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != "127.0.0.1" || port == "" {
+		return false
+	}
+	p, err := strconv.Atoi(port)
+	return err == nil && p > 0
+}
+
+// waitServing polls a TCP endpoint until it accepts a connection or the
+// timeout elapses. It guarantees the login page is actually listening before
+// the browser is pointed at it.
+func waitServing(addr string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // qrFlowMu serializes QR flows so a "重新尝试" never double-runs the poller
@@ -305,6 +370,16 @@ func runQRFlow(ls *loginState) {
 	defer qrFlowMu.Unlock()
 	token, qrURL, expiresAt, err := qrBegin()
 	if err != nil {
+		if errors.Is(err, errAlreadyLoggedIn) {
+			logf("zhihu: qr begin: already logged in; resuming session")
+			if err := verifySession(); err != nil {
+				ls.set(stageFailed, err.Error())
+				return
+			}
+			saveAuth()
+			finalizeLogin(ls, "qr_resume")
+			return
+		}
 		if risk, ok := sess.getQrRiskURL(); ok {
 			logf("zhihu: qr begin under risk control, paused for human verification: %s", risk)
 			ls.setRisk(stageRisk, risk)
@@ -483,6 +558,22 @@ func openURL(url string) error {
 	default:
 		return exec.Command("xdg-open", url).Start()
 	}
+}
+
+// openLoginBrowserOnce opens the login page at most once per UI lifetime. All
+// the re-login triggers (cooldown expiry, authCheck, session flap clearing the
+// cooldown) funnel into scheduleLogin; without the guard every pass would stack
+// a new browser tab even though startLoginUI serves the same live instance.
+func openLoginBrowserOnce(url string) {
+	ui.mu.Lock()
+	if ui.opened {
+		ui.mu.Unlock()
+		logf("zhihu: login UI already open at %s", url)
+		return
+	}
+	ui.opened = true
+	ui.mu.Unlock()
+	openLoginBrowser(url)
 }
 
 // openLoginBrowser opens the login page when a desktop is available; headless

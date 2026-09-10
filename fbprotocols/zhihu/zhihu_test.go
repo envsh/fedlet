@@ -341,6 +341,74 @@ func TestEnsureSessionForceBypassesCooldown(t *testing.T) {
 	}
 }
 
+func TestEnsureSessionLiveSkipsUI(t *testing.T) {
+	resetLoginGateway()
+	setupGatewaySession()
+	defer resetLoginGateway()
+
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+
+	uiSpy := 0
+	probeSession = func() error { return nil }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	// Even a force pass must never open the login UI while a live z_c0 probes
+	// fine: for an already-logged-in session the QR endpoint would only answer
+	// 403 "已登录用户不允许此操作".
+	ensureSession(time.Now(), true)
+
+	if uiSpy != 0 {
+		t.Fatalf("live session popped the login UI %d times", uiSpy)
+	}
+	authMu.Lock()
+	defer authMu.Unlock()
+	if !reLogin.nextAt.IsZero() {
+		t.Fatalf("live session armed the re-login cooldown: nextAt=%s", reLogin.nextAt)
+	}
+	if status := AuthStatus(); status != AuthStatusReady {
+		t.Fatalf("live session should stay ready, status=%q", status)
+	}
+}
+
+func TestEnsureSessionLiveRejectedDropsZ(t *testing.T) {
+	resetLoginGateway()
+	setupGatewaySession()
+	defer resetLoginGateway()
+
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+
+	uiSpy := 0
+	probeSession = func() error { return ErrNotLoggedIn }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	ensureSession(time.Now(), false)
+
+	if uiSpy != 1 {
+		t.Fatalf("really-expired session should pop the login UI, got %d", uiSpy)
+	}
+	sess.mu.Lock()
+	z := sess.zC0
+	sess.mu.Unlock()
+	if z != "" {
+		t.Fatalf("rejected z_c0 must be dropped so the login gateway takes over, got %q", z)
+	}
+}
+
+func TestAlreadyLoggedInRefused(t *testing.T) {
+	body := []byte(`{"error":{"code":403,"name":"PERMISSION_ERROR","message":"已登录用户不允许此操作"}}`)
+	if !alreadyLoggedInRefused(http.StatusForbidden, body) {
+		t.Fatal("403 已登录用户 body must be classified as already-logged-in")
+	}
+	if alreadyLoggedInRefused(http.StatusForbidden, []byte(`{"error":{"code":403,"name":"RiskControl","message":"风控"}}`)) {
+		t.Fatal("generic 403 body must not be classified as already-logged-in")
+	}
+	if alreadyLoggedInRefused(http.StatusOK, body) {
+		t.Fatal("non-403 must not be classified")
+	}
+}
+
 func TestIsSessionErrUsesErrorsIs(t *testing.T) {
 	if !isSessionErr(fmt.Errorf("zhihu: notifications: %w", ErrNotLoggedIn)) {
 		t.Fatal("wrapped ErrNotLoggedIn must be recognized as a session error")
@@ -510,11 +578,41 @@ func TestParseQrBegin(t *testing.T) {
 	if _, _, _, err := parseQrBegin([]byte(`{"link":"https://zhihu.com/q?t=2","token":"T2"}`)); err != nil {
 		t.Fatalf("link+token form: %v", err)
 	}
+	tokL, linkL, _, err := parseQrBegin([]byte(`{"token":"T3","url":"https://zhihu.com/q?t=url","link":"https://zhihu.com/q?t=link"}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if tokL != "T3" || linkL != "https://zhihu.com/q?t=link" {
+		t.Fatalf("link must win over url, got %q", linkL)
+	}
+
 	if _, _, _, err := parseQrBegin([]byte(`{}`)); err == nil {
 		t.Fatal("missing token must error")
 	}
 	if _, _, _, err := parseQrBegin([]byte(`not json`)); err == nil {
 		t.Fatal("garbage must error")
+	}
+}
+
+// TestUIAddrUsable pins the "invalid login link" guard: only a real bound
+// loopback address with a non-zero port is acceptable, so the http://host:0/
+// style links can never be produced or reused as a live UI URL.
+func TestUIAddrUsable(t *testing.T) {
+	cases := []struct {
+		addr string
+		ok   bool
+	}{
+		{"", false},
+		{"127.0.0.1:0", false},
+		{"127.0.0.1", false},
+		{":33099", false},
+		{"localhost:33099", false},
+		{"127.0.0.1:33099", true},
+	}
+	for _, c := range cases {
+		if got := uiAddrUsable(c.addr); got != c.ok {
+			t.Fatalf("uiAddrUsable(%q)=%v want %v", c.addr, got, c.ok)
+		}
 	}
 }
 
