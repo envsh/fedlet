@@ -1,5 +1,5 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,bdtieba
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,bdtieba,zhihu
 TAGS = $(PROTO_TAGS)
 
 BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
