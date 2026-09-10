@@ -55,6 +55,30 @@ func looksHTML(b []byte) bool {
 var hc = func() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			prev := req.Response
+			if prev != nil {
+				log.Printf("zhihu: redirect %s %s -> %d Location=%s Set-Cookie=[%s]",
+					prev.Request.Method, prev.Request.URL.String(), prev.StatusCode,
+					prev.Header.Get("Location"), setCookieNames(prev.Header))
+				sess.captureCookies(prev.Header)
+				// The anti-bot hop: /signin 3xx → /account/unhuman (human
+				// verification). It finally lands on a 200 page, so the final
+				// status alone cannot gate it — record the first hit instead.
+				if loc := prev.Header.Get("Location"); strings.Contains(loc, "account/unhuman") {
+					sess.mu.Lock()
+					if sess.qrGate == 0 {
+						sess.qrGate = prev.StatusCode
+						sess.qrRiskURL = loc
+					}
+					sess.mu.Unlock()
+				}
+			}
+			if len(via) >= 10 {
+				return errors.New("zhihu: too many redirects")
+			}
+			return nil
+		},
 		Transport: &http.Transport{
 			ForceAttemptHTTP2:   true,
 			MaxIdleConnsPerHost: 4,
@@ -63,6 +87,18 @@ var hc = func() *http.Client {
 		},
 	}
 }()
+
+func setCookieNames(h http.Header) string {
+	var names []string
+	for _, c := range h.Values("Set-Cookie") {
+		name, _, ok := strings.Cut(c, "=")
+		if !ok {
+			continue
+		}
+		names = append(names, strings.TrimSpace(name))
+	}
+	return strings.Join(names, " ")
+}
 
 const dc0Alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -78,6 +114,12 @@ type webSession struct {
 	qC1        string
 	capsion    string
 	capSession string // captcha_session_v2: the 2026 login ticket from captcha/v2
+	bec        string // BEC: AB-test cookie set on every page; zhihu++ jar forwards it
+	secTok     string // sec_token: anti-bot 302 beacon — presence ⇒ env verification required
+	qC1Real    bool   // q_c1 came from the server (/udid) rather than the newQC1() fallback
+	dC0Real    bool   // d_c0 was issued by zhihu (Set-Cookie) rather than the newDC0() bootstrap
+	qrGate     int    // 3xx recorded at an /account/unhuman redirect hop ⇒ QR begin skipped
+	qrRiskURL  string // the /account/unhuman verification URL the user must open
 	user       string
 	status     string
 }
@@ -117,6 +159,46 @@ func newQC1() string {
 	return b.String()
 }
 
+// loginCookieHeader is the same jar minus the fabricated q_c1: the login
+// ceremony (/signin, /udid, captcha/v2, /qrcode, scan_info) strictly validates
+// q_c1, so a server-minted one is forwarded but the newQC1() fallback is not
+// (it answers HTTP 400 code 1000). The data APIs keep cookieHeader so their
+// x-zse-96 signature stays consistent with the sent cookie.
+func (s *webSession) loginCookieHeader() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var b strings.Builder
+	// Only server-issued identity is forwarded on the login ceremony: a
+	// fabricated d_c0 / q_c1 (or a stale sec_token from an earlier risk round)
+	// makes zhihu 302 the whole session to /account/unhuman and we never get
+	// real tickets — a fresh request with no identity rides the clean 200.
+	if s.dC0Real {
+		b.WriteString("d_c0=" + s.dC0)
+	}
+	if s.zap != "" {
+		b.WriteString("; _zap=" + s.zap)
+	}
+	if s.qC1 != "" && s.qC1Real {
+		b.WriteString("; q_c1=" + s.qC1)
+	}
+	if s.zC0 != "" {
+		b.WriteString("; z_c0=" + s.zC0)
+	}
+	if s.xsrf != "" {
+		b.WriteString("; _xsrf=" + s.xsrf)
+	}
+	if s.capsion != "" {
+		b.WriteString("; capsion_ticket=" + s.capsion)
+	}
+	if s.capSession != "" {
+		b.WriteString("; captcha_session_v2=" + s.capSession)
+	}
+	if s.bec != "" {
+		b.WriteString("; BEC=" + s.bec)
+	}
+	return b.String()
+}
+
 func (s *webSession) cookieHeader() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -140,6 +222,12 @@ func (s *webSession) cookieHeader() string {
 	if s.capSession != "" {
 		b.WriteString("; captcha_session_v2=" + s.capSession)
 	}
+	if s.bec != "" {
+		b.WriteString("; BEC=" + s.bec)
+	}
+	if s.secTok != "" {
+		b.WriteString("; sec_token=" + s.secTok)
+	}
 	return b.String()
 }
 
@@ -154,8 +242,27 @@ func (s *webSession) signDC0() string {
 func (s *webSession) cookieState() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return fmt.Sprintf("d_c0=%t q_c1=%t _xsrf=%t captcha_session_v2=%t zap=%t z_c0=%t",
-		s.dC0 != "", s.qC1 != "", s.xsrf != "", s.capSession != "", s.zap != "", s.zC0 != "")
+	dc0 := "absent"
+	switch {
+	case s.dC0 == "":
+		dc0 = "absent"
+	case s.dC0Real:
+		dc0 = "real"
+	default:
+		dc0 = "fake"
+	}
+	qc1 := "absent"
+	switch {
+	case s.qC1 == "":
+		qc1 = "absent"
+	case s.qC1Real:
+		qc1 = "real"
+	default:
+		qc1 = "fake"
+	}
+	return fmt.Sprintf("d_c0=%s q_c1=%s _xsrf=%t captcha_session_v2=%t zap=%t z_c0=%t bec=%t sec_token=%t qr_gate=%d",
+		dc0, qc1, s.xsrf != "", s.capSession != "", s.zap != "", s.zC0 != "",
+		s.bec != "", s.secTok != "", s.qrGate)
 }
 
 func (s *webSession) hasZ() bool {
@@ -168,6 +275,18 @@ func (s *webSession) getXsrf() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.xsrf
+}
+
+func (s *webSession) qrGateStatus() (int, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.qrGate, s.qrRiskURL
+}
+
+func (s *webSession) getQrRiskURL() (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.qrRiskURL, s.qrRiskURL != ""
 }
 
 // setZC0 stores a z_c0 session cookie parsed out of a scan_info body.
@@ -202,6 +321,7 @@ func (s *webSession) captureCookies(h http.Header) {
 			s.mu.Lock()
 			if value != "" {
 				s.dC0 = value
+				s.dC0Real = true
 			}
 			s.mu.Unlock()
 		case "_zap":
@@ -214,6 +334,7 @@ func (s *webSession) captureCookies(h http.Header) {
 			s.mu.Lock()
 			if value != "" {
 				s.qC1 = value
+				s.qC1Real = true
 			}
 			s.mu.Unlock()
 		case "capsion_ticket":
@@ -226,6 +347,18 @@ func (s *webSession) captureCookies(h http.Header) {
 			s.mu.Lock()
 			if value != "" {
 				s.capSession = value
+			}
+			s.mu.Unlock()
+		case "BEC":
+			s.mu.Lock()
+			if value != "" {
+				s.bec = value
+			}
+			s.mu.Unlock()
+		case "sec_token":
+			s.mu.Lock()
+			if value != "" {
+				s.secTok = value
 			}
 			s.mu.Unlock()
 		}
@@ -356,27 +489,40 @@ var apiVersionRE = regexp.MustCompile(`__API_VERSION__\s*=\s*file\("([^"]+)"\)|_
 // same bootstrap per attempt via refreshLoginContext, because the one-time
 // warmup values are typically stale by the time the user opens the login UI.
 func warmup() {
-	primeLoginContext()
-	log.Printf("zhihu: warmup ok (anonymous visitor only, not auth) d_c0=%s", shortDC0())
+	ok, status := primeLoginContext()
+	log.Printf("zhihu: warmup ok=%v http=%d (anonymous visitor only, not auth) d_c0=%s", ok, status, shortDC0())
 }
 
 // refreshLoginContext mirrors zhihu-plus-plus prefetchQrLoginContext: it
 // re-primes _xsrf/d_c0/captcha_session_v2 right before a QR begin so the POST
 // /qrcode carries fresh tokens instead of the process-once warmup values
-// (stale ones are answered HTTP 400 code 1000 "请求错误").
-func refreshLoginContext() {
-	primeLoginContext()
-	log.Printf("zhihu: refresh login context ok d_c0=%s", shortDC0())
+// (stale ones are answered HTTP 400 code 1000 "请求错误"). A non-200 /signin
+// (anti-bot 302 + sec_token) returns false so the caller can stop before
+// minting a poisoned session instead of POSTing /qrcode into a guaranteed 400.
+func refreshLoginContext() bool {
+	ok, status := primeLoginContext()
+	log.Printf("zhihu: refresh login context ok=%v http=%d d_c0=%s", ok, status, shortDC0())
+	return ok
 }
 
 // primeLoginContext runs the three-step visitor bootstrap shared by warmup and
 // refreshLoginContext: GET /signin primes the real _xsrf/_zap, POST /udid the
-// real q_c1/d_c0, and captcha/v2 the captcha_session_v2 ticket.
-func primeLoginContext() {
+// real q_c1/d_c0, and captcha/v2 the captcha_session_v2 ticket. When /signin
+// returns anything other than 200 the anti-bot gate is up: the partially
+// poisoned cookies are kept (for diagnosis) but udid/captcha are skipped and
+// the caller should not attempt a login request this round.
+func primeLoginContext() (bool, int) {
+	// A fresh identity per attempt: a leftover gate, stale risk URL or an old
+	// sec_token from a previous flagged round must never leak into this one.
+	sess.mu.Lock()
+	sess.qrGate = 0
+	sess.qrRiskURL = ""
+	sess.secTok = ""
+	sess.mu.Unlock()
 	req, err := http.NewRequest(http.MethodGet, zhihuSigninURL, nil)
 	if err != nil {
 		log.Printf("zhihu: warmup build request: %v", err)
-		return
+		return false, 0
 	}
 	req.Header.Set("User-Agent", zhihuWebUA)
 	req.Header.Set("sec-ch-ua", secChUa)
@@ -384,15 +530,36 @@ func primeLoginContext() {
 	req.Header.Set("sec-ch-ua-platform", secChUaPlatform)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Referer", "https://www.zhihu.com/") // zhihu++ createDesktopHeaders(ZHIHU_HOME_URL)
+	req.Header.Set("Cookie", sess.loginCookieHeader())
 
 	resp, err := hc.Do(req)
 	if err != nil {
 		log.Printf("zhihu: warmup get signin page: %v", err)
-		return
+		return false, 0
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	sess.captureCookies(resp.Header)
+	// The anti-bot gate: a redirect hop to /account/unhuman (recorded by
+	// CheckRedirect) or a non-200 /signin means the visitor session is under
+	// human verification — skip udid/captcha and let the caller stop instead
+	// of minting a poisoned session and POSTing /qrcode into a guaranteed 400.
+	gate, _ := sess.qrGateStatus()
+	if resp.StatusCode != http.StatusOK || gate != 0 {
+		if gate == 0 {
+			sess.mu.Lock()
+			sess.qrGate = resp.StatusCode
+			sess.mu.Unlock()
+		}
+		log.Printf("zhihu: signin bootstrap: http %d qr_gate=%d Set-Cookie=[%s] — skip udid/captcha this round",
+			resp.StatusCode, gate, setCookieNames(resp.Header))
+		return false, gate
+	}
+	sess.mu.Lock()
+	sess.qrGate = 0
+	sess.qrRiskURL = ""
+	sess.mu.Unlock()
 	if v := resp.Header.Get("x-api-version"); v != "" {
 		apiVersion = v
 	}
@@ -417,6 +584,7 @@ func primeLoginContext() {
 	}
 	sess.mu.Unlock()
 	log.Printf("zhihu: login context cookies: %s", sess.cookieState())
+	return true, http.StatusOK
 }
 
 func shortDC0() string {
@@ -452,7 +620,7 @@ func warmupRequest(method, u string, body io.Reader, ctype string) bool {
 	for k, v := range loginFlowHeaders("https://www.zhihu.com/signin", false) {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Cookie", sess.cookieHeader())
+	req.Header.Set("Cookie", sess.loginCookieHeader())
 	resp, err := hc.Do(req)
 	if err != nil {
 		log.Printf("zhihu: warmup %s %s: %v", method, u, err)
@@ -528,7 +696,7 @@ func loginRequest(method, u string, body []byte, referer string, isPolling bool)
 	for k, v := range loginFlowHeaders(referer, isPolling) {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Cookie", sess.cookieHeader())
+	req.Header.Set("Cookie", sess.loginCookieHeader())
 	if xsrf := sess.getXsrf(); xsrf != "" {
 		req.Header.Set("x-xsrftoken", xsrf)
 	}

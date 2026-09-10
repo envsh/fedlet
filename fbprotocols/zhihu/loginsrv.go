@@ -92,6 +92,19 @@ func (s *loginState) set(stage, errMsg string) {
 	}
 }
 
+// reset clears every field so a QR attempt can re-run in-place (the page's
+// "重新尝试" after a risk-control round) without leaking errors or stale links.
+func (s *loginState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stage = stageIdle
+	s.qrURL = ""
+	s.qrCode = 0
+	s.errMsg = ""
+	s.riskURL = ""
+	s.user = ""
+}
+
 var ui struct {
 	mu     sync.Mutex
 	active bool
@@ -139,6 +152,15 @@ func startLoginUI() (string, error) {
 			return
 		}
 		writeJSONMap(w, ls.snapshot())
+	})
+	mux.HandleFunc("/api/qrstart", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		ls.reset()
+		go runQRFlow(ls)
+		writeJSONMap(w, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/api/phone", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -267,14 +289,27 @@ func startLoginUI() (string, error) {
 	return url, nil
 }
 
+// qrFlowMu serializes QR flows so a "重新尝试" never double-runs the poller
+// while a previous attempt is still scanning.
+var qrFlowMu sync.Mutex
+
 // runQRFlow drives the QR login state machine in the background. It polls the
 // official scan_info endpoint: status 0 = waiting for scan, 1 = scanned, and
 // a confirmed login surfaces a z_c0 (in the body or Set-Cookie). A 403 code
 // 40352 response is the network risk-control gate: the poll continues while
 // the page surfaces the /account/unhuman verification link for the user.
 func runQRFlow(ls *loginState) {
+	if !qrFlowMu.TryLock() {
+		return
+	}
+	defer qrFlowMu.Unlock()
 	token, qrURL, expiresAt, err := qrBegin()
 	if err != nil {
+		if risk, ok := sess.getQrRiskURL(); ok {
+			logf("zhihu: qr begin under risk control, paused for human verification: %s", risk)
+			ls.setRisk(stageRisk, risk)
+			return
+		}
 		ls.set(stageFailed, err.Error())
 		return
 	}
@@ -497,6 +532,7 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
 <div id="riskbox" style="display:none">
   <p class="err">检测到网络环境风控,已暂停自动登录。<br>请先完成知乎人工验证后,再回到本页继续:</p>
   <p><a id="risklink" href="#" target="_blank" rel="noopener">打开验证页面</a></p>
+  <button onclick="qrRetry()">完成验证后,重新尝试</button>
 </div>
 <div id="userbox" style="display:none">登录成功:<b id="user"></b></div>
 <div id="failed" class="err" style="display:none"></div>
@@ -570,6 +606,12 @@ async function doVerify(){
   }
 }
 poll();setInterval(poll,1500);
+async function qrRetry(){
+  try{
+    const r=await fetch('/api/qrstart',{method:'POST'});const j=await r.json();
+    if(!j.ok){ $('state').textContent='重试失败: '+(j.error||'未知错误'); $('failed').style.display=''; $('failed').textContent=j.error||'未知错误'; }
+  }catch(e){ $('failed').style.display=''; $('failed').textContent='重试失败'; }
+}
 </script>
 </body>
 </html>

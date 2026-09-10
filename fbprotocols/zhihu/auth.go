@@ -204,7 +204,11 @@ func parseQrBegin(body []byte) (token, link string, expiresAt int64, err error) 
 // qrBegin obtains a new scan token and the display URL from the official
 // endpoint using the browser-parity login ceremony (no signature headers).
 func qrBegin() (token, url string, expiresAt int64, err error) {
-	refreshLoginContext()
+	if !refreshLoginContext() {
+		st, riskURL := sess.qrGateStatus()
+		log.Printf("zhihu: qr begin skipped: qr_gate=http %d risk_url=%s cookies=%s", st, riskURL, sess.cookieState())
+		return "", "", 0, fmt.Errorf("知乎当前要求网络/人机验证(HTTP %d),请先完成验证后再试,或用「手机号+验证码」登录", st)
+	}
 	body, status, err := loginRequest(http.MethodPost, qrBaseURL, []byte("{}"), signinReferer, false)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("zhihu: qr begin: %w", err)
