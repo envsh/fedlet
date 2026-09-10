@@ -2,15 +2,21 @@ package zhihu
 
 // Session credential handling for the Zhihu web API.
 //
-// Authentication mirrors zhihu-plus / pyzhihu-cli: either the phone+verify-code
-// route or the QR scan route of the web login API, both exchange for a z_c0
-// session cookie persisted to ~/.config/fedlet/zhihu-auth.json (0600). The
-// visitor cookie d_c0 is generated fresh and feeds the signature; both the hot
-// list and notification feeds run under the main z_c0 session.
+// Authentication mirrors the zhihu-plus-plus (zly2006/zhihu-plus-plus, AGPL-3)
+// flows: the QR scan of the official web ceremony exchanges for a z_c0 cookie,
+// and the phone + verify-code route speaks the Android account protocol on
+// api.zhihu.com (encrypted bodies, see phonelogin.go) whose returned cookie
+// map doubles as the web session. Either way the result is a z_c0 session
+// cookie persisted to ~/.config/fedlet/zhihu-auth.json (0600). Login
+// endpoints are NOT signed (no x-zse-93/96 for the web login ceremony) and NOT
+// browser-ID (DU) gated; the only requirement is the exact fetch-style header
+// set + a real _xsrf from the /signin bootstrap (see client.go loginFlowHeaders
+// / warmup). Both the hot list and notification feeds run under the main z_c0
+// session.
 //
-// Endpoint details were derived from public zhihu-plus / pyzhihu-cli sources
-// and are marked 待实测 (to-be-verified against the live site) where the exact
-// field layout was not individually confirmed.
+// Endpoint layout was cross-checked against the live zhihu-plus-plus on
+// 2026-09-10 (QR begin -> 200 token/link, scan_info polls with x-zse-93;
+// phone digits -> /api/account/prod/auth/digits, sign-in -> /sign_in).
 
 import (
 	"encoding/json"
@@ -22,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Auth status values reported by AuthStatus().
@@ -32,10 +39,15 @@ const (
 )
 
 const (
-	meURL          = "https://www.zhihu.com/api/v4/me"
-	qrBaseURL      = "https://www.zhihu.com/api/v3/account/api/login/qrcode"
-	sendCodeURL    = "https://www.zhihu.com/api/v3/account/api/send_verify_code"
-	mobileLoginURL = "https://www.zhihu.com/api/v3/account/api/login"
+	meURL     = "https://www.zhihu.com/api/v4/me"
+	qrBaseURL = "https://www.zhihu.com/api/v3/account/api/login/qrcode"
+	// sendCodeURL / mobileLoginURL are the legacy (pre-2026) phone login
+	// endpoints. The 2026 web replaced them with the oauth/validate/sign_in/
+	// digits + oauth/sign_in/digits routes gated behind the encrypted-body +
+	// browser-ID wrapper; the supported phone route is the Android account
+	// protocol in phonelogin.go. The URLs are kept only as documentation.
+	sendCodeURL    = "https://www.zhihu.com/api/v3/account/api/send_verify_code" // legacy, HTTP 404 since 2026
+	mobileLoginURL = "https://www.zhihu.com/api/v3/account/api/login"            // legacy, superseded by oauth flow
 )
 
 // authFileJSON is the persisted credential shape in zhihu-auth.json.
@@ -111,18 +123,30 @@ type meResp struct {
 // user name and AuthStatus. It returns ErrNotLoggedIn when the session is
 // rejected, which the caller should treat as expired and trigger re-login.
 func verifySession() error {
+	start := time.Now()
 	if !sess.hasZ() {
 		markSessionInvalid(errors.New("zhihu: no session (z_c0 missing)"))
+		logf("zhihu: verify session: no z_c0 (elapsed=%s)", time.Since(start).Round(time.Millisecond))
 		return ErrNotLoggedIn
 	}
 	var me meResp
 	if err := getJSON(&me, meURL, true); err != nil {
 		if errors.Is(err, ErrNotLoggedIn) {
 			markSessionInvalid(err)
+			logf("zhihu: verify session: not logged in (elapsed=%s)", time.Since(start).Round(time.Millisecond))
 			return err
 		}
+		if errors.Is(err, errUnverifiable) {
+			// /api/v4/me answered an HTML page: the session cannot be verified,
+			// so it is treated as expired and routed to the login gateway.
+			markSessionInvalid(err)
+			logf("zhihu: verify session: unverifiable html (elapsed=%s)", time.Since(start).Round(time.Millisecond))
+			return ErrNotLoggedIn
+		}
+		logf("zhihu: verify session: %v (elapsed=%s)", err, time.Since(start).Round(time.Millisecond))
 		return fmt.Errorf("zhihu: verify session: %w", err)
 	}
+	logf("zhihu: verify session: ok user=%s elapsed=%s", me.Name, time.Since(start).Round(time.Millisecond))
 	setAuthUser(me.Name)
 	clearAuthErr()
 	setAuthStatus(AuthStatusReady)
@@ -132,14 +156,19 @@ func verifySession() error {
 	return nil
 }
 
-// ---- QR login (pyzhihu-cli / zhihu-plus-plus style, official flow) ----
+// ---- QR login (zhihu-plus-plus parity, official flow) ----
 //
-// The web login now uses POST /qrcode to obtain the token and GET
+// The web login uses POST /qrcode to obtain the token and GET
 // /qrcode/{token}/scan_info for status polling (GET on /qrcode answers 405;
-// /scan + /confirm are the legacy/non-official endpoints). scan_info status
-// contract: 0 = not scanned, 1 = scanned/awaiting confirm; success is signalled
-// by access_token / user_id in the body, a z_c0 cookie value inside the body
-// ("cookie"/"cookies"/"z_c0" fields) or a Set-Cookie z_c0.
+// /scan + /confirm are the legacy/non-official endpoints). These endpoints are
+// NOT signed (no x-zse-93/96) and NOT browser-ID gated; they only need a real
+// _xsrf + d_c0 from the /signin + /udid bootstrap and the fetch-style headers
+// (see loginFlowHeaders). scan_info status contract: 0 = not scanned, 1 =
+// scanned/awaiting confirm; success is signalled by access_token / user_id in
+// the body, a z_c0 cookie value inside the body ("cookie"/"cookies"/"z_c0"
+// fields) or a Set-Cookie z_c0. HTTP 403 code 40352 (need_login) is the
+// network risk-control gate: an /account/unhuman URL is returned for a human
+// to verify.
 
 type qrBeginResp struct {
 	Code        int    `json:"code"`
@@ -147,36 +176,90 @@ type qrBeginResp struct {
 	QrcodeToken string `json:"qrcode_token"`
 	URL         string `json:"url"`
 	Link        string `json:"link"`
+	ExpiresAt   int64  `json:"expires_at"`
 	Expires     int    `json:"expires"`
 }
 
-// qrBegin obtains a new scan token and the display URL. The API requires a
-// POST; a GET is rejected with 405.
-func qrBegin() (token, url string, err error) {
+// parseQrBegin decodes a qrBegin POST response and returns the scan token,
+// the QR link and the expiry (epoch or TTL, see normalizeQrDeadline).
+func parseQrBegin(body []byte) (token, link string, expiresAt int64, err error) {
 	var r qrBeginResp
-	if err := postJSON(&r, qrBaseURL, []byte("{}"), false); err != nil {
-		return "", "", fmt.Errorf("zhihu: qr begin: %w", err)
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", "", 0, fmt.Errorf("zhihu: qr begin parse: %w", err)
 	}
 	token = r.Token
 	if token == "" {
 		token = r.QrcodeToken
 	}
-	url = r.URL
-	if url == "" {
-		url = r.Link
+	link = r.URL
+	if link == "" {
+		link = r.Link
 	}
 	if token == "" {
-		return "", "", errors.New("zhihu: qr begin returned no token")
+		return "", "", 0, errors.New("zhihu: qr begin returned no token")
 	}
-	return token, url, nil
+	return token, link, r.ExpiresAt, nil
 }
 
-// qrScanInfo polls the official scan_info endpoint once.
+// qrBegin obtains a new scan token and the display URL from the official
+// endpoint using the browser-parity login ceremony (no signature headers).
+func qrBegin() (token, url string, expiresAt int64, err error) {
+	refreshLoginContext()
+	body, status, err := loginRequest(http.MethodPost, qrBaseURL, []byte("{}"), signinReferer, false)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("zhihu: qr begin: %w", err)
+	}
+	if status != http.StatusOK {
+		log.Printf("zhihu: qr begin http %d: cookies=%s body=%s", status, sess.cookieState(), truncate(string(body), 200))
+		return "", "", 0, fmt.Errorf("二维码获取失败(HTTP %d):知乎未认可本次登录票据,请稍后刷新重试,或改用「手机号+验证码」登录", status)
+	}
+	token, url, expiresAt, err = parseQrBegin(body)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("zhihu: %w", err)
+	}
+	return token, url, expiresAt, nil
+}
+
+// qrScanInfo polls the official scan_info endpoint once with the polling
+// headers (accept */* + sec-fetch* + x-zse-93).
 func qrScanInfo(token string) ([]byte, int, error) {
 	if token == "" {
 		return nil, 0, errors.New("zhihu: qr scan_info: empty token")
 	}
-	return getRaw(http.MethodGet, qrBaseURL+"/"+token+"/scan_info", nil, false)
+	return loginRequest(http.MethodGet, qrBaseURL+"/"+token+"/scan_info", nil, zhihuSigninURL, true)
+}
+
+// scanInfoRiskControl reports whether the scan_info poll hit the network
+// risk-control gate (HTTP 403, code 40352 / need_login). When ok, redirect is
+// the /account/unhuman verification URL the human must complete.
+func scanInfoRiskControl(body []byte) (redirect string, ok bool) {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return "", false
+	}
+	code, _ := m["code"].(float64)
+	e, hasErr := m["error"].(map[string]any)
+	if hasErr {
+		if n, _ := e["code"].(float64); n != 0 {
+			code = n
+		}
+		if nl, _ := e["need_login"].(bool); nl {
+			if rd, _ := e["redirect"].(string); rd != "" {
+				return rd, true
+			}
+		}
+	}
+	if code == 40352 {
+		var rd string
+		if hasErr {
+			rd, _ = e["redirect"].(string)
+		}
+		if s, _ := m["redirect"].(string); rd == "" {
+			rd = s
+		}
+		return rd, true
+	}
+	return "", false
 }
 
 // parseScanInfo interprets a single scan_info poll response. done reports a
@@ -272,54 +355,70 @@ func scanInfoErrorText(m map[string]any) string {
 	return ""
 }
 
-// ---- phone + verify code login ----
+// ---- phone + verify code login (Android account protocol) ----
+//
+// Since the 2026 web dropped send_verify_code (HTTP 404), the phone route
+// replays the first-party Android client on api.zhihu.com: encrypted device
+// guest init -> captcha (when risk control asks) -> auth/digits (SMS) ->
+// sign_in. The protocol, request bodies and the error-code branching live in
+// phonelogin.go; this section only wires the resulting session into the web
+// credential store. The functions below are thin, mutex-serialized wrappers
+// the login UI (loginsrv.go) calls directly.
 
-// phoneSendCode requests a verify code to be sent to a mobile number.
-// Endpoint details are from public zhihu login flows; field handling is
-// intentionally tolerant of variations (待实测).
-func phoneSendCode(phone string) error {
-	if phone == "" {
-		return errors.New("zhihu: empty phone")
-	}
-	payload, _ := json.Marshal(map[string]string{"phone": phone})
-	body, status, err := getRaw(http.MethodPost, sendCodeURL, payload, false)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("zhihu: send code http %d %s", status, truncate(string(body), 120))
-	}
-	return nil
+// phoneSendDigits requests the SMS code; when risk control demands a picture
+// captcha the outcome carries the image to solve first.
+func phoneSendDigits(phone string) (*zhihuPhoneDigitsOutcome, error) {
+	return zhihuPhoneSendDigits(phone)
 }
 
-// phoneLogin exchanges the phone + verify code for a z_c0 session.
-func phoneLogin(phone, code string) error {
-	if phone == "" || code == "" {
-		return errors.New("zhihu: phone and code required")
+// phoneVerifyCaptcha validates the picture captcha and then sends the code.
+func phoneVerifyCaptcha(phone, input string) (*zhihuPhoneDigitsOutcome, error) {
+	return zhihuPhoneVerifyCaptcha(phone, input)
+}
+
+// applyPhoneWebSession folds a mobile sign-in token's cookie map into the
+// shared web session (d_c0 + z_c0) and refreshes the post-login _xsrf/_zap so
+// the data APIs authenticate with the freshly minted credentials.
+func applyPhoneWebSession(token *zhihuPhoneToken) error {
+	if token == nil {
+		return errors.New("zhihu: phone sign-in returned no token")
 	}
-	payload, _ := json.Marshal(map[string]string{"phone": phone, "code": code, "remember": "true"})
-	resp, err := postRawCapture(mobileLoginURL, payload)
-	if err != nil {
-		return err
+	start := time.Now()
+	sess.mu.Lock()
+	if dc0 := token.Cookies["d_c0"]; dc0 != "" {
+		sess.dC0 = dc0
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("zhihu: phone login http %d %s", resp.StatusCode, truncate(string(resp.Body), 120))
+	zc0 := token.Cookies["z_c0"]
+	sess.zC0 = zc0
+	sess.mu.Unlock()
+	logf("zhihu: phone sign-in token: has_d_c0=%v has_z_c0=%v elapsed=%s",
+		token.Cookies["d_c0"] != "", zc0 != "", time.Since(start).Round(time.Millisecond))
+	if zc0 == "" {
+		markSessionInvalid(errors.New("zhihu: 手机号登录未获得 z_c0"))
+		return ErrNotLoggedIn
 	}
-	if !sess.hasZ() {
-		return errors.New("zhihu: phone login returned no z_c0")
-	}
+	// Mint the session-bound _xsrf/_zap for the now-authenticated browser.
+	warmupGet(zhihuSigninURL)
+	sess.mu.RLock()
+	webPrereq := sess.xsrf != "" || sess.zap != ""
+	sess.mu.RUnlock()
+	logf("zhihu: phone session web refresh: has_xsrf_or_zap=%v elapsed=%s", webPrereq, time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
 // ---- session persistence ----
 
-func authFilePath() string {
+// authFilePathFn is injectable so tests can route zhihu-auth.json writes away
+// from the real user configuration without touching the process HOME.
+var authFilePathFn = func() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "/tmp"
 	}
 	return filepath.Join(home, ".config", "fedlet", "zhihu-auth.json")
 }
+
+func authFilePath() string { return authFilePathFn() }
 
 func loadAuth() {
 	data, err := os.ReadFile(authFilePath())
@@ -331,19 +430,32 @@ func loadAuth() {
 		log.Printf("zhihu: load auth parse error: %v", err)
 		return
 	}
+	applyAuthFile(f)
+}
+
+// applyAuthFile folds a persisted auth file into the shared session. A file
+// that was marked invalid (a rejected session) is never replayed: its z_c0 and
+// _xsrf stay out of the runtime session and the login gateway takes over.
+func applyAuthFile(f authFileJSON) {
 	sess.mu.Lock()
+	defer sess.mu.Unlock()
 	if f.DC0 != "" {
 		sess.dC0 = f.DC0
 	}
+	sess.user = f.User
+	if f.Status == AuthStatusInvalid {
+		sess.zC0 = ""
+		sess.xsrf = ""
+		sess.status = AuthStatusInvalid
+		return
+	}
 	sess.zC0 = f.ZC0
 	sess.xsrf = f.XSRF
-	sess.user = f.User
-	if f.ZC0 != "" && f.Status != AuthStatusInvalid {
+	if f.ZC0 != "" {
 		sess.status = AuthStatusReady
 	} else {
 		sess.status = f.Status
 	}
-	sess.mu.Unlock()
 }
 
 func saveAuth() {

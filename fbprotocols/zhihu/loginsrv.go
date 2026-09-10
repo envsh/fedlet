@@ -5,13 +5,15 @@ package zhihu
 // When a session is needed the protocol starts a throwaway HTTP server on a
 // random 127.0.0.1 port (never localhost, to avoid ::1/dual-stack surprises),
 // opens the system browser on it, and shuts itself down once the login
-// finishes (or times out). The page offers both login routes:
+// finishes (or times out). The page offers the login routes:
 //
-//   - QR scan (auto-started: get token, poll scan/confirm, capture z_c0)
-//   - phone + verify code (send code, then submit the code)
+//   - QR scan (auto-started: token, poll scan_info, capture z_c0)
+//   - phone + verify code (Android account protocol on api.zhihu.com:
+//     encrypted body, optional picture captcha, SMS, then cookie mapping)
 //
-// The phone endpoints mirror the zhihu-plus web flow; exact field layout is
-// 待实测 and their responses are handled tolerantly.
+// QR is the primary route and mirrors the zhihu-plus-plus ceremony. When the
+// poll hits the 403/40352 network risk-control gate the page surfaces the
+// human verification link while polling continues.
 
 import (
 	"context"
@@ -20,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -31,6 +34,11 @@ const (
 	qrPollInterval = 3 * time.Second
 	qrExpireAfter  = 120 * time.Second
 	successHoldMs  = 1500
+	// verifyDeadline caps the whole /api/verify chain so the phone login page
+	// never waits silently when zhihu stalls a sign_in request (server-side
+	// risk control can black-hole the connection for the full 30s client
+	// timeout, and the follow-up web steps stack behind it).
+	verifyDeadline = 55 * time.Second
 )
 
 // login stages surfaced to the page.
@@ -38,18 +46,21 @@ const (
 	stageIdle    = "idle"
 	stageWaiting = "waiting" // QR shown, awaiting scan
 	stageScanned = "scanned"
+	stageCaptcha = "captcha" // phone flow: picture captcha must be solved
+	stageRisk    = "risk"    // network risk-control: human must verify
 	stageDone    = "done"
 	stageExpired = "expired"
 	stageFailed  = "failed"
 )
 
 type loginState struct {
-	mu     sync.Mutex
-	stage  string
-	qrURL  string
-	qrCode int
-	errMsg string
-	user   string
+	mu      sync.Mutex
+	stage   string
+	qrURL   string
+	qrCode  int
+	errMsg  string
+	riskURL string
+	user    string
 }
 
 func (s *loginState) snapshot() map[string]any {
@@ -65,6 +76,9 @@ func (s *loginState) snapshot() map[string]any {
 	}
 	if s.errMsg != "" {
 		m["error"] = s.errMsg
+	}
+	if s.riskURL != "" {
+		m["risk_url"] = s.riskURL
 	}
 	return m
 }
@@ -139,11 +153,48 @@ func startLoginUI() (string, error) {
 			http.Error(w, "phone required", http.StatusBadRequest)
 			return
 		}
-		if err := phoneSendCode(req.Phone); err != nil {
+		outcome, err := phoneSendDigits(req.Phone)
+		if err != nil {
 			ls.set(stageFailed, err.Error())
 			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
+		if outcome.Captcha {
+			ls.mu.Lock()
+			ls.stage = stageCaptcha
+			ls.mu.Unlock()
+			writeJSONMap(w, map[string]any{"ok": false, "captcha": true, "img": outcome.ImageB64})
+			return
+		}
+		writeJSONMap(w, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("/api/captcha", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Phone     string `json:"phone"`
+			InputText string `json:"input_text"`
+		}
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Phone == "" || req.InputText == "" {
+			http.Error(w, "phone and input_text required", http.StatusBadRequest)
+			return
+		}
+		outcome, err := phoneVerifyCaptcha(req.Phone, req.InputText)
+		if err != nil {
+			ls.set(stageFailed, err.Error())
+			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if outcome.Captcha {
+			writeJSONMap(w, map[string]any{"ok": false, "captcha": true, "img": outcome.ImageB64})
+			return
+		}
+		ls.mu.Lock()
+		ls.stage = stageWaiting
+		ls.mu.Unlock()
 		writeJSONMap(w, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/api/verify", func(w http.ResponseWriter, r *http.Request) {
@@ -160,19 +211,38 @@ func startLoginUI() (string, error) {
 			http.Error(w, "phone and code required", http.StatusBadRequest)
 			return
 		}
-		if err := phoneLogin(req.Phone, req.Code); err != nil {
-			ls.set(stageFailed, err.Error())
-			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error()})
-			return
+		start := time.Now()
+		logf("zhihu: verify: phone=%s start", req.Phone)
+		done := make(chan map[string]any, 1)
+		go func() {
+			token, err := zhihuPhoneSignIn(req.Phone, req.Code)
+			if err != nil {
+				ls.set(stageFailed, err.Error())
+				done <- map[string]any{"ok": false, "error": err.Error()}
+				return
+			}
+			if err := applyPhoneWebSession(token); err != nil {
+				ls.set(stageFailed, err.Error())
+				done <- map[string]any{"ok": false, "error": err.Error()}
+				return
+			}
+			if err := verifySession(); err != nil {
+				ls.set(stageFailed, err.Error())
+				done <- map[string]any{"ok": false, "error": err.Error()}
+				return
+			}
+			saveAuth()
+			finalizeLogin(ls, "phone")
+			done <- map[string]any{"ok": true, "user": AuthUser()}
+		}()
+		select {
+		case m := <-done:
+			logf("zhihu: verify: ok=%v elapsed=%s", m["ok"], time.Since(start).Round(time.Millisecond))
+			writeJSONMap(w, m)
+		case <-time.After(verifyDeadline):
+			logf("zhihu: verify: timeout after %s (zhihu side unresponsive)", time.Since(start).Round(time.Millisecond))
+			writeJSONMap(w, map[string]any{"ok": false, "error": "登录请求超时(知乎侧无响应),请重试"})
 		}
-		if err := verifySession(); err != nil {
-			ls.set(stageFailed, err.Error())
-			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		saveAuth()
-		finalizeLogin(ls, "phone")
-		writeJSONMap(w, map[string]any{"ok": true})
 	})
 
 	srv := &http.Server{Handler: mux}
@@ -191,19 +261,19 @@ func startLoginUI() (string, error) {
 		ui.active = false
 		ui.mu.Unlock()
 	}()
-
 	// Kick off the QR flow immediately; the page just displays it.
 	go runQRFlow(ls)
 
-	openBrowser(url)
 	return url, nil
 }
 
 // runQRFlow drives the QR login state machine in the background. It polls the
 // official scan_info endpoint: status 0 = waiting for scan, 1 = scanned, and
-// a confirmed login surfaces a z_c0 (in the body or Set-Cookie).
+// a confirmed login surfaces a z_c0 (in the body or Set-Cookie). A 403 code
+// 40352 response is the network risk-control gate: the poll continues while
+// the page surfaces the /account/unhuman verification link for the user.
 func runQRFlow(ls *loginState) {
-	token, qrURL, err := qrBegin()
+	token, qrURL, expiresAt, err := qrBegin()
 	if err != nil {
 		ls.set(stageFailed, err.Error())
 		return
@@ -213,7 +283,7 @@ func runQRFlow(ls *loginState) {
 	ls.stage = stageWaiting
 	ls.mu.Unlock()
 
-	deadline := time.Now().Add(qrExpireAfter)
+	deadline := normalizeQrDeadline(expiresAt, time.Now())
 	for {
 		select {
 		case <-ui.stop:
@@ -221,10 +291,14 @@ func runQRFlow(ls *loginState) {
 		default:
 		}
 		if time.Now().After(deadline) {
-			ls.set(stageExpired, "")
+			if ls.hasRisk() {
+				ls.set(stageFailed, "风控未解除(网络环境验证未完成),请刷新页面重试")
+			} else {
+				ls.set(stageExpired, "")
+			}
 			return
 		}
-		body, _, err := qrScanInfo(token)
+		body, status, err := qrScanInfo(token)
 		if err != nil {
 			select {
 			case <-ui.stop:
@@ -232,6 +306,19 @@ func runQRFlow(ls *loginState) {
 			case <-time.After(qrPollInterval):
 			}
 			continue
+		}
+		// Network risk-control gate (403 / code 40352): keep polling, but
+		// surface the human verification link once.
+		if status == http.StatusForbidden {
+			if redirect, ok := scanInfoRiskControl(body); ok {
+				ls.setRisk(stageRisk, redirect)
+				select {
+				case <-ui.stop:
+					return
+				case <-time.After(qrPollInterval):
+				}
+				continue
+			}
 		}
 		done, scanned, zc0, failed := parseScanInfo(body)
 		if failed != "" {
@@ -266,6 +353,54 @@ func runQRFlow(ls *loginState) {
 	}
 }
 
+// setRisk records the network risk-control state (once) so the page can show
+// the verification link while the poll keeps running.
+func (s *loginState) setRisk(stage, redirect string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.riskURL != "" {
+		return
+	}
+	s.stage = stage
+	s.riskURL = redirect
+	if redirect == "" {
+		s.riskURL = "https://www.zhihu.com/account/risk_control/"
+	}
+}
+
+func (s *loginState) hasRisk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.riskURL != ""
+}
+
+// normalizeQrDeadline converts the qrBegin expires_at (epoch seconds, epoch
+// millis, or a remaining-TTL) into a wall-clock deadline; absent/absurd values
+// fall back to the default poll window (mirrors zhihu-plus-plus).
+func normalizeQrDeadline(expiresAt int64, now time.Time) time.Time {
+	if expiresAt <= 0 {
+		return now.Add(qrExpireAfter)
+	}
+	nowSec := now.Unix()
+	var t time.Time
+	switch {
+	case expiresAt < nowSec: // TTL semantics when behind "now" in seconds
+		if expiresAt <= int64(qrExpireAfter/time.Second) {
+			t = now.Add(time.Duration(expiresAt) * time.Second)
+		} else {
+			t = now.Add(time.Duration(expiresAt) * time.Millisecond)
+		}
+	case expiresAt < 10_000_000_000: // epoch seconds in the future
+		t = time.Unix(expiresAt, 0)
+	default: // epoch millis in the future
+		t = time.UnixMilli(expiresAt)
+	}
+	if t.After(now) && t.Before(now.Add(24*time.Hour)) {
+		return t
+	}
+	return now.Add(qrExpireAfter)
+}
+
 // finalizeLogin marks the successful login and shuts the UI down shortly after
 // so the user can see the success page.
 func finalizeLogin(ls *loginState, via string) {
@@ -289,25 +424,44 @@ func writeJSONMap(w http.ResponseWriter, m map[string]any) {
 	_ = json.NewEncoder(w).Encode(m)
 }
 
-func openBrowser(url string) {
-	var name string
-	var args []string
+// isDesktop reports whether the process can reach a desktop GUI launcher
+// (mirrors outlookgraph oauth.go): darwin/windows always, linux needs
+// DISPLAY or WAYLAND_DISPLAY.
+func isDesktop() bool {
 	switch runtime.GOOS {
-	case "darwin":
-		name, args = "open", []string{url}
-	case "windows":
-		name, args = "cmd", []string{"/c", "start", "", url}
-	default:
-		name, args = "xdg-open", []string{url}
+	case "darwin", "windows":
+		return true
+	case "linux":
+		return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 	}
-	if name == "" {
+	return false
+}
+
+// openURL launches the platform URL opener (outlookgraph parity), returning
+// the Start() error so callers can print a manual fallback URL.
+func openURL(url string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		return exec.Command("open", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
+	}
+}
+
+// openLoginBrowser opens the login page when a desktop is available; headless
+// runs get a manual-URL hint instead (no silent failure).
+func openLoginBrowser(url string) {
+	if !isDesktop() {
+		logf("zhihu: no desktop session; login page (open manually): %s", url)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := exec.CommandContext(ctx, name, args...).Start(); err != nil {
-		logf("zhihu: open browser %s failed: %v", url, err)
+	if err := openURL(url); err != nil {
+		logf("zhihu: open browser failed: %v; open manually: %s", err, url)
+		return
 	}
+	logf("zhihu: browser opened: %s", url)
 }
 
 func serveLoginPage(w http.ResponseWriter, _ *loginState) {
@@ -340,6 +494,10 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
   <img class="qrimg" id="qr" alt="QR">
   <p>用 <b>知乎 App</b> 的「扫一扫」登录;<br>或手机浏览器打开:<pre id="qrl"></pre></p>
 </div>
+<div id="riskbox" style="display:none">
+  <p class="err">检测到网络环境风控,已暂停自动登录。<br>请先完成知乎人工验证后,再回到本页继续:</p>
+  <p><a id="risklink" href="#" target="_blank" rel="noopener">打开验证页面</a></p>
+</div>
 <div id="userbox" style="display:none">登录成功:<b id="user"></b></div>
 <div id="failed" class="err" style="display:none"></div>
 </div>
@@ -349,9 +507,14 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
   <input id="phone" type="tel" placeholder="手机号" autocomplete="tel">
   <button onclick="sendCode()">发送验证码</button>
 </div>
+<div id="captchaform" style="display:none">
+  <img id="captchaimg" alt="验证码" style="max-width:220px;border:1px solid #eee;border-radius:6px">
+  <input id="captchainput" type="text" placeholder="图形验证码" autocomplete="off">
+  <button onclick="submitCaptcha()">提交验证码并发送短信</button>
+</div>
 <div id="codeform" style="display:none">
-  <input id="code" type="text" placeholder="验证码" autocomplete="one-time-code">
-  <button onclick="doVerify()">登录</button>
+  <input id="code" type="text" placeholder="短信验证码" autocomplete="one-time-code">
+  <button id="verifybtn" onclick="doVerify()">登录</button>
 </div>
 <p id="phonemsg" class="err" style="display:none;white-space:pre-wrap"></p>
 </div>
@@ -360,25 +523,51 @@ const $=id=>document.getElementById(id);
 async function poll(){
   try{
     const r=await fetch('/api/state');const s=await r.json();
-    $('state').textContent={'idle':'准备二维码…','waiting':'等待扫码…','scanned':'已扫码,确认中…','done':'登录成功','expired':'二维码已过期,请刷新页面','failed':'登录失败'}[s.stage]||s.stage;
+    $('state').textContent={'idle':'准备二维码…','waiting':'等待扫码…','scanned':'已扫码,确认中…','captcha':'请完成图形验证码','risk':'网络环境风控','done':'登录成功','expired':'二维码已过期,请刷新页面','failed':'登录失败'}[s.stage]||s.stage;
     if(s.qr_code_url){$('qrbox').style.display='';$('qr').src=s.qr_code_url;$('qrl').textContent=s.qr_url;}
+    if(s.stage==='risk'){ $('riskbox').style.display='';$('risklink').href=s.risk_url||'https://www.zhihu.com/account/risk_control/';}
     if(s.stage==='done'){ $('qrbox').style.display='none';$('userbox').style.display='';$('user').textContent=s.user||'';}
     if(s.stage==='failed'){ $('failed').style.display='';$('failed').textContent=s.error||'未知错误';}
   }catch(e){}
+}
+function showCaptcha(img){
+  $('captchaform').style.display='';
+  if(img){$('captchaimg').src=img;}else{$('captchaimg').style.display='none';}
+  $('codeform').style.display='none';
 }
 async function sendCode(){
   const phone=$('phone').value.trim();
   const r=await fetch('/api/phone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const j=await r.json();
   if(j.ok){ $('phoneform').style.display='none';$('codeform').style.display='';$('phonemsg').style.display='none';
+  } else if(j.captcha){ showCaptcha(j.img);$('phonemsg').style.display='none';
+  } else { $('phonemsg').style.display='';$('phonemsg').textContent='发送验证码失败:\n'+j.error; }
+}
+async function submitCaptcha(){
+  const phone=$('phone').value.trim(),input_text=$('captchainput').value.trim();
+  if(!input_text){return;}
+  const r=await fetch('/api/captcha',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,input_text})});
+  const j=await r.json();
+  if(j.ok){ $('captchaform').style.display='none';$('codeform').style.display='';$('phonemsg').style.display='none';
+  } else if(j.captcha){ $('captchaimg').src=j.img||'';$('phonemsg').style.display='none';
   } else { $('phonemsg').style.display='';$('phonemsg').textContent='发送验证码失败:\n'+j.error; }
 }
 async function doVerify(){
   const phone=$('phone').value.trim(),code=$('code').value.trim();
-  const r=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
-  const j=await r.json();
-  if(j.ok){ $('phoneform').style.display='none';$('codeform').style.display='none';$('phonemsg').style.display='none';
-  } else { $('phonemsg').style.display='';$('phonemsg').textContent='登录失败:\n'+j.error; }
+  const btn=$('verifybtn');
+  btn.disabled=true; $('phonemsg').style.display='';$('phonemsg').textContent='验证中…';
+  try{
+    const r=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
+    const j=await r.json();
+    btn.disabled=false;
+    if(j.ok){ $('qrbox').style.display='none';$('phoneform').style.display='none';$('codeform').style.display='none';$('captchaform').style.display='none';$('phonemsg').style.display='none';
+      $('state').textContent='登录成功';
+      $('userbox').style.display='';$('user').textContent=j.user||'';
+    } else { $('phonemsg').style.display='';$('phonemsg').textContent='登录失败:\n'+j.error; }
+  }catch(e){
+    btn.disabled=false;
+    $('phonemsg').style.display='';$('phonemsg').textContent='登录失败:\n'+(e&&e.message||'网络错误');
+  }
 }
 poll();setInterval(poll,1500);
 </script>

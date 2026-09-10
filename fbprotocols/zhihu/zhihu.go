@@ -9,7 +9,7 @@ package zhihu
 //   - notifications: also requires the z_c0 session, ~60s, new events only
 //   - session healing: periodic /api/v4/me probe + passive 401 detection;
 //     on a lost session the feeds pause and the single ensureSession gateway
-//     restarts the login UI (bounded cooldown + attempt limit)
+//     restarts the login UI (cooldown-gated; resets once the session verifies OK)
 //
 // State (dedupe, 72h window) persists to ~/.config/fedlet/zhihu-state.json.
 
@@ -30,7 +30,6 @@ const (
 	authCheckInterval     = 30 * time.Minute
 	dedupeExpiry          = 72 * time.Hour
 	reLoginCooldown       = 5 * time.Minute
-	reLoginMaxAttempts    = 2
 )
 
 var (
@@ -129,13 +128,20 @@ func pollLoop() {
 	for {
 		now = time.Now()
 
+		if AuthStatus() != AuthStatusReady && reloginDue(now) {
+			ensureSession(now, false)
+		}
 		if hot && now.After(nextHot) {
-			hotRound(state)
 			nextHot = now.Add(hi)
+			if AuthStatus() == AuthStatusReady {
+				hotRound(state)
+			}
 		}
 		if notify && now.After(nextNotify) {
-			notifyRound(state)
 			nextNotify = now.Add(ni)
+			if AuthStatus() == AuthStatusReady {
+				notifyRound(state)
+			}
 		}
 		if notify && now.After(nextAuth) {
 			authCheck(state)
@@ -146,6 +152,16 @@ func pollLoop() {
 		saveState(stateFilePath(), state)
 		time.Sleep(tick)
 	}
+}
+
+// reloginDue reports whether a scheduled re-login attempt is due: either no
+// attempt is pending yet (cooldown zero) or the cooldown has elapsed. It is
+// what lets pollLoop retry the login gateway on its own cadence without any
+// feed round firing while the session is unusable.
+func reloginDue(now time.Time) bool {
+	authMu.Lock()
+	defer authMu.Unlock()
+	return reLogin.nextAt.IsZero() || !now.Before(reLogin.nextAt)
 }
 
 func hotRound(state *zhihuState) {
@@ -250,6 +266,14 @@ func handleSessionLost(state *zhihuState) {
 // handleRoundErr routes a feed-round failure: session errors pause the feeds and
 // go through the login gateway; everything else is surfaced as a status error.
 func handleRoundErr(state *zhihuState, err error) {
+	if errors.Is(err, errUnverifiable) {
+		// A 200-HTML answer means the session cannot be trusted: demote the
+		// status (in-memory only, no disk write) and pause the feeds through
+		// the login gateway.
+		setAuthStatus(AuthStatusEmpty)
+		handleSessionLost(state)
+		return
+	}
 	if isSessionErr(err) {
 		handleSessionLost(state)
 		return
@@ -264,12 +288,16 @@ var (
 )
 
 // ensureSession is the only entry point that may start the login UI. A ready
-// session is validated; a missing or expired one schedules a re-login under the
-// cooldown / attempt budget. Transient verify failures (network / 5xx) are kept
-// as-is: they never touch the budget or pop the login window.
+// session is validated; a missing or expired one schedules a re-login under a
+// cooldown that resets once the session verifies OK again. Transient verify
+// failures (network / 5xx) are kept as-is: they never touch the cooldown or pop
+// the login window.
 func ensureSession(now time.Time, force bool) {
 	if AuthStatus() == AuthStatusReady {
 		if err := probeSession(); err == nil {
+			authMu.Lock()
+			reLogin.nextAt = time.Time{}
+			authMu.Unlock()
 			return
 		} else if !errors.Is(err, ErrNotLoggedIn) {
 			log.Printf("zhihu: session check transient error, session kept: %v", err)
@@ -288,12 +316,6 @@ func scheduleLogin(now time.Time, force bool) {
 		log.Printf("zhihu: re-login in cooldown until %s", reLogin.nextAt.Format("15:04:05"))
 		return
 	}
-	if !force && reLogin.attempts >= reLoginMaxAttempts {
-		authMu.Unlock()
-		log.Printf("zhihu: re-login attempts exhausted (%d); open zhihu login manually or restart", reLogin.attempts)
-		return
-	}
-	reLogin.attempts++
 	reLogin.nextAt = now.Add(reLoginCooldown)
 	authMu.Unlock()
 
@@ -302,17 +324,18 @@ func scheduleLogin(now time.Time, force bool) {
 		log.Printf("zhihu: start login UI: %v", err)
 		return
 	}
-	log.Printf("zhihu: login UI available at %s (auto-opened, or open it manually)", url)
+	openLoginBrowser(url)
+	log.Printf("zhihu: login UI available at %s", url)
 }
 
-// reLogin tracks the auto-relogin guard budget.
+// reLogin guards the auto re-login cooldown: the UI is not re-opened before
+// nextAt; a successful session verify clears it.
 var reLogin = struct {
-	attempts int
-	nextAt   time.Time
+	nextAt time.Time
 }{}
 
 func isSessionErr(err error) bool {
-	return err == ErrNotLoggedIn
+	return errors.Is(err, ErrNotLoggedIn)
 }
 
 func stringIt(v int64) string {

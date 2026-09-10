@@ -1,8 +1,12 @@
 package zhihu
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -188,7 +192,6 @@ func TestAuthStatusInitial(t *testing.T) {
 
 func resetLoginGateway() {
 	authMu.Lock()
-	reLogin.attempts = 0
 	reLogin.nextAt = time.Time{}
 	lastAuthErr = nil
 	authMu.Unlock()
@@ -225,8 +228,8 @@ func TestEnsureSessionTransientKeepsReady(t *testing.T) {
 	}
 	authMu.Lock()
 	defer authMu.Unlock()
-	if reLogin.attempts != 0 {
-		t.Fatalf("transient error consumed re-login budget: attempts=%d", reLogin.attempts)
+	if !reLogin.nextAt.IsZero() {
+		t.Fatalf("transient error armed the re-login cooldown: nextAt=%s", reLogin.nextAt)
 	}
 	if status := AuthStatus(); status != AuthStatusReady {
 		t.Fatalf("ready session should be kept, status=%q", status)
@@ -253,9 +256,6 @@ func TestEnsureSessionExpiredStartsLogin(t *testing.T) {
 	}
 	authMu.Lock()
 	defer authMu.Unlock()
-	if reLogin.attempts != 1 {
-		t.Fatalf("attempts=%d, want 1", reLogin.attempts)
-	}
 	if want := now.Add(reLoginCooldown); !reLogin.nextAt.Equal(want) {
 		t.Fatalf("nextAt=%s, want %s", reLogin.nextAt, want)
 	}
@@ -282,7 +282,7 @@ func TestEnsureSessionCooldownSkipsUI(t *testing.T) {
 	}
 }
 
-func TestEnsureSessionAttemptCap(t *testing.T) {
+func TestEnsureSessionRetriesAfterCooldown(t *testing.T) {
 	resetLoginGateway()
 	setupGatewaySession()
 	defer resetLoginGateway()
@@ -294,37 +294,112 @@ func TestEnsureSessionAttemptCap(t *testing.T) {
 	probeSession = func() error { return ErrNotLoggedIn }
 	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
 
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+
+	ensureSession(now, false)
+	if uiSpy != 1 {
+		t.Fatalf("expired session should pop the login UI, got %d", uiSpy)
+	}
+
+	ensureSession(now.Add(30*time.Second), false)
+	if uiSpy != 1 {
+		t.Fatalf("cooldown should skip the UI, got %d", uiSpy)
+	}
+
+	ensureSession(now.Add(reLoginCooldown), false)
+	if uiSpy != 2 {
+		t.Fatalf("cooldown expiry should re-open the UI, got %d", uiSpy)
+	}
+}
+
+func TestEnsureSessionForceBypassesCooldown(t *testing.T) {
+	resetLoginGateway()
+	setupGatewaySession()
+	defer resetLoginGateway()
+
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+
+	uiSpy := 0
+	probeSession = func() error { return ErrNotLoggedIn }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	authMu.Lock()
-	reLogin.attempts = reLoginMaxAttempts
+	reLogin.nextAt = now.Add(time.Hour)
+	authMu.Unlock()
+
+	ensureSession(now, true)
+
+	if uiSpy != 1 {
+		t.Fatalf("force should bypass the cooldown, got %d", uiSpy)
+	}
+	authMu.Lock()
+	defer authMu.Unlock()
+	if want := now.Add(reLoginCooldown); !reLogin.nextAt.Equal(want) {
+		t.Fatalf("nextAt=%s, want %s", reLogin.nextAt, want)
+	}
+}
+
+func TestIsSessionErrUsesErrorsIs(t *testing.T) {
+	if !isSessionErr(fmt.Errorf("zhihu: notifications: %w", ErrNotLoggedIn)) {
+		t.Fatal("wrapped ErrNotLoggedIn must be recognized as a session error")
+	}
+	if !isSessionErr(fmt.Errorf("zhihu: hotlist: %w", ErrNotLoggedIn)) {
+		t.Fatal("wrapped hotlist ErrNotLoggedIn must be recognized as a session error")
+	}
+	if isSessionErr(errors.New("boom")) {
+		t.Fatal("unrelated error must not be a session error")
+	}
+}
+
+func TestReLoginResetOnValidSession(t *testing.T) {
+	resetLoginGateway()
+	setupGatewaySession()
+	defer resetLoginGateway()
+
+	origProbe, origUI := probeSession, startLoginUIFn
+	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+
+	uiSpy := 0
+	probeSession = func() error { return nil }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	authMu.Lock()
+	reLogin.nextAt = time.Now().Add(time.Hour)
 	authMu.Unlock()
 
 	ensureSession(time.Now(), false)
 
+	authMu.Lock()
+	defer authMu.Unlock()
+	if !reLogin.nextAt.IsZero() {
+		t.Fatalf("valid session should clear the re-login cooldown, nextAt=%s", reLogin.nextAt)
+	}
 	if uiSpy != 0 {
-		t.Fatalf("attempt cap should stop the UI, got %d", uiSpy)
+		t.Fatalf("valid session should not pop the login UI, got %d", uiSpy)
 	}
 }
 
-func TestEnsureSessionForceBypassesBudget(t *testing.T) {
+func TestHandleRoundErrRoutesSessionErrors(t *testing.T) {
 	resetLoginGateway()
-	setupGatewaySession()
 	defer resetLoginGateway()
 
-	origProbe, origUI := probeSession, startLoginUIFn
-	defer func() { probeSession, startLoginUIFn = origProbe, origUI }()
+	origUI := startLoginUIFn
+	defer func() { startLoginUIFn = origUI }()
 
 	uiSpy := 0
-	probeSession = func() error { return ErrNotLoggedIn }
 	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
 
-	authMu.Lock()
-	reLogin.attempts = reLoginMaxAttempts
-	authMu.Unlock()
-
-	ensureSession(time.Now(), true)
-
+	state := newState()
+	handleRoundErr(state, fmt.Errorf("zhihu: notifications: %w", ErrNotLoggedIn))
 	if uiSpy != 1 {
-		t.Fatalf("force should bypass the budget, got %d", uiSpy)
+		t.Fatalf("session round error should open the login UI, got %d", uiSpy)
+	}
+
+	handleRoundErr(state, errors.New("zhihu: upstream down"))
+	if uiSpy != 1 {
+		t.Fatalf("non-session round error must not open the login UI, got %d", uiSpy)
 	}
 }
 
@@ -385,5 +460,369 @@ func TestScanInfoCookieString(t *testing.T) {
 	}
 	if got := scanInfoCookieString(map[string]any{}, "cookie"); got != "" {
 		t.Fatalf("empty map should be empty, got %q", got)
+	}
+}
+
+func TestLoginFlowHeaders(t *testing.T) {
+	h := loginFlowHeaders(signinReferer, false)
+	for _, k := range []string{"User-Agent", "sec-ch-ua", "x-requested-with", "Content-Type", "Origin"} {
+		if h[k] == "" {
+			t.Fatalf("login headers missing %s", k)
+		}
+	}
+	if h["x-requested-with"] != "fetch" {
+		t.Fatalf("x-requested-with = %q", h["x-requested-with"])
+	}
+	if got := h["Content-Type"]; got != "application/json;charset=UTF-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if h["Referer"] != signinReferer {
+		t.Fatalf("non-polling referer = %q", h["Referer"])
+	}
+	if _, has := h["x-zse-93"]; has {
+		t.Fatal("non-polling login headers must NOT carry x-zse-93")
+	}
+
+	p := loginFlowHeaders(zhihuSigninURL, true)
+	if p["Referer"] != zhihuSigninURL {
+		t.Fatalf("polling referer = %q", p["Referer"])
+	}
+	if p["x-zse-93"] != zse93 {
+		t.Fatalf("polling x-zse-93 = %q", p["x-zse-93"])
+	}
+	if _, has := p["x-zse-96"]; has {
+		t.Fatal("login poll must NEVER carry x-zse-96")
+	}
+	if p["Accept"] != "*/*" {
+		t.Fatalf("polling accept = %q", p["Accept"])
+	}
+}
+
+func TestParseQrBegin(t *testing.T) {
+	tok, link, expires, err := parseQrBegin([]byte(`{"token":"T0k3n","url":"https://zhihu.com/q?t=1","expires_at":1789021559}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if tok != "T0k3n" || link != "https://zhihu.com/q?t=1" || expires != 1789021559 {
+		t.Fatalf("got %q/%q/%d", tok, link, expires)
+	}
+
+	if _, _, _, err := parseQrBegin([]byte(`{"link":"https://zhihu.com/q?t=2","token":"T2"}`)); err != nil {
+		t.Fatalf("link+token form: %v", err)
+	}
+	if _, _, _, err := parseQrBegin([]byte(`{}`)); err == nil {
+		t.Fatal("missing token must error")
+	}
+	if _, _, _, err := parseQrBegin([]byte(`not json`)); err == nil {
+		t.Fatal("garbage must error")
+	}
+}
+
+func TestScanInfoRiskControl(t *testing.T) {
+	// 40352 need_login with a redirect target.
+	rd, ok := scanInfoRiskControl([]byte(`{"error":{"code":40352,"need_login":true,"redirect":"https://www.zhihu.com/account/unhuman?x=1"}}`))
+	if !ok || rd != "https://www.zhihu.com/account/unhuman?x=1" {
+		t.Fatalf("risk body not detected: ok=%v rd=%q", ok, rd)
+	}
+	// top-level code 40352 (older shape).
+	rd, ok = scanInfoRiskControl([]byte(`{"code":40352,"redirect":"/account/unhuman"}`))
+	if !ok || rd != "/account/unhuman" {
+		t.Fatalf("top-level risk not detected: ok=%v rd=%q", ok, rd)
+	}
+	// genuine poll responses must not be flagged.
+	for _, body := range []string{`{"status":0}`, `{"status":1,"scanned":true}`, `{"status":1,"user_id":1}`, `not json`} {
+		if _, ok := scanInfoRiskControl([]byte(body)); ok {
+			t.Fatalf("false positive risk for %s", body)
+		}
+	}
+}
+
+func TestNormalizeQrDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
+	within := func(t, want time.Time) bool { return t.Sub(want) < time.Second }
+
+	// absent -> default window.
+	if got := normalizeQrDeadline(0, now); !within(got, now.Add(qrExpireAfter)) {
+		t.Fatalf("zero expiry -> %s", got)
+	}
+	// future epoch seconds.
+	if got := normalizeQrDeadline(now.Add(90*time.Second).Unix(), now); !within(got, now.Add(90*time.Second)) {
+		t.Fatalf("epoch-seconds expiry -> %s", got)
+	}
+	// future epoch millis.
+	if got := normalizeQrDeadline(now.Add(90*time.Second).UnixMilli(), now); !within(got, now.Add(90*time.Second)) {
+		t.Fatalf("epoch-millis expiry -> %s", got)
+	}
+	// TTL seconds (expires_at is a remaining-TTL, i.e. smaller than now's seconds).
+	if got := normalizeQrDeadline(90, now); !within(got, now.Add(90*time.Second)) {
+		t.Fatalf("ttl-seconds expiry -> %s", got)
+	}
+	// absurd future value -> clamped back to the default window.
+	if got := normalizeQrDeadline(now.Add(80*time.Hour).UnixMilli(), now); !within(got, now.Add(qrExpireAfter)) {
+		t.Fatalf("absurd expiry -> %s", got)
+	}
+}
+
+// ---- invalid auth-file handling and HTML/401 classification ----
+
+func resetSessionCreds() {
+	sess.mu.Lock()
+	sess.zC0 = ""
+	sess.xsrf = ""
+	sess.zap = ""
+	sess.qC1 = ""
+	sess.capsion = ""
+	sess.capSession = ""
+	sess.user = ""
+	sess.status = AuthStatusEmpty
+	sess.mu.Unlock()
+}
+
+func resetRateGate() {
+	rateMu.Lock()
+	rateUntil = time.Time{}
+	rateBackoff = 0
+	rateMu.Unlock()
+}
+
+// stubTransport lets tests answer HTTP without a network.
+type stubTransport func(*http.Request) (*http.Response, error)
+
+func (f stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// stubClient serves targetBody/status for one exact URL and fallback for every
+// other request (warmup calls, login helpers, ...).
+func stubClient(target string, targetBody []byte, status int, fallback []byte) *http.Client {
+	return &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		body, code := fallback, http.StatusOK
+		if target != "" && r.URL.String() == target {
+			body, code = targetBody, status
+		}
+		return &http.Response{
+			StatusCode: code,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+}
+
+func TestApplyAuthFile(t *testing.T) {
+	resetSessionCreds()
+	defer resetSessionCreds()
+
+	// Invalid files must never replay the rejected z_c0/_xsrf: the credential
+	// is left empty and the login gateway takes over (status=invalid).
+	applyAuthFile(authFileJSON{DC0: "d0|1|x", ZC0: "zc0-test", XSRF: "xsrf-x", User: "nobody", Status: AuthStatusInvalid})
+	sess.mu.RLock()
+	if sess.zC0 != "" || sess.xsrf != "" {
+		t.Fatalf("invalid file replayed z_c0/xsrf: %q/%q", sess.zC0, sess.xsrf)
+	}
+	if sess.status != AuthStatusInvalid {
+		t.Fatalf("status=%q, want invalid", sess.status)
+	}
+	if sess.dC0 != "d0|1|x" || sess.user != "nobody" {
+		t.Fatalf("d_c0/user should be kept: %q/%q", sess.dC0, sess.user)
+	}
+	sess.mu.RUnlock()
+
+	// Valid files keep the session.
+	applyAuthFile(authFileJSON{ZC0: "zc0-ok", XSRF: "xsrf-ok", Status: AuthStatusReady})
+	sess.mu.RLock()
+	if sess.zC0 != "zc0-ok" || sess.xsrf != "xsrf-ok" || sess.status != AuthStatusReady {
+		t.Fatalf("valid file not applied: %q/%q/%q", sess.zC0, sess.xsrf, sess.status)
+	}
+	sess.mu.RUnlock()
+
+	// No z_c0 -> empty runtime session even if a stray status text persists.
+	applyAuthFile(authFileJSON{Status: "weird"})
+	sess.mu.RLock()
+	if sess.zC0 != "" || sess.status != "weird" {
+		t.Fatalf("empty session misapplied: %q/%q", sess.zC0, sess.status)
+	}
+	sess.mu.RUnlock()
+}
+
+func TestLooksHTML(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{"", false},
+		{"{}", false},
+		{`{"a":1}`, false},
+		{"[]", false},
+		{"<html>", true},
+		{"<!doctype html>", true},
+		{"  <div>x</div>", true},
+		{"\t<b>hi</b>", true},
+	}
+	for _, tc := range cases {
+		if got := looksHTML([]byte(tc.body)); got != tc.want {
+			t.Fatalf("looksHTML(%q)=%v, want %v", tc.body, got, tc.want)
+		}
+	}
+}
+
+func TestGetRawHTML200ClassifiesUnverifiable(t *testing.T) {
+	resetSessionCreds()
+	resetLoginGateway()
+	resetRateGate()
+	defer resetSessionCreds()
+
+	sess.mu.Lock()
+	sess.zC0 = "zc0-test"
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	oldHC := hc
+	hc = stubClient(meURL, []byte("<!doctype html><html>bot check</html>"), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	_, status, err := getRaw(http.MethodGet, meURL, nil, true)
+	if !errors.Is(err, errUnverifiable) {
+		t.Fatalf("err=%v, want errUnverifiable", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status=%d, want 200", status)
+	}
+	rateMu.Lock()
+	defer rateMu.Unlock()
+	if !rateUntil.After(time.Now()) {
+		t.Fatal("HTML 200 should arm the rate gate")
+	}
+}
+
+func TestGetRaw401NeedAuthMarksInvalid(t *testing.T) {
+	resetSessionCreds()
+	resetLoginGateway()
+	resetRateGate()
+	defer resetSessionCreds()
+
+	dir := t.TempDir()
+	oldPath := authFilePathFn
+	authFilePathFn = func() string { return dir + "/zhihu-auth.json" }
+	defer func() { authFilePathFn = oldPath }()
+
+	sess.mu.Lock()
+	sess.zC0 = "zc0-test"
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	oldHC := hc
+	hc = stubClient(meURL, []byte("{}"), http.StatusUnauthorized, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	_, status, err := getRaw(http.MethodGet, meURL, nil, true)
+	if !errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("err=%v, want ErrNotLoggedIn", err)
+	}
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", status)
+	}
+	if got := AuthStatus(); got != AuthStatusInvalid {
+		t.Fatalf("status=%q, want invalid", got)
+	}
+}
+
+func TestGetRaw401AnonymousDoesNotMarkInvalid(t *testing.T) {
+	resetSessionCreds()
+	resetLoginGateway()
+	resetRateGate()
+	defer resetSessionCreds()
+
+	sess.mu.Lock()
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	u := qrBaseURL + "/tok/scan_info"
+	oldHC := hc
+	hc = stubClient(u, []byte("{}"), http.StatusUnauthorized, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	// needAuth=false: a 401 on a login-helper endpoint must not kill the session.
+	_, _, err := getRaw(http.MethodGet, u, nil, false)
+	if errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("anonymous 401 must stay a plain error, got ErrNotLoggedIn")
+	}
+	if got := AuthStatus(); got != AuthStatusReady {
+		t.Fatalf("session status was clobbered by anonymous 401: %q", got)
+	}
+	if last := LastAuthErr(); last != nil {
+		t.Fatalf("anonymous 401 recorded an auth error: %v", last)
+	}
+}
+
+func TestVerifySessionHTMLMapsErrNotLoggedIn(t *testing.T) {
+	resetSessionCreds()
+	resetLoginGateway()
+	resetRateGate()
+	defer resetSessionCreds()
+
+	dir := t.TempDir()
+	oldPath := authFilePathFn
+	authFilePathFn = func() string { return dir + "/zhihu-auth.json" }
+	defer func() { authFilePathFn = oldPath }()
+
+	sess.mu.Lock()
+	sess.zC0 = "zc0-test"
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	oldHC := hc
+	hc = stubClient(meURL, []byte("<html>login required</html>"), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	err := verifySession()
+	if !errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("err=%v, want ErrNotLoggedIn", err)
+	}
+	if got := AuthStatus(); got != AuthStatusInvalid {
+		t.Fatalf("status=%q, want invalid", got)
+	}
+}
+
+func TestHandleRoundErrUnverifiableDemotes(t *testing.T) {
+	resetLoginGateway()
+	defer resetLoginGateway()
+
+	sess.mu.Lock()
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	origUI := startLoginUIFn
+	defer func() { startLoginUIFn = origUI }()
+	uiSpy := 0
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+
+	state := newState()
+	handleRoundErr(state, fmt.Errorf("zhihu: notifications: %w (http 200: <html>...)", errUnverifiable))
+
+	if got := AuthStatus(); got != AuthStatusEmpty {
+		t.Fatalf("status=%q, want empty (demoted)", got)
+	}
+	if uiSpy != 1 {
+		t.Fatalf("HTML round error should open the login UI, got %d", uiSpy)
+	}
+}
+
+func TestReloginDue(t *testing.T) {
+	resetLoginGateway()
+	defer resetLoginGateway()
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+
+	if !reloginDue(now) {
+		t.Fatal("zero nextAt should be due")
+	}
+	authMu.Lock()
+	reLogin.nextAt = now.Add(30 * time.Second)
+	authMu.Unlock()
+	if reloginDue(now) {
+		t.Fatal("cooldown not elapsed should not be due")
+	}
+	if !reloginDue(now.Add(31 * time.Second)) {
+		t.Fatal("elapsed cooldown should be due")
 	}
 }
