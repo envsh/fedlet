@@ -1,0 +1,22 @@
+set -x
+
+# 如果 /tmp目录大量文件变动，可能导致该进程内存CPU带宽上涨
+
+export GOMUKS_USER=admin
+export GOMUKS_PASS=xxxxx
+EXE=./main.before-droppubsub
+EXE=./main
+$EXE -m -sync-dir ~/Sync2/ -toxhs https:// -matrix-url https://matrix.tchncs.de -matrix-auth @name:tchncs.de:pass -imapserver imap.163.com:993 -emailauth name@163.com:pass -outlook-client-id 85f9d250-2ae3-4d88-805a-bbf92dfxxxxx -misskey https://misskey.gg -misskey-token xxxxxxxxxxxx -ntfysh-topic xxxxxxxxx -ntfysh-server https://ntfy.frei.chat 2>&1
+
+# 07-22 09:15:18.296 15958 15986 D qsktox  : [PushHandler] endpoint: "https://ntfy.frei.chat/upFPF2Ku33Cxxx?up=1"
+# https://updates.push.services.mozilla.com/wpush/v1/gAAAAABqZv376VKrQac6ZCJYbZBG-TrVsAfsXWOwQFyo6S6bspBeOq44OCNdXJvprD6rCfzNCMHe1o-3dTLYjzpE7SAzcqPFbQURpX1BGyPJmZHT6BIqxxxxxxxx
+# 15:04:15 main.go:94: ntfysh: status 429 retry-after= body={"code":42901,"http":429,"error":"limit reached: too many requests","link":"https://ntfy.sh/docs/publish/#limitations"} len=294
+
+# adminforge timeout
+
+# while true; do curl "http://127.0.0.1:4004/api/events?topic=reddit,hacknews,quora,v2ex"; sleep 1; done
+
+# 在osx上, 有输出重定向和管道问题, 有两种使用方式,
+# 1 ok chmod u+s, ./main 运行
+# 2 ok chmod u-s, sudo ./main
+# 3 err chmod u+s, sudo ./main

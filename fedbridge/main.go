@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,61 +50,6 @@ var httpClient30s = &http.Client{Timeout: 30 * time.Second}
 
 var publishViaHTTP bool = true
 var channel_name = "reddit"
-var ntfyshTopic string
-var ntfyshServer string
-var ntfyRetryAfter time.Time
-
-func publishNtfy(protocol, channel string, v any) {
-	if ntfyshTopic == "" {
-		return
-	}
-	var body string
-	var title string
-	switch vv := v.(type) {
-	case fbshared.UnifiedMessage:
-		title = protocol + ":" + channel
-		bcc, err := json.Marshal(vv)
-		if err != nil {
-			panic(err)
-		}
-		body = string(bcc)
-	default:
-		data, _ := json.Marshal(v)
-		title = protocol + ":" + channel
-		body = string(data)
-		panic("not support")
-	}
-	if body == "" {
-		return
-	}
-	url := ntfyshServer + "/" + ntfyshTopic + "?up=1"
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
-	if err != nil {
-		log.Printf("ntfysh: request error: %v", err)
-		return
-	}
-	req.Header.Set("Title", title)
-	req.Header.Set("Tags", protocol)
-	resp, err := httpClient30s.Do(req)
-	if err != nil {
-		log.Printf("ntfysh: publish error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == 200 {
-		ntfyRetryAfter = time.Time{}
-	} else {
-		respBody, _ := io.ReadAll(resp.Body)
-		retryAfter := resp.Header.Get("Retry-After")
-		log.Printf("ntfysh: status %d retry-after=%s body=%s len=%v",
-			resp.StatusCode, retryAfter, strings.TrimSpace(string(respBody)), len(body))
-		if resp.StatusCode == 429 && retryAfter != "" {
-			if sec, err := strconv.Atoi(retryAfter); err == nil {
-				ntfyRetryAfter = time.Now().Add(time.Duration(sec) * time.Second)
-			}
-		}
-	}
-}
 
 func publish(protocol, channel string, v any) error {
 	switch vv := v.(type) {
