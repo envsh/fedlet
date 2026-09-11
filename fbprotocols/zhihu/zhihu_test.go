@@ -1124,12 +1124,12 @@ func TestDailyFetchStoryParse(t *testing.T) {
 }
 
 func TestDailySummaryStripHTML(t *testing.T) {
-	s := stripDailyBody(`<p>你好&amp;世界</p><p><img src="x"/></p><strong> 加粗 </strong>  多空格`)
+	s := stripHTMLSummary(`<p>你好&amp;世界</p><p><img src="x"/></p><strong> 加粗 </strong>  多空格`)
 	if s != "你好&世界 加粗 多空格" {
 		t.Fatalf("strip = %q", s)
 	}
 	long := strings.Repeat("一二三四五", 100)
-	if got := stripDailyBody("<p>" + long + "</p>"); len([]rune(got)) > dailySummaryLen+3 {
+	if got := stripHTMLSummary("<p>" + long + "</p>"); len([]rune(got)) > dailySummaryLen+3 {
 		t.Fatalf("summary too long: %d runes", len([]rune(got)))
 	}
 }
@@ -1241,5 +1241,148 @@ func TestStartEnablesDaily(t *testing.T) {
 	}
 	if dailyInt != defaultDailyInterval {
 		t.Fatalf("daily interval=%s, want %s", dailyInt, defaultDailyInterval)
+	}
+}
+
+// ---- recommend feed (pull-only layer) ----
+
+const testRecommendFeed = `{"paging":{"is_end":false,"next":"https://www.zhihu.com/api/v3/feed/topstory/recommend?desktop=true&limit=20&after_id=20","previous":""},"fresh_text":"刷新看看新的好内容","data":[
+{"id":1001,"type":"answer","created_time":1750000000,"target":{"id":5555,"type":"answer","url":"https://www.zhihu.com/question/333/answer/5555","excerpt":"马的视野很广。","question":{"id":333,"title":"除了奔跑很快，马还有哪些很厉害的技能？"},"author":{"name":"桔大"},"voteup_count":1234,"comment_count":56,"content":"<p>马的视野很广，擅长听声辨位。</p>"}},
+{"id":1002,"type":"article","created_time":0,"target":{"id":7777,"type":"article","url":"https://zhuanlan.zhihu.com/p/7777","title":"一篇长文","excerpt":"摘要文字。","author":{"name":"阿伟"},"voteup_count":99,"comment_count":3,"content":"<p>正文内容。</p>"}},
+{"id":1003,"type":"zvideo","created_time":0,"target":{"id":8888,"type":"zvideo","title":"视频标题","author":{"name":"UP"},"content":"<p>视频描述文本。</p>","comment_count":1}},
+{"id":1004,"type":"question","created_time":0,"target":{"id":999,"type":"question","title":"问题标题","excerpt":"问题描述。","author":{"name":"qauthor"}}},
+{"id":1005,"type":"pin","created_time":0,"target":{"id":1111,"type":"pin","author":{"name":"pinner"},"content":"<p>想法内容。</p>","comment_count":7}},
+{"id":1006,"type":"ad","created_time":0,"target":{}}
+]}`
+
+func TestFetchRecommendParse(t *testing.T) {
+	resetSessionCreds()
+	setupGatewaySession()
+	defer resetSessionCreds()
+
+	u := "https://www.zhihu.com/api/v3/feed/topstory/recommend?desktop=true&limit=20"
+	oldHC := hc
+	hc = stubClient(u, []byte(testRecommendFeed), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	r, err := FetchRecommend(20)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(r.Data) != 6 {
+		t.Fatalf("items=%d, want 6", len(r.Data))
+	}
+	if r.Paging.IsEnd || !strings.Contains(r.Paging.Next, "after_id=20") {
+		t.Fatalf("bad paging: %+v", r.Paging)
+	}
+	if r.FreshText == "" {
+		t.Fatal("fresh_text not parsed")
+	}
+	if r.Data[0].ID != 1001 || r.Data[0].Type != "answer" || r.Data[0].CreatedTime != 1750000000 {
+		t.Fatalf("bad first item: %+v", r.Data[0])
+	}
+}
+
+func TestFetchRecommendDefaultLimit(t *testing.T) {
+	resetSessionCreds()
+	setupGatewaySession()
+	defer resetSessionCreds()
+
+	gotURL := ""
+	oldHC := hc
+	hc = &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader([]byte(`{"data":[]}`))), Request: r}, nil
+	})}
+	defer func() { hc = oldHC }()
+
+	if _, err := FetchRecommend(0); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(gotURL, "limit=20") {
+		t.Fatalf("default limit not applied: %s", gotURL)
+	}
+}
+
+func TestFetchRecommendNeedsSession(t *testing.T) {
+	resetSessionCreds()
+	defer resetSessionCreds()
+
+	calls := 0
+	oldHC := hc
+	hc = &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil)), Request: r}, nil
+	})}
+	defer func() { hc = oldHC }()
+
+	if _, err := FetchRecommend(2); !errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("want ErrNotLoggedIn, got %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("made %d network calls without a session", calls)
+	}
+}
+
+func TestRecommendViewRich(t *testing.T) {
+	var r struct {
+		Data []RecommendItem `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(testRecommendFeed), &r); err != nil {
+		t.Fatal(err)
+	}
+
+	ans := RecommendView(&r.Data[0])
+	if ans.ID != 5555 || ans.Kind != "answer" || ans.Title != "除了奔跑很快，马还有哪些很厉害的技能？" {
+		t.Fatalf("answer: %+v", ans)
+	}
+	if ans.Author != "桔大" || ans.VoteupCount != 1234 || ans.CommentCount != 56 {
+		t.Fatalf("answer metrics: %+v", ans)
+	}
+	if ans.Summary != "马的视野很广，擅长听声辨位。" {
+		t.Fatalf("answer summary: %q", ans.Summary)
+	}
+	if ans.URL != "https://www.zhihu.com/question/333/answer/5555" {
+		t.Fatalf("answer url: %q", ans.URL)
+	}
+
+	art := RecommendView(&r.Data[1])
+	if art.Kind != "article" || art.Title != "一篇长文" || art.Summary != "摘要文字。" || art.Author != "阿伟" || art.VoteupCount != 99 {
+		t.Fatalf("article: %+v", art)
+	}
+	if art.Excerpt != "摘要文字。" {
+		t.Fatalf("article excerpt: %q", art.Excerpt)
+	}
+
+	zv := RecommendView(&r.Data[2])
+	if zv.Kind != "zvideo" || zv.Title != "视频标题" || zv.Summary != "视频描述文本。" || zv.URL != "" {
+		t.Fatalf("zvideo: %+v", zv)
+	}
+
+	q := RecommendView(&r.Data[3])
+	if q.Kind != "question" || q.Title != "问题标题" || q.Summary != "问题描述。" {
+		t.Fatalf("question: %+v", q)
+	}
+
+	p := RecommendView(&r.Data[4])
+	if p.Kind != "pin" || p.Title != "想法内容。" || p.CommentCount != 7 {
+		t.Fatalf("pin: %+v", p)
+	}
+
+	ad := RecommendView(&r.Data[5])
+	if ad.Kind != "ad" || ad.ID != 1006 || ad.Title != "" {
+		t.Fatalf("ad: %+v", ad)
+	}
+}
+
+func TestRecommendViewAnswerLinkFallback(t *testing.T) {
+	var it RecommendItem
+	if err := json.Unmarshal([]byte(`{"id":10,"type":"answer","target":{"id":20,"type":"answer","question":{"id":30},"author":{"name":"x"}}}`), &it); err != nil {
+		t.Fatal(err)
+	}
+	v := RecommendView(&it)
+	want := "https://www.zhihu.com/question/30/answer/20"
+	if v.URL != want {
+		t.Fatalf("fallback url=%q, want %q", v.URL, want)
 	}
 }

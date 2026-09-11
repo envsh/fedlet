@@ -104,11 +104,11 @@ func getDailyJSON(data any, u string) error {
 	return nil
 }
 
-// dailySummaryLen caps the description (rune-aware, via truncate).
+// dailySummaryLen caps summaries (rune-aware, via truncate).
 const dailySummaryLen = 250
 
-// stripDailyBody converts the story body HTML into a plain-text summary.
-func stripDailyBody(body string) string {
+// stripHTMLSummary converts HTML body text into a plain-text summary.
+func stripHTMLSummary(body string) string {
 	s := htmlTagRE.ReplaceAllString(body, " ")
 	s = html.UnescapeString(s)
 	s = strings.Join(strings.Fields(s), " ")

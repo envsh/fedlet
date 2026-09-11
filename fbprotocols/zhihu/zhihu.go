@@ -327,7 +327,7 @@ func dailyRound(state *zhihuState) {
 			pushError(derr)
 			continue
 		}
-		desc := stripDailyBody(detail.Body)
+		desc := stripHTMLSummary(detail.Body)
 		image := ""
 		if len(it.Images) > 0 {
 			image = it.Images[0]
