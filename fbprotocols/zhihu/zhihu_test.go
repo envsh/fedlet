@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1074,5 +1076,170 @@ func TestReloginDue(t *testing.T) {
 	}
 	if !reloginDue(now.Add(31 * time.Second)) {
 		t.Fatal("elapsed cooldown should be due")
+	}
+}
+
+// ---- daily bulletin ----
+
+const testDailyLatest = `{"date":"20260910","stories":[
+{"id":9792490,"title":"请问哪些植物毛茸茸的？","url":"https://daily.zhihu.com/story/9792490","hint":"小星有鬼 · 2 分钟阅读","images":["https://pic1.zhimg.com/x.jpg"],"type":0},
+{"id":9792481,"title":"瞎扯 · 如何正确地吐槽","url":"https://daily.zhihu.com/story/9792481","hint":"VOL.3986","images":[],"type":0}],
+"top_stories":[{"id":9792490,"title":"请问哪些植物毛茸茸的？","url":"https://daily.zhihu.com/story/9792490","hint":"小星有鬼 · 2 分钟阅读","images":["https://pic1.zhimg.com/x.jpg"],"type":0}]}`
+
+const testDailyStoryDetail = `{"id":9792481,"title":"瞎扯 · 如何正确地吐槽","image":"https://pic1.zhimg.com/img.jpg","images":["https://pic1.zhimg.com/x.jpg"],"share_url":"http://daily.zhihu.com/story/9792481","body":"<p>吐槽要讲究方法。</p>"}`
+
+func TestDailyFetchLatestParse(t *testing.T) {
+	oldHC := hc
+	hc = stubClient(dailyLatestURL, []byte(testDailyLatest), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	r, err := FetchDailyLatest()
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if r.Date != "20260910" || len(r.Stories) != 2 || len(r.TopStories) != 1 {
+		t.Fatalf("bad latest: %+v", r)
+	}
+	if r.Stories[0].ID != 9792490 || r.Stories[0].Title != "请问哪些植物毛茸茸的？" {
+		t.Fatalf("bad story: %+v", r.Stories[0])
+	}
+	if len(r.Stories[0].Images) != 1 || r.Stories[1].ID != 9792481 {
+		t.Fatalf("bad images/order: %+v", r.Stories)
+	}
+}
+
+func TestDailyFetchStoryParse(t *testing.T) {
+	u := "https://daily.zhihu.com/api/4/story/9792481"
+	oldHC := hc
+	hc = stubClient(u, []byte(testDailyStoryDetail), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	d, err := FetchDailyStory(9792481)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if d.ID != 9792481 || d.Title == "" || !strings.Contains(d.Body, "吐槽") {
+		t.Fatalf("bad detail: %+v", d)
+	}
+}
+
+func TestDailySummaryStripHTML(t *testing.T) {
+	s := stripDailyBody(`<p>你好&amp;世界</p><p><img src="x"/></p><strong> 加粗 </strong>  多空格`)
+	if s != "你好&世界 加粗 多空格" {
+		t.Fatalf("strip = %q", s)
+	}
+	long := strings.Repeat("一二三四五", 100)
+	if got := stripDailyBody("<p>" + long + "</p>"); len([]rune(got)) > dailySummaryLen+3 {
+		t.Fatalf("summary too long: %d runes", len([]rune(got)))
+	}
+}
+
+func TestDailyRoundFirstSyncSeedsNoPublish(t *testing.T) {
+	oldHC := hc
+	hc = stubClient(dailyLatestURL, []byte(testDailyLatest), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+	spy := 0
+	oldPub := pubfn_
+	pubfn_ = func(any) error { spy++; return nil }
+	defer func() { pubfn_ = oldPub }()
+
+	state := newState()
+	dailyRound(state)
+
+	if spy != 0 {
+		t.Fatalf("first sync published %d items", spy)
+	}
+	if len(state.Daily) != 2 {
+		t.Fatalf("seeded %d ids, want 2", len(state.Daily))
+	}
+	if _, ok := state.Daily["9792490"]; !ok {
+		t.Fatalf("missing seed id 9792490")
+	}
+}
+
+func TestDailyRoundPublishesNewOnly(t *testing.T) {
+	oldHC := hc
+	hc = &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		body := []byte("{}")
+		switch r.URL.String() {
+		case dailyLatestURL:
+			body = []byte(testDailyLatest)
+		case "https://daily.zhihu.com/api/4/story/9792481":
+			body = []byte(testDailyStoryDetail)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+	})}
+	defer func() { hc = oldHC }()
+
+	var got []map[string]any
+	oldPub := pubfn_
+	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	defer func() { pubfn_ = oldPub }()
+
+	state := newState()
+	state.Daily["9792490"] = time.Now().Unix()
+	dailyRound(state)
+
+	if len(got) != 1 {
+		t.Fatalf("published %d, want 1", len(got))
+	}
+	p := got[0]
+	if p["kind"] != "daily" || p["id"] != int64(9792481) {
+		t.Fatalf("bad payload: %+v", p)
+	}
+	if p["title"] != "瞎扯 · 如何正确地吐槽" || p["date"] != "20260910" {
+		t.Fatalf("bad title/date: %+v", p)
+	}
+	if p["image"] != "https://pic1.zhimg.com/img.jpg" {
+		t.Fatalf("bad image fallback: %+v", p)
+	}
+	desc, ok := p["description"].(string)
+	if !ok || !strings.Contains(desc, "吐槽要讲究方法") {
+		t.Fatalf("bad description: %+v", desc)
+	}
+	if _, seen := state.Daily["9792481"]; !seen {
+		t.Fatalf("new id not seeded after publish")
+	}
+
+	got = nil
+	dailyRound(state)
+	if len(got) != 0 {
+		t.Fatalf("re-published %d after dedupe", len(got))
+	}
+}
+
+func TestDailyStateNilSafeLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zhihu-state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := loadState(path)
+	if s.Daily == nil {
+		t.Fatal("loadState did not nil-guard Daily")
+	}
+}
+
+func TestDailyStatePrune(t *testing.T) {
+	s := newState()
+	s.Daily["old"] = time.Now().Add(-(dedupeExpiry + time.Hour)).Unix()
+	s.Daily["fresh"] = time.Now().Unix()
+	pruneState(s, time.Now())
+	if _, ok := s.Daily["old"]; ok {
+		t.Fatal("stale daily id survived prune")
+	}
+	if s.Daily["fresh"] == 0 {
+		t.Fatal("fresh daily id pruned")
+	}
+}
+
+func TestStartEnablesDaily(t *testing.T) {
+	setStartConfig(false, false, 0, 0)
+	muClient.Lock()
+	defer muClient.Unlock()
+	if !dailyOn {
+		t.Fatal("daily should auto-enable on Start")
+	}
+	if dailyInt != defaultDailyInterval {
+		t.Fatalf("daily interval=%s, want %s", dailyInt, defaultDailyInterval)
 	}
 }

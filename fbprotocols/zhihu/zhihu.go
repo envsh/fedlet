@@ -7,6 +7,8 @@ package zhihu
 //     101 AuthenticationError since 2026-09), ~600s, publishes only
 //     newly-appeared entries
 //   - notifications: also requires the z_c0 session, ~60s, new events only
+//   - daily bulletin: public daily.zhihu.com, ~600s, new items only; no auth
+//     (auto-enabled on Start alongside the session feeds)
 //   - session healing: periodic /api/v4/me probe + passive 401 detection;
 //     on a lost session the feeds pause and the single ensureSession gateway
 //     restarts the login UI (cooldown-gated; resets once the session verifies OK)
@@ -27,6 +29,7 @@ import (
 const (
 	defaultHotInterval    = 600 * time.Second
 	defaultNotifyInterval = 60 * time.Second
+	defaultDailyInterval  = 600 * time.Second
 	authCheckInterval     = 30 * time.Minute
 	dedupeExpiry          = 72 * time.Hour
 	reLoginCooldown       = 5 * time.Minute
@@ -41,8 +44,10 @@ var (
 	muClient  sync.Mutex
 	hotOn     bool
 	notifyOn  bool
+	dailyOn   bool
 	hotInt    time.Duration
 	notifyInt time.Duration
+	dailyInt  time.Duration
 )
 
 func SetPublishInfo(pubfn func(any) error) {
@@ -61,6 +66,7 @@ func publish(v any) error {
 type zhihuState struct {
 	Hotlist       map[string]int64 `json:"hotlist"`
 	Notifications map[string]int64 `json:"notifications"`
+	Daily         map[string]int64 `json:"daily"`
 }
 
 func newState() *zhihuState {
@@ -71,12 +77,23 @@ func newState() *zhihuState {
 	if s.Notifications == nil {
 		s.Notifications = map[string]int64{}
 	}
+	if s.Daily == nil {
+		s.Daily = map[string]int64{}
+	}
 	return s
 }
 
-// Start launches the poll loop. hot/notify enable the two feeds; the intervals
-// are 0-for-default (600s / 60s).
+// Start launches the poll loop. hot/notify enable the two session-bound feeds
+// (intervals are 0-for-default: 600s / 60s); the public daily bulletin runs
+// automatically alongside them (default 600s).
 func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
+	setStartConfig(hot, notify, hotInterval, notifyInterval)
+	go pollLoop()
+}
+
+// setStartConfig applies the Start flags plus the always-on daily feed. Split
+// out so the unit test can assert the auto-enable without spawning the loop.
+func setStartConfig(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	if hotInterval <= 0 {
 		hotInterval = defaultHotInterval
 	}
@@ -88,8 +105,9 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	notifyOn = notify
 	hotInt = hotInterval
 	notifyInt = notifyInterval
+	dailyOn = true
+	dailyInt = defaultDailyInterval
 	muClient.Unlock()
-	go pollLoop()
 }
 
 func pollLoop() {
@@ -100,25 +118,31 @@ func pollLoop() {
 	muClient.Lock()
 	hot := hotOn
 	notify := notifyOn
+	daily := dailyOn
 	hi := hotInt
 	ni := notifyInt
+	di := dailyInt
 	muClient.Unlock()
-	log.Printf("zhihu: hot=%v notify=%v intervals=%s/%s", hot, notify, hi, ni)
+	log.Printf("zhihu: hot=%v notify=%v daily=%v intervals=%s/%s/%s", hot, notify, daily, hi, ni, di)
 
 	loadAuth()
 	state := loadState(stateFilePath())
 
-	// Both feeds require the main z_c0 session (verified 2026-09: the hot list
-	// answers 101 AuthenticationError anonymously, see RSSHub PR #19075).
-	if !hot && !notify {
-		log.Printf("zhihu: both feeds disabled, nothing to poll")
+	// hot/notify require the main z_c0 session (verified 2026-09: the hot list
+	// answers 101 AuthenticationError anonymously, see RSSHub PR #19075); the
+	// daily bulletin is public and skips the session entirely.
+	if !hot && !notify && !daily {
+		log.Printf("zhihu: all feeds disabled, nothing to poll")
 		return
 	}
-	ensureSession(time.Now(), true)
+	if hot || notify {
+		ensureSession(time.Now(), true)
+	}
 
 	now := time.Now()
 	nextHot := now.Add(hi)
 	nextNotify := now.Add(ni)
+	nextDaily := now.Add(di)
 	nextAuth := now.Add(authCheckInterval)
 
 	tick := ni
@@ -146,6 +170,10 @@ func pollLoop() {
 			if AuthStatus() == AuthStatusReady {
 				notifyRound(state)
 			}
+		}
+		if daily && now.After(nextDaily) {
+			nextDaily = now.Add(di)
+			dailyRound(state)
 		}
 		if notify && now.After(nextAuth) {
 			authCheck(state)
@@ -261,6 +289,75 @@ func notifyRound(state *zhihuState) {
 		log.Printf("zhihu: notifications round published %d new events", published)
 	} else {
 		log.Printf("zhihu: notifications round no change")
+	}
+}
+
+// dailyRound publishes the daily bulletin. Unlike the session-bound feeds it
+// never touches the login gateway: the source is public (daily.zhihu.com) and
+// a failure is only surfaced as a status error.
+func dailyRound(state *zhihuState) {
+	resp, err := FetchDailyLatest()
+	if err != nil {
+		log.Printf("zhihu: daily error: %v", err)
+		pushError(err)
+		return
+	}
+	now := time.Now()
+	// First successful sync: seed the dedupe set silently so an existing
+	// bulletin history is not re-published as "new".
+	if len(state.Daily) == 0 {
+		for i := range resp.Stories {
+			state.Daily[itoa(resp.Stories[i].ID)] = now.Unix()
+		}
+		log.Printf("zhihu: daily first sync, marked %d existing items seen", len(resp.Stories))
+		return
+	}
+	published := 0
+	for i := range resp.Stories {
+		it := &resp.Stories[i]
+		key := itoa(it.ID)
+		if _, seen := state.Daily[key]; seen {
+			continue
+		}
+		// New item: pull its article for a readable summary. Detail failure
+		// leaves the id unseeded so it is retried next round.
+		detail, derr := FetchDailyStory(it.ID)
+		if derr != nil {
+			log.Printf("zhihu: daily story %d error: %v", it.ID, derr)
+			pushError(derr)
+			continue
+		}
+		desc := stripDailyBody(detail.Body)
+		image := ""
+		if len(it.Images) > 0 {
+			image = it.Images[0]
+		}
+		if image == "" {
+			image = detail.Image
+		}
+		log.Printf("zhihu: daily #%d id=%d %s", i+1, it.ID, truncate(it.Title, 80))
+		payload := map[string]any{
+			"kind":         "daily",
+			"id":           it.ID,
+			"title":        it.Title,
+			"hint":         it.Hint,
+			"url":          it.URL,
+			"image":        image,
+			"description":  desc,
+			"date":         resp.Date,
+			"count":        len(resp.Stories),
+			"published_at": now.Unix(),
+		}
+		if err := publish(payload); err != nil {
+			log.Printf("zhihu: publish daily %d error: %v", it.ID, err)
+		}
+		state.Daily[key] = now.Unix()
+		published++
+	}
+	if published > 0 {
+		log.Printf("zhihu: daily round published %d new items", published)
+	} else {
+		log.Printf("zhihu: daily round no change")
 	}
 }
 
@@ -487,6 +584,9 @@ func loadState(path string) *zhihuState {
 	if s.Notifications == nil {
 		s.Notifications = map[string]int64{}
 	}
+	if s.Daily == nil {
+		s.Daily = map[string]int64{}
+	}
 	return &s
 }
 
@@ -516,6 +616,7 @@ func pruneState(s *zhihuState, now time.Time) {
 	}
 	prune(s.Hotlist)
 	prune(s.Notifications)
+	prune(s.Daily)
 }
 
 // ---- protocol status ----
