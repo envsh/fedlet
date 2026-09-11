@@ -87,7 +87,9 @@ func clipWaitProc() {
 			if !clipDedupText(scc) {
 				log.Printf("clipboard: dedup text %q within 2s, skip", scc)
 			} else {
-				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("text", "", scc, 0, 0, 0)))
+				pid, appName, appPath := clipOwner()
+				log.Printf("clipboard: owner pid=%d name=%s path=%s", pid, appName, appPath)
+				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("text", "", scc, 0, 0, 0, pid, appName, appPath)))
 			}
 		case data, ok := <-chImage:
 			if !ok {
@@ -106,29 +108,37 @@ func clipWaitProc() {
 			if !clipDedupImage(data) {
 				log.Printf("clipboard: dedup image within 2s, skip")
 			} else {
-				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("image", mime, "", len(data), w, h)))
+				pid, appName, appPath := clipOwner()
+				log.Printf("clipboard: owner pid=%d name=%s path=%s", pid, appName, appPath)
+				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("image", mime, "", len(data), w, h, pid, appName, appPath)))
 			}
 		}
 	}
 }
 
-func marshalClipEvent(format, mime, text string, size, width, height int) []byte {
+func marshalClipEvent(format, mime, text string, size, width, height, pid int, appName, appPath string) []byte {
 	b, _ := json.Marshal(struct {
-		Type   string `json:"type"`
-		Format string `json:"format"`
-		MIME   string `json:"mime,omitempty"`
-		Data   string `json:"data,omitempty"`
-		Size   int    `json:"size,omitempty"`
-		Width  int    `json:"width,omitempty"`
-		Height int    `json:"height,omitempty"`
+		Type    string `json:"type"`
+		Format  string `json:"format"`
+		MIME    string `json:"mime,omitempty"`
+		Data    string `json:"data,omitempty"`
+		Size    int    `json:"size,omitempty"`
+		Width   int    `json:"width,omitempty"`
+		Height  int    `json:"height,omitempty"`
+		PID     int    `json:"pid,omitempty"`
+		AppName string `json:"appname,omitempty"`
+		AppPath string `json:"apppath,omitempty"`
 	}{
-		Type:   "clipboard",
-		Format: format,
-		MIME:   mime,
-		Data:   text,
-		Size:   size,
-		Width:  width,
-		Height: height,
+		Type:    "clipboard",
+		Format:  format,
+		MIME:    mime,
+		Data:    text,
+		Size:    size,
+		Width:   width,
+		Height:  height,
+		PID:     pid,
+		AppName: appName,
+		AppPath: appPath,
 	})
 	return b
 }
