@@ -519,6 +519,11 @@ func finalizeLogin(ls *loginState, via string) {
 	ls.stage = stageDone
 	ls.user = user
 	ls.mu.Unlock()
+	// A successful login means a fresh verified session: clear the re-login
+	// cooldown so the gateway can react immediately if the new session dies.
+	authMu.Lock()
+	reLogin.nextAt = time.Time{}
+	authMu.Unlock()
 	logf("zhihu: %s login ok user=%s", via, user)
 	time.AfterFunc(successHoldMs, func() {
 		ui.mu.Lock()

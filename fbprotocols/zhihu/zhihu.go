@@ -30,6 +30,10 @@ const (
 	authCheckInterval     = 30 * time.Minute
 	dedupeExpiry          = 72 * time.Hour
 	reLoginCooldown       = 5 * time.Minute
+	// sessionProbeCooldown gates how soon a Ready session can be re-probed after
+	// the last successful probe; within it, a 200-HTML feed answer is treated as
+	// a risk-control shed instead of burning another /me call every tick.
+	sessionProbeCooldown = 2 * time.Minute
 )
 
 var (
@@ -280,7 +284,17 @@ func handleRoundErr(state *zhihuState, err error) {
 		// A 200-HTML answer is ambiguous: dead sessions and throttled-but-alive
 		// accounts are both shed to HTML. Probe the session instead of demoting
 		// blindly — a live session must not be paused "pending re-login" on
-		// every throttled tick.
+		// every throttled tick. A recently verified Ready session skips the
+		// redundant /me probe entirely (risk-control shed).
+		authMu.Lock()
+		recent := !lastProbeOK.IsZero() && time.Since(lastProbeOK) < sessionProbeCooldown
+		sinceProbe := time.Since(lastProbeOK).Round(time.Second)
+		authMu.Unlock()
+		if recent && AuthStatus() == AuthStatusReady {
+			log.Printf("zhihu: feed answer 200 html; session probed %s ago, treating as risk-control shed", sinceProbe)
+			pushError(err)
+			return
+		}
 		log.Printf("zhihu: feed answer 200 html; verifying session first (may be risk-control shed)")
 		ensureSession(time.Now(), false)
 		return
@@ -313,6 +327,7 @@ func ensureSession(now time.Time, force bool) {
 		if perr == nil {
 			authMu.Lock()
 			reLogin.nextAt = time.Time{}
+			lastProbeOK = time.Now()
 			authMu.Unlock()
 			return
 		}
@@ -355,6 +370,11 @@ func scheduleLogin(now time.Time, force bool) {
 var reLogin = struct {
 	nextAt time.Time
 }{}
+
+// lastProbeOK is the timestamp of the last successful session probe (guarded by
+// authMu); handleRoundErr uses it to skip re-probing a recently-verified Ready
+// session when the feed answers 200-HTML.
+var lastProbeOK time.Time
 
 func isSessionErr(err error) bool {
 	return errors.Is(err, ErrNotLoggedIn)

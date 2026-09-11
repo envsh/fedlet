@@ -268,6 +268,8 @@ func resetLoginGateway() {
 	authMu.Lock()
 	reLogin.nextAt = time.Time{}
 	lastAuthErr = nil
+	lastProbeOK = time.Time{}
+	meHTMLSheds = 0
 	authMu.Unlock()
 	ui.mu.Lock()
 	ui.active = false
@@ -930,7 +932,7 @@ func TestGetRaw401AnonymousDoesNotMarkInvalid(t *testing.T) {
 	}
 }
 
-func TestVerifySessionHTMLMapsErrNotLoggedIn(t *testing.T) {
+func TestVerifySessionHTMLShedTransientKeepsReady(t *testing.T) {
 	resetSessionCreds()
 	resetLoginGateway()
 	resetRateGate()
@@ -950,9 +952,49 @@ func TestVerifySessionHTMLMapsErrNotLoggedIn(t *testing.T) {
 	hc = stubClient(meURL, []byte("<html>login required</html>"), http.StatusOK, []byte("{}"))
 	defer func() { hc = oldHC }()
 
+	// A single shed is ambiguous and must not demote a ready session.
+	err := verifySession()
+	if !errors.Is(err, errUnverifiable) {
+		t.Fatalf("err=%v, want transient errUnverifiable", err)
+	}
+	if got := AuthStatus(); got != AuthStatusReady {
+		t.Fatalf("single HTML shed must keep the session ready, got %q", got)
+	}
+}
+
+func TestVerifySessionHTMLShedThresholdDemotes(t *testing.T) {
+	resetSessionCreds()
+	resetLoginGateway()
+	resetRateGate()
+	defer resetSessionCreds()
+
+	dir := t.TempDir()
+	oldPath := authFilePathFn
+	authFilePathFn = func() string { return dir + "/zhihu-auth.json" }
+	defer func() { authFilePathFn = oldPath }()
+
+	sess.mu.Lock()
+	sess.zC0 = "zc0-test"
+	sess.status = AuthStatusReady
+	sess.mu.Unlock()
+
+	oldHC := hc
+	hc = stubClient(meURL, []byte("<html>login required</html>"), http.StatusOK, []byte("{}"))
+	defer func() { hc = oldHC }()
+
+	// (meHTMLShedLimit-1) sheds stay transient; the limit-th shed demotes.
+	for i := 1; i < meHTMLShedLimit; i++ {
+		if err := verifySession(); !errors.Is(err, errUnverifiable) {
+			t.Fatalf("shed #%d err=%v, want transient errUnverifiable", i, err)
+		}
+	}
+	if got := AuthStatus(); got != AuthStatusReady {
+		t.Fatalf("shed #%d must keep the session ready, got %q", meHTMLShedLimit-1, got)
+	}
+
 	err := verifySession()
 	if !errors.Is(err, ErrNotLoggedIn) {
-		t.Fatalf("err=%v, want ErrNotLoggedIn", err)
+		t.Fatalf("limit shed err=%v, want ErrNotLoggedIn", err)
 	}
 	if got := AuthStatus(); got != AuthStatusInvalid {
 		t.Fatalf("status=%q, want invalid", got)

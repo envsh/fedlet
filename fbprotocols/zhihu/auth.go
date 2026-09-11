@@ -39,8 +39,9 @@ const (
 )
 
 const (
-	meURL     = "https://www.zhihu.com/api/v4/me"
-	qrBaseURL = "https://www.zhihu.com/api/v3/account/api/login/qrcode"
+	meURL           = "https://www.zhihu.com/api/v4/me"
+	meHTMLShedLimit = 3 // consecutive /me HTML sheds before the session demotes
+	qrBaseURL       = "https://www.zhihu.com/api/v3/account/api/login/qrcode"
 	// sendCodeURL / mobileLoginURL are the legacy (pre-2026) phone login
 	// endpoints. The 2026 web replaced them with the oauth/validate/sign_in/
 	// digits + oauth/sign_in/digits routes gated behind the encrypted-body +
@@ -62,6 +63,10 @@ type authFileJSON struct {
 var (
 	authMu      sync.Mutex
 	lastAuthErr error
+	// meHTMLSheds counts consecutive /me HTML-page answers. A single shed is a
+	// transient (risk-control) state and the session is kept; the session is
+	// only demoted once the threshold is reached.
+	meHTMLSheds int
 )
 
 // AuthStatus returns the current credential state: empty/ready/invalid.
@@ -107,9 +112,12 @@ func markSessionInvalid(err error) {
 	setAuthStatus(AuthStatusInvalid)
 }
 
+// clearAuthErr resets the recorded auth failure and the consecutive HTML-shed
+// counter; it runs whenever the session verifies OK again.
 func clearAuthErr() {
 	authMu.Lock()
 	lastAuthErr = nil
+	meHTMLSheds = 0
 	authMu.Unlock()
 }
 
@@ -137,10 +145,22 @@ func verifySession() error {
 			return err
 		}
 		if errors.Is(err, errUnverifiable) {
-			// /api/v4/me answered an HTML page: the session cannot be verified,
-			// so it is treated as expired and routed to the login gateway.
+			// /api/v4/me answered an HTML page. A single shed is ambiguous — dead
+			// sessions and throttled-but-alive accounts are both shed to HTML —
+			// so it is kept transient until the threshold, then routed to the
+			// login gateway.
+			authMu.Lock()
+			meHTMLSheds++
+			sheds := meHTMLSheds
+			authMu.Unlock()
+			if sheds < meHTMLShedLimit {
+				logf("zhihu: verify session: unverifiable html shed %d/%d, session kept (elapsed=%s)",
+					sheds, meHTMLShedLimit, time.Since(start).Round(time.Millisecond))
+				return fmt.Errorf("%w: /api/v4/me html shed %d/%d", errUnverifiable, sheds, meHTMLShedLimit)
+			}
 			markSessionInvalid(err)
-			logf("zhihu: verify session: unverifiable html (elapsed=%s)", time.Since(start).Round(time.Millisecond))
+			logf("zhihu: verify session: unverifiable html, demoted after %d sheds (elapsed=%s)",
+				sheds, time.Since(start).Round(time.Millisecond))
 			return ErrNotLoggedIn
 		}
 		logf("zhihu: verify session: %v (elapsed=%s)", err, time.Since(start).Round(time.Millisecond))
