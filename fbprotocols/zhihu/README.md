@@ -41,8 +41,14 @@ fedlet 的知乎接入协议。登录仪式对齐 **zly2006/zhihu-plus-plus(KMP,
    - 2026-09 联网实测:guest-init 被服务器接受(设备+HMAC 正确);100030 手机号
      格式错误、120001/120002 验证码无效、120005 重查重试等错误码已处理。
 - 所有登录 POST 带 `X-Xsrftoken`(取自真实 `_xsrf`,缺失则省略)。
+3. **Cookie 粘贴登录**(无需扫码/短信,浏览器手动获取):
+   - 获取路径:打开 zhihu.com 登录后,F12 → Application → Cookies → `zhihu.com` →
+     复制 `z_c0`(必填)、`_xsrf`(必填)、`d_c0`(可选)。
+   - 登录 UI 页面底部提供「Cookie 登录」输入框与获取说明;输入后经 `/api/v4/me`
+     校验即写入会话。
+   - 有效期约 30 天;有有效 `z_c0` 时可静默续期。
 - 会话持久化 `~/.config/fedlet/zhihu-auth.json`(0600);状态 `AuthStatus()` =
-  empty / ready / invalid。
+  empty / ready / invalid;`login_method` 字段记录登录方式(qr/phone/cookie)。
 - **过期检测**(双通道):
   - 主动:登录成功后校验一次,此后每 30 分钟用 `/api/v4/me` 轻量探测;
   - 被动:任何登录态请求 401 / `code 101` → 立即判过期;
@@ -124,7 +130,7 @@ sign.go         zse-96 Go 移植(参考 zhihu_sign_rs, AGPL)
 encryptor.go    BMV 加密体 Go 移植(PROTOCOL_DATA / 10 轮 / HMAC-SHA1,参考 zhihu++ Android)
 phonelogin.go   Android 手机号登录客户端(guest init / captcha / digits / sign_in)
 auth.go         登录 API(二维码 + 手机验证码)、会话持久化、过期检测
-loginsrv.go     自包含登录 UI(随机端口 / 127.0.0.1 / openurl / 用完即退)
+loginsrv.go     自包含登录 UI(随机端口 / 127.0.0.1 / openurl / 用完即退 / Cookie 粘贴登录)
 hotlist.go      热榜拉取与字段提取(title_area/excerpt_area/metrics_area/link)
 notify.go       通知拉取
 zhihu_test.go   离线单测(签名确定性/来源串、解析、去重、AuthStatus、登录门禁)

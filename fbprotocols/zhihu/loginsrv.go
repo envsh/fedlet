@@ -10,6 +10,7 @@ package zhihu
 //   - QR scan (auto-started: token, poll scan_info, capture z_c0)
 //   - phone + verify code (Android account protocol on api.zhihu.com:
 //     encrypted body, optional picture captcha, SMS, then cookie mapping)
+//   - Cookie paste (user copies z_c0/_xsrf from browser DevTools)
 //
 // QR is the primary route and mirrors the zhihu-plus-plus ceremony. When the
 // poll hits the 403/40352 network risk-control gate the page surfaces the
@@ -27,6 +28,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -284,6 +286,44 @@ func startLoginUI() (string, error) {
 			writeJSONMap(w, map[string]any{"ok": false, "error": "登录请求超时(知乎侧无响应),请重试"})
 		}
 	})
+	mux.HandleFunc("/api/cookie", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ZC0  string `json:"z_c0"`
+			XSRF string `json:"_xsrf"`
+			DC0  string `json:"d_c0"`
+		}
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		req.ZC0 = strings.TrimSpace(req.ZC0)
+		req.XSRF = strings.TrimSpace(req.XSRF)
+		if req.ZC0 == "" || req.XSRF == "" {
+			writeJSONMap(w, map[string]any{"ok": false, "error": "z_c0 和 _xsrf 为必填项"})
+			return
+		}
+		sess.mu.Lock()
+		sess.zC0 = req.ZC0
+		sess.xsrf = req.XSRF
+		if req.DC0 != "" {
+			sess.dC0 = strings.TrimSpace(req.DC0)
+			sess.dC0Real = true
+		}
+		sess.mu.Unlock()
+		if err := verifySession(); err != nil {
+			ls.set(stageFailed, err.Error())
+			writeJSONMap(w, map[string]any{"ok": false, "error": "Cookie 无效或已过期: " + err.Error()})
+			return
+		}
+		saveAuth()
+		finalizeLogin(ls, "cookie")
+		writeJSONMap(w, map[string]any{"ok": true, "user": AuthUser()})
+	})
 
 	srv := &http.Server{Handler: mux}
 	go func() {
@@ -519,6 +559,10 @@ func finalizeLogin(ls *loginState, via string) {
 	ls.stage = stageDone
 	ls.user = user
 	ls.mu.Unlock()
+	sess.mu.Lock()
+	sess.loginMethod = via
+	sess.mu.Unlock()
+	saveAuth()
 	// A successful login means a fresh verified session: clear the re-login
 	// cooldown so the gateway can react immediately if the new session dies.
 	authMu.Lock()
@@ -612,6 +656,7 @@ h1{font-size:1.3rem}
 .qrimg{width:220px;height:220px;border:1px solid #eee;border-radius:8px}
 input{padding:.5rem;width:100%;box-sizing:border-box;margin:.3rem 0;border:1px solid #ccc;border-radius:6px}
 button{padding:.55rem 1.4rem;border:0;border-radius:6px;background:#0d69d5;color:#fff;cursor:pointer;margin-top:.5rem}
+button.blue{background:#0d69d5}
 #state{font-weight:600}
 .err{color:#b00020}
 pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;border-radius:6px}
@@ -649,6 +694,30 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
   <button id="verifybtn" onclick="doVerify()">登录</button>
 </div>
 <p id="phonemsg" class="err" style="display:none;white-space:pre-wrap"></p>
+</div>
+<div class="card">
+<h2>Cookie 登录(从浏览器复制)</h2>
+<details>
+<summary style="cursor:pointer;color:#0d69d5">点击展开:获取方法</summary>
+<ol style="font-size:.9rem;color:#555;line-height:1.6">
+<li>电脑浏览器打开 <b>zhihu.com</b> 并登录</li>
+<li>F12 打开开发者工具 → <b>Application</b> → <b>Cookies</b> → <code>zhihu.com</code></li>
+<li>找到并复制以下字段的值:</li>
+<ul>
+<li><b>z_c0</b>(必填) — 登录会话令牌</li>
+<li><b>_xsrf</b>(必填) — CSRF 令牌</li>
+<li><b>d_c0</b>(可选) — 访客令牌</li>
+</ul>
+<li>注意:z_c0 有效期约 30 天,过期后需重新获取</li>
+</ol>
+</details>
+<div id="cookieform">
+  <input id="cookie_zc0" type="text" placeholder="z_c0(必填)" autocomplete="off">
+  <input id="cookie_xsrf" type="text" placeholder="_xsrf(必填)" autocomplete="off">
+  <input id="cookie_dc0" type="text" placeholder="d_c0(可选)" autocomplete="off">
+  <button class="blue" onclick="cookieLogin()">使用 Cookie 登录</button>
+</div>
+<p id="cookiemsg" class="err" style="display:none;white-space:pre-wrap"></p>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -707,6 +776,20 @@ async function qrRetry(){
     const r=await fetch('/api/qrstart',{method:'POST'});const j=await r.json();
     if(!j.ok){ $('state').textContent='重试失败: '+(j.error||'未知错误'); $('failed').style.display=''; $('failed').textContent=j.error||'未知错误'; }
   }catch(e){ $('failed').style.display=''; $('failed').textContent='重试失败'; }
+}
+async function cookieLogin(){
+  const z_c0=$('cookie_zc0').value.trim(),_xsrf=$('cookie_xsrf').value.trim(),d_c0=$('cookie_dc0').value.trim();
+  const msg=$('cookiemsg'); msg.style.display='none';
+  if(!z_c0||!_xsrf){ msg.style.display=''; msg.textContent='z_c0 和 _xsrf 为必填项'; return; }
+  try{
+    const r=await fetch('/api/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({z_c0,_xsrf,d_c0})});
+    const j=await r.json();
+    if(j.ok){
+      $('cookieform').style.display='none'; msg.style.display='none';
+      $('qrbox').style.display='none'; $('phoneform').style.display='none'; $('codeform').style.display='none'; $('captchaform').style.display='none';
+      $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||'';
+    } else { msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+j.error; }
+  }catch(e){ msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+(e&&e.message||'网络错误'); }
 }
 </script>
 </body>

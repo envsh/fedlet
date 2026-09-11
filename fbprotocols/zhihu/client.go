@@ -106,22 +106,23 @@ const dc0Alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 // token, present anonymous and feeding the signature) plus the login session
 // z_c0 / _xsrf when authenticated.
 type webSession struct {
-	mu         sync.RWMutex
-	dC0        string
-	zC0        string
-	xsrf       string
-	zap        string
-	qC1        string
-	capsion    string
-	capSession string // captcha_session_v2: the 2026 login ticket from captcha/v2
-	bec        string // BEC: AB-test cookie set on every page; zhihu++ jar forwards it
-	secTok     string // sec_token: anti-bot 302 beacon — presence ⇒ env verification required
-	qC1Real    bool   // q_c1 came from the server (/udid) rather than the newQC1() fallback
-	dC0Real    bool   // d_c0 was issued by zhihu (Set-Cookie) rather than the newDC0() bootstrap
-	qrGate     int    // 3xx recorded at an /account/unhuman redirect hop ⇒ QR begin skipped
-	qrRiskURL  string // the /account/unhuman verification URL the user must open
-	user       string
-	status     string
+	mu          sync.RWMutex
+	dC0         string
+	zC0         string
+	xsrf        string
+	zap         string
+	qC1         string
+	capsion     string
+	capSession  string // captcha_session_v2: the 2026 login ticket from captcha/v2
+	bec         string // BEC: AB-test cookie set on every page; zhihu++ jar forwards it
+	secTok      string // sec_token: anti-bot 302 beacon — presence ⇒ env verification required
+	qC1Real     bool   // q_c1 came from the server (/udid) rather than the newQC1() fallback
+	dC0Real     bool   // d_c0 was issued by zhihu (Set-Cookie) rather than the newDC0() bootstrap
+	qrGate      int    // 3xx recorded at an /account/unhuman redirect hop ⇒ QR begin skipped
+	qrRiskURL   string // the /account/unhuman verification URL the user must open
+	user        string
+	status      string
+	loginMethod string
 }
 
 var sess = &webSession{dC0: newDC0(), status: AuthStatusEmpty}

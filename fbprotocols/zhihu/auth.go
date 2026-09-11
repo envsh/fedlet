@@ -53,11 +53,12 @@ const (
 
 // authFileJSON is the persisted credential shape in zhihu-auth.json.
 type authFileJSON struct {
-	DC0    string `json:"d_c0"`
-	ZC0    string `json:"z_c0,omitempty"`
-	XSRF   string `json:"_xsrf,omitempty"`
-	User   string `json:"user,omitempty"`
-	Status string `json:"status"`
+	DC0         string `json:"d_c0"`
+	ZC0         string `json:"z_c0,omitempty"`
+	XSRF        string `json:"_xsrf,omitempty"`
+	User        string `json:"user,omitempty"`
+	Status      string `json:"status"`
+	LoginMethod string `json:"login_method,omitempty"`
 }
 
 var (
@@ -485,6 +486,7 @@ func applyAuthFile(f authFileJSON) {
 		sess.dC0 = f.DC0
 	}
 	sess.user = f.User
+	sess.loginMethod = f.LoginMethod
 	if f.Status == AuthStatusInvalid {
 		sess.zC0 = ""
 		sess.xsrf = ""
@@ -503,11 +505,12 @@ func applyAuthFile(f authFileJSON) {
 func saveAuth() {
 	sess.mu.RLock()
 	f := authFileJSON{
-		DC0:    sess.dC0,
-		ZC0:    sess.zC0,
-		XSRF:   sess.xsrf,
-		User:   sess.user,
-		Status: sess.status,
+		DC0:         sess.dC0,
+		ZC0:         sess.zC0,
+		XSRF:        sess.xsrf,
+		User:        sess.user,
+		Status:      sess.status,
+		LoginMethod: sess.loginMethod,
 	}
 	sess.mu.RUnlock()
 	data, err := json.MarshalIndent(f, "", "  ")
