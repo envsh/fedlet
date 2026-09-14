@@ -3,8 +3,8 @@ package emailimap
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/xml"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
@@ -446,10 +446,10 @@ func poll(username, password, server string, dirs []string) {
 				if err := publish(m); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
-			um, ok := m.toUnified(b)
-			if ok {
-				publish(um)
-			}
+				um, ok := m.toUnified(b)
+				if ok {
+					publish(um)
+				}
 			}
 			log.Printf("emailimap: %s: %d messages", dir, len(msgs))
 
@@ -536,9 +536,9 @@ func poll(username, password, server string, dirs []string) {
 			log.Printf("emailimap: poll %s: maxUID=%d", dir, maxUID)
 			saveState(state)
 
-		for _, m := range msgs {
-			log.Printf("emailimap: %s: UID=%s subject=%q bodyLen=%d", dir, m.ID, m.Subject, len(m.BodyPreview))
-		}
+			for _, m := range msgs {
+				log.Printf("emailimap: %s: UID=%s subject=%q bodyLen=%d", dir, m.ID, m.Subject, len(m.BodyPreview))
+			}
 		}
 	}
 }
@@ -674,8 +674,8 @@ type ispdbServer struct {
 }
 
 type ispdbIncoming struct {
-	Type    string       `xml:"type,attr"`
-	Server  ispdbServer  `xml:",innerxml"`
+	Type   string      `xml:"type,attr"`
+	Server ispdbServer `xml:",innerxml"`
 }
 
 type ispdbConfig struct {
@@ -749,7 +749,8 @@ func deriveFrom(username string) string {
 	return username + "@unknown"
 }
 
-func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	if to == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("emailimap: empty to or message")
 	}
@@ -822,19 +823,23 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }

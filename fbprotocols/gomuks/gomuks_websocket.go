@@ -21,7 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-/////
+// ///
 func publish(v any) error {
 	if pubfn_ == nil {
 		return fmt.Errorf("pubfn not set")
@@ -117,7 +117,7 @@ func poll_gomuks() {
 		muGomuks.Unlock()
 
 		header := http.Header{}
-		header.Set("Cookie", "gomuks_auth=" + token)
+		header.Set("Cookie", "gomuks_auth="+token)
 
 		u := fmt.Sprintf("ws://%s/_gomuks/websocket", gomuksHost)
 		if gomuksRunID != "" && lastRecvNegID.Load() < 0 {
@@ -141,7 +141,7 @@ func poll_gomuks() {
 			}
 			time.Sleep(5 * time.Second)
 			continue
-			}
+		}
 
 		muGomuks.Lock()
 		gomuksConn = c
@@ -184,7 +184,9 @@ func doGomuksAuth(authHeader string) string {
 		return ""
 	}
 
-	var ar struct{ Token string `json:"token"` }
+	var ar struct {
+		Token string `json:"token"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
 		log.Println("auth decode error:", err)
 		pushError(err)
@@ -415,8 +417,36 @@ func sendGomuksUpload(filedata []byte, fileinfo *fbshared.MediaDataInfo) (json.R
 	return content, nil
 }
 
-func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func gomuksSendData(roomID, msg string, base map[string]any, extra *fbshared.SendExtra) map[string]any {
+	data := map[string]any{
+		"room_id": roomID,
+		"text":    msg,
+	}
+	if len(base) > 0 {
+		data["base_content"] = base
+	}
+	if extra != nil {
+		if len(extra.Mentions) > 0 {
+			data["mentions"] = map[string]any{"user_ids": extra.Mentions}
+		}
+		if len(extra.RelatesTo) > 0 {
+			target := extra.RelatesTo[0]
+			if len(extra.RelatesTo) > 1 {
+				log.Printf("gomuks: Send: reply supports single target, first=%q extra=%v ignored", target, extra.RelatesTo[1:])
+			}
+			data["relates_to"] = map[string]any{
+				"m.in_reply_to": map[string]any{"event_id": target},
+			}
+		}
+	}
+	return data
+}
+
+func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
 	log.Printf("gomuks: Send roomID=%q msg=%q msgType=%q", roomID, msg, msgType)
+	if extra != nil && (len(extra.RelatesTo) > 0 || len(extra.Mentions) > 0) {
+		log.Printf("gomuks: Send extra relates_to=%v mentions=%v", extra.RelatesTo, extra.Mentions)
+	}
 	if roomID == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("gomuks: empty roomID or message")
 	}
@@ -448,11 +478,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 		cmd := map[string]any{
 			"command":    "send_message",
 			"request_id": seq,
-			"data": map[string]any{
-				"room_id":      roomID,
-				"text":         msg,
-				"base_content": mapped,
-			},
+			"data":       gomuksSendData(roomID, msg, mapped, extra),
 		}
 		data, _ := json.Marshal(cmd)
 
@@ -496,10 +522,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 	cmd := map[string]any{
 		"command":    "send_message",
 		"request_id": seq,
-		"data": map[string]any{
-			"room_id": roomID,
-			"text":    msg,
-		},
+		"data":       gomuksSendData(roomID, msg, nil, extra),
 	}
 	data, err := json.Marshal(cmd)
 	if err != nil {
@@ -630,19 +653,23 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }

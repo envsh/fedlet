@@ -23,9 +23,9 @@ func publish(v any) error {
 }
 
 var (
-	pubfn_  func([]byte) error
-	muIrc   sync.Mutex
-	ircClient    *Client
+	pubfn_        func([]byte) error
+	muIrc         sync.Mutex
+	ircClient     *Client
 	ircSessionKey string
 )
 
@@ -494,19 +494,23 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }
@@ -546,7 +550,8 @@ func irccloudMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool) {
 	return um, true
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	if to == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("irccloud: empty to or message")
 	}

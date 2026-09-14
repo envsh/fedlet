@@ -110,14 +110,14 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 						}
 					}
 				}
-			if err := publish(json.RawMessage(event.Data)); err != nil {
-				log.Printf("irclounge: publish error: %v", err)
-				pushError(err)
-			}
-			um, ok := loungeMsgToUnified(event.Data)
-			if ok {
-				publish(um)
-			}
+				if err := publish(json.RawMessage(event.Data)); err != nil {
+					log.Printf("irclounge: publish error: %v", err)
+					pushError(err)
+				}
+				um, ok := loungeMsgToUnified(event.Data)
+				if ok {
+					publish(um)
+				}
 
 			case "init":
 				log.Println("irclounge: initial state loaded, parsing...")
@@ -172,10 +172,10 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 							joinedMu.Unlock()
 							if !already {
 								log.Printf("irclounge: joining channel %s", ch)
-							if err := client.Join(ch); err != nil {
-								log.Printf("irclounge: join %s error: %v", ch, err)
-								pushError(err)
-							}
+								if err := client.Join(ch); err != nil {
+									log.Printf("irclounge: join %s error: %v", ch, err)
+									pushError(err)
+								}
 								joinedMu.Lock()
 								joinedSet[ch] = true
 								joinedMu.Unlock()
@@ -216,7 +216,8 @@ func pollLounge(server, auth, joinChannels, networkCfg string) {
 	}
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	if to == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("irclounge: empty target or message")
 	}
@@ -250,19 +251,23 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }

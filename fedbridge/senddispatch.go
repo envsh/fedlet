@@ -25,6 +25,7 @@ type forwardReq struct {
 	MsgType  string                  `json:"msgType"`
 	Filedata []byte                  `json:"filedata,omitempty"`
 	FileInfo *fbshared.MediaDataInfo `json:"fileinfo,omitempty"`
+	Extra    *fbshared.SendExtra     `json:"extra,omitempty"`
 }
 
 // DispatchSend 按联系人类型分发消息。
@@ -35,12 +36,16 @@ type forwardReq struct {
 //	msgType:  传给 sender 的消息类型参数（后端用它做更细分的路由，如旧 tox API 区分 friend/conference/group）
 //	filedata: 文件字节流，nil 表示纯文本
 //	fileinfo: 文件元信息，nil 表示无附件
-func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+//	extra:    可选扩展参数（relates_to/mentions 等），nil 表示无
+func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
 	info, ok := ctypeRegistry[ctype]
 	log.Printf("senddispatch: ctype=%q to=%q msg=%q ok=%v canSend=%v",
 		ctype, to, msg, ok, ok && info.Capacities.CanSend)
+	if extra != nil && (len(extra.RelatesTo) > 0 || len(extra.Mentions) > 0) {
+		log.Printf("senddispatch: extra relates_to=%v mentions=%v", extra.RelatesTo, extra.Mentions)
+	}
 	if !ok {
-		req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo}
+		req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo, Extra: extra}
 		data, _ := json.Marshal(req)
 		log.Printf("senddispatch: forwardReq=%s", data)
 		return fbshared.SendResult{}, fmt.Errorf("senddispatch: no local sender for %q", ctype)
@@ -50,14 +55,14 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 		log.Printf("sendbr: protocol=%q running=%v connected=%v reconn=%d errs=%d",
 			info.Name, st.Running, st.ConnectedSince, st.ReconnTimes, len(st.LastErrs))
 		if !st.Running || (st.Running && st.ConnectedSince.IsZero()) {
-			req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo}
+			req := forwardReq{Cmd: "forward", Ctype: ctype, To: to, Msg: msg, MsgType: msgType, Filedata: filedata, FileInfo: fileinfo, Extra: extra}
 			data, _ := json.Marshal(req)
 			log.Printf("sendbr: backend %q not ready (running=%v connected=%v), forwardReq=%s",
 				info.Name, st.Running, st.ConnectedSince, data)
 			return fbshared.SendResult{}, fmt.Errorf("sendbr: backend %q not ready!!!", ctype)
 		}
 	}
-	res, err := info.SendFn(to, msg, msgType, filedata, fileinfo)
+	res, err := info.SendFn(to, msg, msgType, filedata, fileinfo, extra)
 	log.Printf("senddispatch: ctype=%q msgid=%q result=%v", ctype, res.MsgID, err)
 	return res, err
 }
@@ -164,7 +169,7 @@ func ForeachRedact(ctype, to, msgID, reason string) error {
 
 // return when first success
 // maybe infinite msgs !!!
-func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) error {
+func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) error {
 	var err0 error
 	btime := time.Now()
 	pl := getPeerList()
@@ -182,6 +187,14 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 		w.WriteField("id", to)
 		w.WriteField("message", msg)
 		w.WriteField("ttl", "1") // cutoff infinite loop send, used in handleMessageSend
+		if extra != nil {
+			if len(extra.RelatesTo) > 0 {
+				w.WriteField("relates_to", strings.Join(extra.RelatesTo, ","))
+			}
+			if len(extra.Mentions) > 0 {
+				w.WriteField("mentions", strings.Join(extra.Mentions, ","))
+			}
+		}
 		if len(filedata) > 0 {
 			filename := "file"
 			if fileinfo != nil && fileinfo.Filename != "" {

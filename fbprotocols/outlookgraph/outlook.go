@@ -35,7 +35,8 @@ func publish(v any) error {
 
 var globalClientID string
 
-func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	ctx := context.Background()
 	token, err := getToken(ctx, globalClientID)
 	if err != nil {
@@ -55,7 +56,9 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	if resp.StatusCode != 201 {
 		return fbshared.SendResult{}, fmt.Errorf("outlook send: create draft: HTTP %d: %s", resp.StatusCode, string(body))
 	}
-	var draft struct{ ID string `json:"id"` }
+	var draft struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(body, &draft)
 	log.Printf("outlook send: created draft ID=%s", draft.ID)
 
@@ -145,13 +148,13 @@ type deltaPage struct {
 }
 
 type rawMsg struct {
-	ID               string `json:"id"`
-	Removed          *struct{} `json:"@removed,omitempty"`
-	Subject          *string   `json:"subject"`
+	ID      string    `json:"id"`
+	Removed *struct{} `json:"@removed,omitempty"`
+	Subject *string   `json:"subject"`
 	// 服务端限制:官方文档定义 bodyPreview = message body 的前 255 个字符(纯文本格式)。这是微软侧的硬截断,无法用该字段拿到完整正文(已由官方文档 + SO 实证确认)。
-	BodyPreview      *string   `json:"bodyPreview"`
-	ReceivedDateTime *string   `json:"receivedDateTime"`
-	HasAttachments   *bool     `json:"hasAttachments"`
+	BodyPreview      *string `json:"bodyPreview"`
+	ReceivedDateTime *string `json:"receivedDateTime"`
+	HasAttachments   *bool   `json:"hasAttachments"`
 	Body             *struct {
 		Content     *string `json:"content"`
 		ContentType *string `json:"contentType"`
@@ -161,7 +164,7 @@ type rawMsg struct {
 		Value string `json:"value"`
 	} `json:"singleValueExtendedProperties,omitempty"`
 	Size int64 `json:"size,omitempty"`
-	From             *struct {
+	From *struct {
 		EmailAddress *struct {
 			Address *string `json:"address"`
 		} `json:"emailAddress"`
@@ -525,10 +528,10 @@ func poll(cfg Config) {
 				if err := publish(m); err != nil {
 					log.Println("outlook: publish error:", err)
 				}
-			um, ok := m.toUnified(b)
-			if ok {
-				publish(um)
-			}
+				um, ok := m.toUnified(b)
+				if ok {
+					publish(um)
+				}
 			}
 			if len(msgs) > 0 {
 				log.Printf("outlook: %s: %d new messages", folders[i].Name, len(msgs))
@@ -555,24 +558,30 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func AuthStatus() string {
 	v := statusAuthStatus.Load()
-	if v == nil { return "" }
+	if v == nil {
+		return ""
+	}
 	return v.(string)
 }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }

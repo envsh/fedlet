@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -399,6 +400,31 @@ func handleSwitchPeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"peer": simPeer})
 }
 
+// 拆分逗号分隔字符串：去空白、弃空串
+func splitCommaCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// dumpSendForm 打印 /api/messages/send 收到的完整 form，便于发现客户端多传而未被解析的字段。
+func dumpSendForm(r *http.Request) {
+	var keys []string
+	for k := range r.Form {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, r.Form[k]))
+	}
+	log.Printf("toxrestsim: POST /api/messages/send form{%d} %s", len(keys), strings.Join(parts, " "))
+}
+
 // POST /api/messages/send
 func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -421,7 +447,11 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 			fileName = header.Filename
 			file.Close()
 		}
+	} else {
+		_ = r.ParseForm()
 	}
+
+	dumpSendForm(r) // 每次 POST 都打印完整 form，便于发现客户端多传而未解析的字段
 
 	if len(fileData) > maxFileSize {
 		writeErr(w, "file too large (max 5MB)", http.StatusRequestEntityTooLarge)
@@ -438,6 +468,19 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	idStr := r.FormValue("id")
 	message := r.FormValue("message")
 	sendTTL := r.FormValue("ttl") // foreachSend ttl+1
+
+	var extra *fbshared.SendExtra
+	if strings.TrimSpace(r.FormValue("relates_to")) != "" ||
+		strings.TrimSpace(r.FormValue("mentions")) != "" {
+		extra = &fbshared.SendExtra{
+			RelatesTo: splitCommaCSV(r.FormValue("relates_to")),
+			Mentions:  splitCommaCSV(r.FormValue("mentions")),
+		}
+	}
+	var rt, mt []string
+	if extra != nil {
+		rt, mt = extra.RelatesTo, extra.Mentions
+	}
 
 	if message == "" && len(fileData) > 0 {
 		message = fileName
@@ -464,20 +507,19 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	simEvents = append(simEvents, e)
 	simMu.Unlock()
 
-	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q file=%q event_id=%d",
-		chatType, idStr, message, fileName, e.ID)
+	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q file=%q event_id=%d relates_to=%v mentions=%v",
+		chatType, idStr, message, fileName, e.ID, rt, mt)
 
-	res, err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo)
+	res, err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo, extra)
 	if err != nil {
 		log.Printf("toxrestsim: dispatch send error: ttl=%v %v", sendTTL, err)
 
 		// retry ForeachSend
 		// TODO maybe infinite msgs!!!
-		if (sendTTL == "" || sendTTL == "0") && (
-			strings.Contains(err.Error(), "not connected") ||
+		if (sendTTL == "" || sendTTL == "0") && (strings.Contains(err.Error(), "not connected") ||
 			// 当前运行二进制未编译相应的模块
 			strings.Contains(err.Error(), "no local sender for")) {
-			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo)
+			err = ForeachSend(chatType, idStr, message, chatType, fileData, fileInfo, extra)
 			if err != nil {
 				log.Printf("toxrestsim: foreach send error: %v", err)
 			}
@@ -523,8 +565,7 @@ func handleMessageRedact(w http.ResponseWriter, r *http.Request) {
 		log.Printf("toxrestsim: dispatch redact error: ttl=%v type=%q id=%q message_id=%q reason=%q %v",
 			redactTTL, chatType, idStr, msgID, reason, err)
 
-		if (redactTTL == "" || redactTTL == "0") && (
-			strings.Contains(err.Error(), "not connected") ||
+		if (redactTTL == "" || redactTTL == "0") && (strings.Contains(err.Error(), "not connected") ||
 			// 当前运行二进制未编译相应的模块
 			strings.Contains(err.Error(), "no local sender for")) {
 			err = ForeachRedact(chatType, idStr, msgID, reason)

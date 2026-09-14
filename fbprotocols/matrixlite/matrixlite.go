@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	pubfn_   func(any) error
-	muClient sync.Mutex
+	pubfn_    func(any) error
+	muClient  sync.Mutex
 	curClient *Client
 )
 
@@ -114,10 +114,10 @@ func pollLoop(baseURL, token, user, password string) {
 					if err := publish(m); err != nil {
 						log.Printf("matrixlite: publish error: %v", err)
 					}
-				um, ok := matrixEventToUnified(m, data)
-				if ok {
-					publish(um)
-				}
+					um, ok := matrixEventToUnified(m, data)
+					if ok {
+						publish(um)
+					}
 				}
 				continue
 			}
@@ -290,24 +290,29 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }
 
-func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	if roomID == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("matrixlite: empty roomID or message")
 	}

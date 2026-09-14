@@ -16,7 +16,7 @@ import (
 	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
-/////
+// ///
 func publish(v any) error {
 	if pubfn_ == nil {
 		return fmt.Errorf("pubfn not set")
@@ -64,7 +64,7 @@ func poll_toxrest() {
 		},
 	}
 
-	for cnter := 0;; cnter++ {
+	for cnter := 0; ; cnter++ {
 		u, err := url.Parse(toxrest_url)
 		if err != nil {
 			log.Println("url parse error:", err)
@@ -188,12 +188,14 @@ func sendToOldAPI(to, msg, msgType string) (int, []byte, error) {
 }
 
 // Send 发送消息到 toxhttpd。
-//   to:      好友/会议/群组数字 ID
-//   msg:     消息正文
-//   msgType: 联系人类型常量（"unktox_friend"/"unktox_conference"/"unktox_group"），
-//            新 API 直接 POST /api/messages/send?type={msgType}&id={to}&message={msg}，
-//            404 时 fallback 到旧 API，按 msgType 映射到不同端点和参数名
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (fbshared.SendResult, error) {
+//
+//	to:      好友/会议/群组数字 ID
+//	msg:     消息正文
+//	msgType: 联系人类型常量（"unktox_friend"/"unktox_conference"/"unktox_group"），
+//	         新 API 直接 POST /api/messages/send?type={msgType}&id={to}&message={msg}，
+//	         404 时 fallback 到旧 API，按 msgType 映射到不同端点和参数名
+func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+	_ = extra
 	if to == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: empty to or message")
 	}
@@ -220,7 +222,9 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (
 			return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: fallback status %d: %s",
 				code, strings.TrimSpace(string(fbBody)))
 		}
-		var fbResult struct{ Error string `json:"error"` }
+		var fbResult struct {
+			Error string `json:"error"`
+		}
 		if json.Unmarshal(fbBody, &fbResult) == nil && fbResult.Error != "" {
 			return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: fallback: %s", fbResult.Error)
 		}
@@ -231,7 +235,9 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo) (
 		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: status %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var result struct{ Error string `json:"error"` }
+	var result struct {
+		Error string `json:"error"`
+	}
 	if json.Unmarshal(body, &result) == nil && result.Error != "" {
 		return fbshared.SendResult{}, fmt.Errorf("toxoverhttp: %s", result.Error)
 	}
@@ -255,19 +261,23 @@ func pushError(err error) {
 	statusLastErrsMu.Unlock()
 }
 
-func IsRunning() bool         { return statusRunning.Load() }
+func IsRunning() bool { return statusRunning.Load() }
 func ConnectedSince() time.Time {
 	v := statusConnectedSince.Load()
-	if v == nil { return time.Time{} }
+	if v == nil {
+		return time.Time{}
+	}
 	return v.(time.Time)
 }
-func ReconnTimes() int64      { return statusReconnTimes.Load() }
+func ReconnTimes() int64 { return statusReconnTimes.Load() }
 func LastErrs() []error {
 	statusLastErrsMu.Lock()
 	defer statusLastErrsMu.Unlock()
 	var out []error
 	for _, e := range statusLastErrs {
-		if e != nil { out = append(out, e) }
+		if e != nil {
+			out = append(out, e)
+		}
 	}
 	return out
 }
