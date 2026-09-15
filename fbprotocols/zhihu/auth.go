@@ -124,8 +124,9 @@ func clearAuthErr() {
 
 // meResp is the /api/v4/me identity envelope.
 type meResp struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	UrlToken string `json:"url_token"`
 }
 
 // verifySession checks the stored z_c0 against /api/v4/me and refreshes the

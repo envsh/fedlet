@@ -10,6 +10,16 @@ fedlet 的小红书接入协议(web 端 xhs.pc 协议 + xhshow 0.2.0 签名算�
 - **通知事件**(评论/@、赞/收藏、新增关注):拉取三个登录态流
   (`GET /api/sns/web/v1/you/mentions|likes|connections`),按 `kind:id` 去重,**仅发布新事件**;
   轮询默认 60s。**需真实登录**。未读数 `GET /api/sns/web/unread_count`。
+- **收藏**:读本人收藏(`GET /api/sns/web/v2/note/collect/page?user_id=&num=30&cursor=`,
+  需真实登录 + 本人 `user_id`,签名头参与),按 `note_id` 去重,**仅发布新收藏**;
+  轮询默认 1800s;首次静默播种。`user_id` 取自 verifySession 的 `/api/sns/web/v2/user/me`
+  (`AuthUserID()` 缓存)。
+- **浏览历史**:**无公开/已逆出的获取接口**。2026-09 全网复核非官方接口目录无一提供足迹
+  读取端点:Rnote/RedNote(24+ 个 APP 端逆向端点,含"用户收藏列表")、ReaJason/xhs
+  (web 端最全,`core.py` 仅 `metrics_report` **上报**无列表)、jackwener xiaohongshu-cli、
+  MediaCrawler 等均无;平台侧产品亦无访客/浏览记录(曾内测即关),APP 搜索框"最近看过/
+  足迹"为**设备本地**缓存非服务端数据。以占位 kind `xhs_history` 注册、`FetchHistory()` 返回
+  `ErrHistoryUnsupported`,**不入轮询**。
 - 去重状态持久化 `~/.config/fedlet/xhs-state.json`(72h 过期收割)。
 
 ## 认证(二维码 + 手机验证码,双通道对齐 jackwener / PeanutSplash 客户端)
@@ -79,7 +89,9 @@ fedlet 的小红书接入协议(web 端 xhs.pc 协议 + xhshow 0.2.0 签名算�
 | 热榜端点 | `POST /api/sns/web/v1/homefeed` `category=homefeed.fashion_v3`(guest 会话即可) | jackwener/xiaohongshu-cli `get_hot_feed`(2026-06);payload 逐字段对齐 |
 | 热榜字段 | `data.items[].note_card.display_title` / `interact_info`(赞/藏/评)/ `user`;链接 `explore/<note_id>` | jackwener 客户端解析 + 容忍回退;待真实会话回填 |
 | 通知端点 | `GET /api/sns/web/unread_count`;`GET /api/sns/web/v1/you/mentions\|likes\|connections`(num,cursor) | jackwener `get_notification_*`(2026-06);字段 待实测回填(容错) |
-| 身份校验 | `GET /api/sns/web/v2/user/me` | jackwener `get_user_me`;guest=true 判游客 |
+| 身份校验 | `GET /api/sns/web/v2/user/me`(guest=true 判游客) | jackwener `get_user_me`;guest=true 判游客 |
+| 收藏端点 | `GET /api/sns/web/v2/note/collect/page?user_id=&num=30&cursor=`(需真实登录 + 本人 user_id;参数参与签名) | ReaJason/xhs `core.py` 收藏分页实现;user_id 自 `/api/sns/web/v2/user/me`;字段(display_title/cover/user/interact_info)按 jackwener 结构容错;待真实会话回填 |
+| 浏览历史 | 无公开/已逆出获取接口 | 2026-09 全网复核:Rnote(24+ APP 端点目录)/ReaJason/xhs(`core.py` 仅 metrics_report 上报)/jackwener xiaohongshu-cli/MediaCrawler 均无足迹读取端点;平台无访客/浏览记录产品,搜索框历史为设备本地。占位 kind `xhs_history` + `ErrHistoryUnsupported` |
 | 二维码创建 | `POST /api/sns/web/v1/login/qrcode/create {"qr_type":1}` | jackwener jw_qr_login.py + PeanutSplash pc_login_apis.py 双源 |
 | 二维码轮询 | `POST /api/qrcode/userinfo {"qrId","code"}` codeStatus 0/1/2/3 | 同上 |
 | 二维码完成 | `GET /api/sns/web/v1/login/qrcode/status {qr_id,code}` 取 session | jackwener + PeanutSplash(双源) |
@@ -103,6 +115,9 @@ captcha.go      风控:redcaptcha register / 二次验证二维码 / DES 解密�
 loginsrv.go     自包含登录 UI + 风控面板(随机端口 / 127.0.0.1 / openurl / 用完即退 / Cookie 粘贴登录)
 hotlist.go      热榜(homefeed fashion_v3)拉取与字段提取
 notify.go       通知(三 you/ 流)拉取
+collect.go       收藏(collect/page cursor 分页)拉取、字段提取(xstr/xint)、去重、发布
+history_stub.go  浏览历史占位(kind xhs_history / ErrHistoryUnsupported)
+collect_test.go  collect 解析/链接/工具函数/占位行为单测
 golden_test.go/xpos_test.go/xrap_test.go/xhs_test.go  离线单测
 ```
 

@@ -29,20 +29,23 @@ import (
 )
 
 const (
-	defaultHotInterval    = 600 * time.Second
-	defaultNotifyInterval = 60 * time.Second
-	authCheckInterval     = 30 * time.Minute
-	dedupeExpiry          = 72 * time.Hour
-	reLoginCooldown       = 5 * time.Minute
+	defaultHotInterval     = 600 * time.Second
+	defaultNotifyInterval  = 60 * time.Second
+	defaultCollectInterval = 1800 * time.Second
+	authCheckInterval      = 30 * time.Minute
+	dedupeExpiry           = 72 * time.Hour
+	reLoginCooldown        = 5 * time.Minute
 )
 
 var (
-	pubfn_    func(any) error
-	muClient  sync.Mutex
-	hotOn     bool
-	notifyOn  bool
-	hotInt    time.Duration
-	notifyInt time.Duration
+	pubfn_     func(any) error
+	muClient   sync.Mutex
+	hotOn      bool
+	notifyOn   bool
+	collectOn  bool
+	hotInt     time.Duration
+	notifyInt  time.Duration
+	collectInt time.Duration
 )
 
 func SetPublishInfo(pubfn func(any) error) {
@@ -61,6 +64,7 @@ func publish(v any) error {
 type xhsState struct {
 	Hotlist       map[string]int64 `json:"hotlist"`
 	Notifications map[string]int64 `json:"notifications"`
+	Collect       map[string]int64 `json:"collect"`
 }
 
 func newState() *xhsState {
@@ -71,11 +75,15 @@ func newState() *xhsState {
 	if s.Notifications == nil {
 		s.Notifications = map[string]int64{}
 	}
+	if s.Collect == nil {
+		s.Collect = map[string]int64{}
+	}
 	return s
 }
 
 // Start launches the poll loop. hot/notify enable the two feeds; the intervals
-// are 0-for-default (600s / 60s).
+// are 0-for-default (600s / 60s). The collect feed (own favorites) requires a
+// real login and runs automatically alongside them (1800s).
 func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	if hotInterval <= 0 {
 		hotInterval = defaultHotInterval
@@ -86,8 +94,10 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	muClient.Lock()
 	hotOn = hot
 	notifyOn = notify
+	collectOn = hot || notify
 	hotInt = hotInterval
 	notifyInt = notifyInterval
+	collectInt = defaultCollectInterval
 	muClient.Unlock()
 	go pollLoop()
 }
@@ -100,10 +110,12 @@ func pollLoop() {
 	muClient.Lock()
 	hot := hotOn
 	notify := notifyOn
+	collect := collectOn
 	hi := hotInt
 	ni := notifyInt
+	ci := collectInt
 	muClient.Unlock()
-	logPrefix("hot=%v notify=%v intervals=%s/%s", hot, notify, hi, ni)
+	logPrefix("hot=%v notify=%v collect=%v intervals=%s/%s/%s", hot, notify, collect, hi, ni, ci)
 
 	loadAuthInto(client())
 	state := loadState(stateFilePath())
@@ -123,6 +135,7 @@ func pollLoop() {
 	now := time.Now()
 	nextHot := now.Add(hi)
 	nextNotify := now.Add(ni)
+	nextCollect := now.Add(ci)
 	nextAuth := now.Add(authCheckInterval)
 
 	tick := ni
@@ -153,7 +166,13 @@ func pollLoop() {
 				notifyRound(state)
 			}
 		}
-		if notify && now.After(nextAuth) {
+		if collect && now.After(nextCollect) {
+			nextCollect = now.Add(ci)
+			if feedAllowed(AuthStatus(), true) {
+				collectRound(state)
+			}
+		}
+		if (notify || collect) && now.After(nextAuth) {
 			ensureSession(time.Now(), false)
 			nextAuth = now.Add(authCheckInterval)
 		}
@@ -427,6 +446,9 @@ func loadState(path string) *xhsState {
 	if s.Notifications == nil {
 		s.Notifications = map[string]int64{}
 	}
+	if s.Collect == nil {
+		s.Collect = map[string]int64{}
+	}
 	return &s
 }
 
@@ -456,6 +478,7 @@ func pruneState(s *xhsState, now time.Time) {
 	}
 	prune(s.Hotlist)
 	prune(s.Notifications)
+	prune(s.Collect)
 }
 
 // ---- protocol status ----

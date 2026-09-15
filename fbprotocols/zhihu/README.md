@@ -6,6 +6,15 @@ fedlet 的知乎接入协议。登录仪式对齐 **zly2006/zhihu-plus-plus(KMP,
 ## 行为(第一阶段)
 - **热榜**:拉取知乎热榜(`/api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true`),按 feed id 去重,**仅发布新上榜条目**;轮询默认 600s。
 - **通知事件**(被赞/评论/关注等):拉取登录态通知流(`/api/v3/notifications`),按 id 去重,**仅发布新事件**;轮询默认 60s。
+- **收藏夹**:读本人收藏夹列表
+  (`GET /api/v4/members/{url_token}/favlists?offset=&limit=`,url_token 取自 `/api/v4/me`
+  并进程内缓存、失效时清除)+ 每个收藏夹内容
+  (`GET /api/v4/collections/{cid}/contents?offset=&limit=`,≤10 页/夹),按
+  `collectionID:itemID` 去重,**仅发布新收藏**;**需 z_c0**;轮询默认 1800s;首次静默播种。
+- **浏览历史**:读阅读历史(`GET /api/v4/unify-consumption/read_history?offset=&limit=20`,
+  `paging.totals` 透传),按 `content_type:content_token` 去重,**仅发布新阅读**;
+  **需 z_c0**;轮询默认 600s;首次静默播种。空 content_token 条目跳过。
+- 收藏/历史/通知三路 round 均前置 `AuthStatus()==AuthStatusReady` 门控,未登录自动拉起登录 UI。
 - 去重状态持久化 `~/.config/fedlet/zhihu-state.json`(72h 过期收割)。
 - **热榜与通知都需要登录态**。2026-09 联网实测:无 z_c0 的热榜请求(含预热 d_c0、浏览器 UA、HTTP/2、x-zse-96 签名)返回
   `{"error":{"code":101,"message":"身份未经过验证"}}`——恰与 pyzhihu-cli 等工具"热榜依赖登录"的现状一致。
@@ -107,7 +116,9 @@ x-requested-with:   fetch
 | 热榜端点 | `GET /api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true`(**需 z_c0**) | zhihu-plus-plus `HotListViewModel.kt`(同源签名);RSSHub PR #19075(`reverse_order=0`,需 ZHIHU_COOKIES);2026-09 实测匿名 101;待真实会话回填字段 |
 | 热榜目标字段 | `target.title_area.text` / `excerpt_area.text` / `metrics_area.text` / `link.url`,旧结构回退 `target.title / detail_text / excerpt` | SnailDev/zhihu-hot-hub 实测结构;RSSHub hot.ts 旧结构对照 |
 | 通知端点 | `GET /api/v3/notifications?limit=20&offset=0`(**需 z_c0**) | pyzhihu-cli 通知命令 + zhihu web;待实测回填 |
-| 身份校验 | `GET /api/v4/me` | pyzhihu-cli「/api/v4/me 验证会话」;实测回填 |
+| 收藏夹 | `GET /api/v4/members/{url_token}/favlists?offset=&limit=`;`GET /api/v4/collections/{cid}/contents?offset=&limit=` | **2026-09 真实会话实测通过**(8 夹、default 184 条、分页正常);条目 `type` 在顶层(如 `answer`,退化 `attachment.type`),answer 无顶层 title、取 `question.title`;url/question_id 实测存在,无需 x-zse-96 |
+| 浏览历史 | `GET /api/v4/unify-consumption/read_history?offset=&limit=20`(ref=`https://www.zhihu.com/`) | **2026-09 真实会话实测通过**(totals=565 透传);条目 `data[].data.{extra{content_token,content_type,read_time,question_token},content{author_name,summary,cover_image},action.url}` 与实现逐字段一致,无签名要求 |
+| 身份校验 | `GET /api/v4/me`(返回含 `url_token`) | pyzhihu-cli「/api/v4/me 验证会话」;**2026-09 真实会话实测返回 url_token=gede-18**,收藏 round 复用 |
 | 二维码登录 | `POST /api/v3/account/api/login/qrcode`(GET→405,body `{}`)→ 轮询 `GET .../qrcode/{token}/scan_info`(`status` 0/1) | zhihu-plus-plus `QrLogin.kt` 仪式(AGPL-3.0):**登录路径不签名、不握手**,sec-ch-ua+UA145+`x-requested-with:fetch`+charset content-type+真 `_xsrf`;scan_info 轮询带 `x-zse-93`。2026-09 实测 `POST /qrcode`→200 token/link(**缺头或旧 _xsrf → 400 1000**);服务器 IP 轮询触发 403/40352 风控 |
 | 手机验证码 | `POST /udid` → `POST /api/account/prod/init/udid_guest` → `POST /captcha`(验证) → `POST /api/account/prod/auth/digits` → `POST /api/account/prod/sign_in`;body=BMV 加密体(zsEncrypt 类),`x-req-signature`=云控 HMAC、sign_in `signature`=HMAC(client_secret) | zhihu-plus-plus `ZhihuPhoneLoginClient.kt`(AGPL-3.0);web 端旧端点 2026 404,新 web 端点带 `withDUBrowserID` 指纹不支持自动化;本仓库走 **Android 协议**,已知向量测过合法性 |
 | 反 CSRF | `X-Xsrftoken`(自 `_xsrf`,缺失省略) | zhihu-plus-plus `QrLogin.kt`(createZhihuLoginHeaders) |
@@ -120,7 +131,8 @@ x-requested-with:   fetch
 > 状态:登录仪式 2026-09 已按 zhihu-plus-plus 源码逐行核对并**联网实测通过**
 > (QR begin 200 token/link);`scan_info` 在服务器 IP 上触发 403/40352 网络风控
 > (UI 已处理)。热榜/通知成功结构已在真实设备会话下验证(标题/摘要/热度字段),
-> 通知投递字段待真实会话回填。
+> **收藏夹(favlists/contents)与浏览历史(read_history)已于 2026-09 真实会话联网
+> 实测通过**;通知投递字段待真实会话回填。
 
 ## 文件
 ```
@@ -133,6 +145,9 @@ auth.go         登录 API(二维码 + 手机验证码)、会话持久化、过�
 loginsrv.go     自包含登录 UI(随机端口 / 127.0.0.1 / openurl / 用完即退 / Cookie 粘贴登录)
 hotlist.go      热榜拉取与字段提取(title_area/excerpt_area/metrics_area/link)
 notify.go       通知拉取
+collection.go   收藏夹(favlists + contents)拉取、url_token 缓存、字段提取、去重、发布
+history.go      浏览历史(read_history offset 翻页 + totals)拉取与发布
+collection_test.go / history_test.go  收藏/历史解析、链接、去重、空闲键跳过单测
 zhihu_test.go   离线单测(签名确定性/来源串、解析、去重、AuthStatus、登录门禁)
 phonelogin_test.go 手机协议离线单测(官方向量、请求序列、加密体、错误码分支)
 ```

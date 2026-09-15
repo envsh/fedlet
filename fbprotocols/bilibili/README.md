@@ -14,8 +14,17 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
   四个列表(`GET /x/msgfeed/reply|at|like`,`GET message.bilibili.com/x/sys-msg/query_user_notify`),
   未读数变化即发布聚合(`kind=notify_unread`),详情事件按 `type:id` 去重回填
   (`kind=notify_event`);**需登录**;轮询默认 60s;首次轮询静默播种。
-  - 注:旧 `/x/msg/push-info/unread`、`/x/msg/reply|at|like` 已被 B 站网关
-    整体下线(全局 404 HTML `出错啦!`),现统一走 `/x/msgfeed/*` 消息中心新接口;
+- 注:旧 `/x/msg/push-info/unread`、`/x/msg/reply|at|like` 已被 B 站网关
+     整体下线(全局 404 HTML `出错啦!`),现统一走 `/x/msgfeed/*` 消息中心新接口;
+- **收藏(最新收藏夹)**:读收藏夹列表
+  (`GET /x/v3/fav/folder/created/list-all?up_mid=<DedeUserID>`,mid 取会话 DedeUserID)
+  + 逐个收藏夹条目(`GET /x/v3/fav/resource/list?platform=web&order=mtime&media_id=&pn=&ps=20`,
+  `has_more` 分页 ≤10 页),按 `<folderID>:<media_id>` 去重,**仅发布新收藏**;
+  **需登录**;轮询默认 1800s;首次轮询静默播种。
+- **浏览历史**:读观看历史(`GET /x/web-interface/history/cursor?ps=30`,IFS cursor
+  `max/business/view_at` 回填,空页停,≤10 页),按 `business:kid` 去重,**仅发布新观看**;
+  **需登录**;轮询默认 1800s(与收藏共用 ticker);首次轮询静默播种;B 站服务端仅保留
+  近约 3 个月历史。
 - 去重状态持久化 `~/.config/fedlet/bilibili-state.json`(72h 过期收割)。
 
 ## 认证(二维码 + 密码 + 短信 + Cookie 四通道,对齐 bilibili web passport)
@@ -91,6 +100,8 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 | 关注流 | `GET /x/polymer/web-dynamic/v1/feed/all?type=all&platform=web` 登录态 | bilibili-API-collect 动态(web)接口 |
 | 推荐流 | `GET /x/web-interface/wbi/index/top/feed/rcmd`(WBI) | bilibili-API-collect 推荐接口(wbi) |
 | 通知 | `GET /x/msgfeed/unread`;`GET /x/msgfeed/reply|at|like`;`GET message.bilibili.com/x/sys-msg/query_user_notify` | bilibili-API-collect 消息中心(新接口;旧 `/x/msg/*` 已全局 404) |
+| 收藏 | `GET /x/v3/fav/folder/created/list-all?up_mid=`(取会话 DedeUserID);`GET /x/v3/fav/resource/list?platform=web&order=mtime&media_id=&pn=&ps=20`(has_more 分页) | bilibili-API-collect 收藏夹接口;**2026-09 真实会话实测通过**(14 夹 / default 291 条,字段 id/type/bvid/title/cover/upper/fav_time) |
+| 浏览历史 | `GET /x/web-interface/history/cursor?ps=30`,cursor `max/business/view_at` 回填(无 is_end,空页停) | bilibili-API-collect 历史记录接口;**2026-09 真实会话实测通过**(business 位于条目内嵌 `history.business`,顶层 kid/view_at/uri/author_name/badge/progress 等;游标翻页 30 条/页正常) |
 | 二维码 | generate / poll(qrcode_key, code 0/86038/86090/86101) | bilibili-API-collect 登录;poll 完成拿 refresh_token+Set-Cookie |
 | 密码 | `web/key`(hash+PEM)→ `web/login`(geetest 可选) | bilibili-API-collect 登录/web 密码 |
 | 短信 | `web/sms/send` / `web/sms/login`(cid=86) | bilibili-API-collect 登录/短信,**待现场核实** |
@@ -98,8 +109,9 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 | 会话探测 | `GET /x/web-interface/nav`(isLogin + uname + wbi_img 兼 WBI keys 来源) | bilibili-API-collect 登录信息 |
 
 > 状态:热榜/关注流/推荐/二维码/密码主路径按 bilibili-API-collect 结构核验,
-> 通知 `/x/msgfeed/*`(unread/reply/at/like/sys)已于 2026-09 用真实会话联网核验
-> 通过(旧 `/x/msg/*` 全局 404 已弃用);短信 send/login 的响应字段标 待实测。
+> 通知 `/x/msgfeed/*`(unread/reply/at/like/sys)、**收藏(list-all + resource/list)与
+> 浏览历史(history/cursor)已于 2026-09 用真实会话联网核验通过**(旧 `/x/msg/*` 全局
+> 404 已弃用);短信 send/login 的响应字段标 待实测。
 > 详情事件(按 time_at 字符串解析时间)已实测回填。
 
 ## 文件
@@ -114,6 +126,10 @@ hotboard.go      热榜(ranking/v2)拉取与发布
 feed.go          关注动态(feed/all)拉取、字段提取、dedupe
 notify.go        未读聚合 + reply/at/like/sys 事件列表(/x/msgfeed/* 容错解析 + WAF 退避)
 recommend.go     FetchRecommend(limit) WBI 签名只拉层(不发布/不触登录网关)
+fav.go           最新收藏(收藏夹 list-all + resource/list has_more 分页)拉取与发布
+history.go       浏览历史(history/cursor IFS 分页)拉取与发布
+fav_test.go      fav 解析/去重单测
+history_test.go  history 解析/链接/去重单测
 bilibili_test.go 离线单测(WBI/round/dedupe/auth 持久化/网关/风控分类)
 msgfeed_test.go  /x/msgfeed 系列解析快照单测(unread/reply/at/like/sys)
 ```

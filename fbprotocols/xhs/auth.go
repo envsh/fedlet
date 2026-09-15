@@ -131,6 +131,16 @@ func AuthUser() string {
 	return a.user
 }
 
+// AuthUserID returns the logged-in account user_id, if known from a verify.
+// It feeds the xhs self-referencing endpoints (favorites list).
+func AuthUserID() string {
+	c := client()
+	a := c.opts.auth
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.userID
+}
+
 // LastAuthErr returns the last auth failure (nil when none/ok).
 func LastAuthErr() error {
 	authMu.Lock()
@@ -233,6 +243,7 @@ func verifySession() error {
 	a := c.opts.auth
 	a.mu.Lock()
 	a.user = me.Nickname
+	a.userID = me.UserID
 	a.status = AuthStatusReady
 	if me.Guest {
 		a.status = authStatusGuest

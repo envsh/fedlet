@@ -27,12 +27,14 @@ import (
 )
 
 const (
-	defaultHotInterval    = 600 * time.Second
-	defaultNotifyInterval = 60 * time.Second
-	defaultDailyInterval  = 600 * time.Second
-	authCheckInterval     = 30 * time.Minute
-	dedupeExpiry          = 72 * time.Hour
-	reLoginCooldown       = 5 * time.Minute
+	defaultHotInterval        = 600 * time.Second
+	defaultNotifyInterval     = 60 * time.Second
+	defaultDailyInterval      = 600 * time.Second
+	defaultCollectionInterval = 1800 * time.Second
+	defaultHistoryInterval    = 600 * time.Second
+	authCheckInterval         = 30 * time.Minute
+	dedupeExpiry              = 72 * time.Hour
+	reLoginCooldown           = 5 * time.Minute
 	// sessionProbeCooldown gates how soon a Ready session can be re-probed after
 	// the last successful probe; within it, a 200-HTML feed answer is treated as
 	// a risk-control shed instead of burning another /me call every tick.
@@ -40,14 +42,18 @@ const (
 )
 
 var (
-	pubfn_    func(any) error
-	muClient  sync.Mutex
-	hotOn     bool
-	notifyOn  bool
-	dailyOn   bool
-	hotInt    time.Duration
-	notifyInt time.Duration
-	dailyInt  time.Duration
+	pubfn_        func(any) error
+	muClient      sync.Mutex
+	hotOn         bool
+	notifyOn      bool
+	dailyOn       bool
+	hotInt        time.Duration
+	notifyInt     time.Duration
+	dailyInt      time.Duration
+	collectionOn  bool
+	historyOn     bool
+	collectionInt time.Duration
+	historyInt    time.Duration
 )
 
 func SetPublishInfo(pubfn func(any) error) {
@@ -67,6 +73,8 @@ type zhihuState struct {
 	Hotlist       map[string]int64 `json:"hotlist"`
 	Notifications map[string]int64 `json:"notifications"`
 	Daily         map[string]int64 `json:"daily"`
+	Collections   map[string]int64 `json:"collections"`
+	History       map[string]int64 `json:"history"`
 }
 
 func newState() *zhihuState {
@@ -80,6 +88,12 @@ func newState() *zhihuState {
 	if s.Daily == nil {
 		s.Daily = map[string]int64{}
 	}
+	if s.Collections == nil {
+		s.Collections = map[string]int64{}
+	}
+	if s.History == nil {
+		s.History = map[string]int64{}
+	}
 	return s
 }
 
@@ -91,8 +105,10 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	go pollLoop()
 }
 
-// setStartConfig applies the Start flags plus the always-on daily feed. Split
-// out so the unit test can assert the auto-enable without spawning the loop.
+// setStartConfig applies the Start flags plus the always-on daily feed and the
+// session-bound collection/history feeds (auto-enabled alongside hot/notify,
+// since they need the same z_c0 session). Split out so the unit test can assert
+// the auto-enable without spawning the loop.
 func setStartConfig(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	if hotInterval <= 0 {
 		hotInterval = defaultHotInterval
@@ -107,6 +123,10 @@ func setStartConfig(hot, notify bool, hotInterval, notifyInterval time.Duration)
 	notifyInt = notifyInterval
 	dailyOn = true
 	dailyInt = defaultDailyInterval
+	collectionOn = hot || notify
+	historyOn = hot || notify
+	collectionInt = defaultCollectionInterval
+	historyInt = defaultHistoryInterval
 	muClient.Unlock()
 }
 
@@ -119,11 +139,16 @@ func pollLoop() {
 	hot := hotOn
 	notify := notifyOn
 	daily := dailyOn
+	collection := collectionOn
+	history := historyOn
 	hi := hotInt
 	ni := notifyInt
 	di := dailyInt
+	ci := collectionInt
+	hi2 := historyInt
 	muClient.Unlock()
-	log.Printf("zhihu: hot=%v notify=%v daily=%v intervals=%s/%s/%s", hot, notify, daily, hi, ni, di)
+	log.Printf("zhihu: hot=%v notify=%v daily=%v collection=%v history=%v intervals=%s/%s/%s/%s/%s",
+		hot, notify, daily, collection, history, hi, ni, di, ci, hi2)
 
 	loadAuth()
 	state := loadState(stateFilePath())
@@ -143,6 +168,8 @@ func pollLoop() {
 	nextHot := now.Add(hi)
 	nextNotify := now.Add(ni)
 	nextDaily := now.Add(di)
+	nextCollection := now.Add(ci)
+	nextHistory := now.Add(hi2)
 	nextAuth := now.Add(authCheckInterval)
 
 	tick := ni
@@ -175,7 +202,19 @@ func pollLoop() {
 			nextDaily = now.Add(di)
 			dailyRound(state)
 		}
-		if notify && now.After(nextAuth) {
+		if collection && now.After(nextCollection) {
+			nextCollection = now.Add(ci)
+			if AuthStatus() == AuthStatusReady {
+				collectionRound(state)
+			}
+		}
+		if history && now.After(nextHistory) {
+			nextHistory = now.Add(hi2)
+			if AuthStatus() == AuthStatusReady {
+				historyRound(state)
+			}
+		}
+		if (notify || collection || history) && now.After(nextAuth) {
 			authCheck(state)
 			nextAuth = now.Add(authCheckInterval)
 		}
@@ -587,6 +626,12 @@ func loadState(path string) *zhihuState {
 	if s.Daily == nil {
 		s.Daily = map[string]int64{}
 	}
+	if s.Collections == nil {
+		s.Collections = map[string]int64{}
+	}
+	if s.History == nil {
+		s.History = map[string]int64{}
+	}
 	return &s
 }
 
@@ -617,6 +662,8 @@ func pruneState(s *zhihuState, now time.Time) {
 	prune(s.Hotlist)
 	prune(s.Notifications)
 	prune(s.Daily)
+	prune(s.Collections)
+	prune(s.History)
 }
 
 // ---- protocol status ----

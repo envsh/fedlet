@@ -22,6 +22,8 @@ type settings struct {
 	notifyInterval    time.Duration
 	feedInterval      time.Duration
 	authCheckInterval time.Duration
+	favInterval       time.Duration
+	historyInterval   time.Duration
 }
 
 var (
@@ -38,12 +40,18 @@ var (
 // state; the disk state survives restarts.
 const dedupeExpiry = 72 * time.Hour
 
+// favHistoryInterval paces the favorites + watch-history rounds. Both endpoints
+// are multi-request walks, so they share one slower cadence than the hot races.
+const favHistoryInterval = 1800 * time.Second
+
 // biliState is the per-channel dedupe bookkeeping persisted to
 // ~/.config/fedlet/bilibili-state.json.
 type biliState struct {
 	Hotboard      map[string]int64 `json:"hotboard"`
 	FollowFeed    map[string]int64 `json:"follow_feed"`
 	Notifications map[string]int64 `json:"notifications"`
+	Favorites     map[string]int64 `json:"favorites"`
+	History       map[string]int64 `json:"history"`
 }
 
 func newBiliState() *biliState {
@@ -51,6 +59,8 @@ func newBiliState() *biliState {
 		Hotboard:      make(map[string]int64),
 		FollowFeed:    make(map[string]int64),
 		Notifications: make(map[string]int64),
+		Favorites:     make(map[string]int64),
+		History:       make(map[string]int64),
 	}
 }
 
@@ -81,6 +91,12 @@ func loadState() *biliState {
 	if st.Notifications == nil {
 		st.Notifications = make(map[string]int64)
 	}
+	if st.Favorites == nil {
+		st.Favorites = make(map[string]int64)
+	}
+	if st.History == nil {
+		st.History = make(map[string]int64)
+	}
 	return st
 }
 
@@ -88,6 +104,8 @@ func saveState(st *biliState) {
 	pruneMap(st.Hotboard)
 	pruneMap(st.FollowFeed)
 	pruneMap(st.Notifications)
+	pruneMap(st.Favorites)
+	pruneMap(st.History)
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return
@@ -326,6 +344,8 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 		notifyInterval:    notifyInterval,
 		feedInterval:      600 * time.Second,
 		authCheckInterval: 1800 * time.Second,
+		favInterval:       favHistoryInterval,
+		historyInterval:   favHistoryInterval,
 	}
 	if set.hotInterval <= 0 {
 		set.hotInterval = 600 * time.Second
@@ -340,12 +360,13 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	runMu.Unlock()
 
 	ensureWarmup()
-	log.Printf("bilibili: bridge starting hot=%s notify=%s feed=%s authCheck=%s",
-		set.hotInterval, set.notifyInterval, set.feedInterval, set.authCheckInterval)
+	log.Printf("bilibili: bridge starting hot=%s notify=%s feed=%s fav=%s history=%s authCheck=%s",
+		set.hotInterval, set.notifyInterval, set.feedInterval, set.favInterval, set.historyInterval, set.authCheckInterval)
 
-	runWg.Add(3)
+	runWg.Add(4)
 	go pollLoopHotNotify()
 	go pollLoopFeed()
+	go pollLoopFavHistory()
 	go pollLoopAuthCheck()
 }
 
@@ -401,6 +422,32 @@ func pollLoopFeed() {
 		case <-ticker.C:
 			runAuthRound(func(s *biliState) int {
 				return feedRound(s)
+			}, st)
+			saveState(st)
+		}
+	}
+}
+
+func pollLoopFavHistory() {
+	defer runWg.Done()
+	st := loadState()
+	favTicker := time.NewTicker(set.favInterval)
+	histTicker := time.NewTicker(set.historyInterval)
+	defer favTicker.Stop()
+	defer histTicker.Stop()
+	for {
+		select {
+		case <-stopCh:
+			saveState(st)
+			return
+		case <-favTicker.C:
+			runAuthRound(func(s *biliState) int {
+				return favRound(s)
+			}, st)
+			saveState(st)
+		case <-histTicker.C:
+			runAuthRound(func(s *biliState) int {
+				return historyRound(s)
 			}, st)
 			saveState(st)
 		}

@@ -303,6 +303,7 @@ type riskResolver func(sig riskSignal, cookies map[string]string) (ok bool, newC
 type authState struct {
 	mu          sync.Mutex
 	user        string
+	userID      string
 	status      string
 	loginMethod string
 }
