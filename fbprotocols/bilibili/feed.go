@@ -4,10 +4,34 @@ package bilibili
 // Publishes newly-appeared updates only (dedupe by id_str).
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 )
+
+// flexInt64 accepts either a JSON number or a "123" string. Bilibili has been
+// migrating numeric fields of web-dynamic feed/all to strings (pub_ts arrives
+// as "1789454019", opus stat.like/view are documented strings); decoding a
+// string into a plain int64 fails and aborts the whole round. This dual-form
+// type keeps the struct tolerant of both shapes.
+type flexInt64 int64
+
+// UnmarshalJSON handles number, "number" and null forms.
+func (f *flexInt64) UnmarshalJSON(b []byte) error {
+	s := bytes.Trim(b, `"`)
+	if string(s) == "null" || len(s) == 0 {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseInt(string(s), 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexInt64(n)
+	return nil
+}
 
 const feedURL = apiHost + "/x/polymer/web-dynamic/v1/feed/all?type=all&platform=web"
 
@@ -17,10 +41,10 @@ type feedItem struct {
 	Type    string `json:"type"`
 	Modules struct {
 		ModuleAuthor struct {
-			Name     string `json:"name"`
-			Mid      int64  `json:"mid"`
-			PubTime  int64  `json:"pub_ts"`
-			TimeUnix int64  `json:"time_unix"`
+			Name     string    `json:"name"`
+			Mid      int64     `json:"mid"`
+			PubTime  flexInt64 `json:"pub_ts"`
+			TimeUnix flexInt64 `json:"time_unix"`
 		} `json:"module_author"`
 		ModuleDynamic struct {
 			Desc struct {
@@ -56,7 +80,7 @@ type feedItem struct {
 type feedData struct {
 	Items   []feedItem `json:"items"`
 	Offset  string     `json:"offset"`
-	HasMore int        `json:"has_more"`
+	HasMore bool       `json:"has_more"`
 }
 
 // feedItemID returns the dedupe key.

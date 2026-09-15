@@ -158,5 +158,10 @@ func historyRound(state *biliState) int {
 		}
 		published++
 	}
+	if published > 0 {
+		log.Printf("bilibili: history round published %d new entries", published)
+	} else {
+		log.Printf("bilibili: history round no change")
+	}
 	return published
 }

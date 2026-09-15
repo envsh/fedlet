@@ -175,5 +175,10 @@ func favRound(state *biliState) int {
 		}
 		published++
 	}
+	if published > 0 {
+		log.Printf("bilibili: favorites round published %d new items", published)
+	} else {
+		log.Printf("bilibili: favorites round no change")
+	}
 	return published
 }
