@@ -10,10 +10,12 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 - **关注动态**:读用户关注流(`GET /x/polymer/web-dynamic/v1/feed/all?type=all`),
   按 `id_str`(退化 `feed:<type>:<mid>`)去重,**仅发布新动态**;**需登录**;
   轮询默认 600s;首次轮询静默播种存量(不发布)。
-- **通知事件**:未读数(`GET /x/msg/push-info/unread`)+ 评论/回复、@、赞三个列表
-  (`GET /x/msg/reply|at|like`,type=1,page_size=20),未读数变化即发布聚合
-  (`kind=notify_unread`),详情事件按 `type:id` 去重回填(`kind=notify_event`);
-  **需登录**;轮询默认 60s;首次轮询静默播种。
+- **通知事件**:未读数(`GET /x/msgfeed/unread`)+ 评论/回复、@、赞、系统通知
+  四个列表(`GET /x/msgfeed/reply|at|like`,`GET message.bilibili.com/x/sys-msg/query_user_notify`),
+  未读数变化即发布聚合(`kind=notify_unread`),详情事件按 `type:id` 去重回填
+  (`kind=notify_event`);**需登录**;轮询默认 60s;首次轮询静默播种。
+  - 注:旧 `/x/msg/push-info/unread`、`/x/msg/reply|at|like` 已被 B 站网关
+    整体下线(全局 404 HTML `出错啦!`),现统一走 `/x/msgfeed/*` 消息中心新接口;
 - 去重状态持久化 `~/.config/fedlet/bilibili-state.json`(72h 过期收割)。
 
 ## 认证(二维码 + 密码 + 短信 + Cookie 四通道,对齐 bilibili web passport)
@@ -62,7 +64,8 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 ## 风控(shed 式,非交互)
 - `-352` / HTTP 412 / 429 / HTTP 403 → `ErrRiskControl`,触发返回前记
   `noteRateLimit()` 退避(15s,轮询层 `ensureSession` 先行拦截),保留会话。
-- HTML 200 / 404 / 522(反爬节点)→ `errUnverifiable`,整轮 shed,不触发登录。
+- HTML 200 / 404 / 522(反爬节点)→ `errUnverifiable`,整轮 shed,不触发登录;
+  通知轮询遇此类块(`isWAFGate`)额外进入 30 分钟静默重探窗口,避免每轮刷错误日志。
 - 短信/极验类人机验证按上文交互式方式处理(页面粘贴 validate/challenge/seccode)。
 
 ## 登录交互(自包含 HTTP server,镜像 zhihu)
@@ -87,7 +90,7 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 | 热榜 | `GET /x/web-interface/ranking/v2?rid=0&type=all&web_location=333.934` 公开 | bilibili-API-collect 排行接口 |
 | 关注流 | `GET /x/polymer/web-dynamic/v1/feed/all?type=all&platform=web` 登录态 | bilibili-API-collect 动态(web)接口 |
 | 推荐流 | `GET /x/web-interface/wbi/index/top/feed/rcmd`(WBI) | bilibili-API-collect 推荐接口(wbi) |
-| 通知 | `GET /x/msg/push-info/unread`;`GET /x/msg/reply|at|like`(type=1) | bilibili-API-collect 消息中心接口 |
+| 通知 | `GET /x/msgfeed/unread`;`GET /x/msgfeed/reply|at|like`;`GET message.bilibili.com/x/sys-msg/query_user_notify` | bilibili-API-collect 消息中心(新接口;旧 `/x/msg/*` 已全局 404) |
 | 二维码 | generate / poll(qrcode_key, code 0/86038/86090/86101) | bilibili-API-collect 登录;poll 完成拿 refresh_token+Set-Cookie |
 | 密码 | `web/key`(hash+PEM)→ `web/login`(geetest 可选) | bilibili-API-collect 登录/web 密码 |
 | 短信 | `web/sms/send` / `web/sms/login`(cid=86) | bilibili-API-collect 登录/短信,**待现场核实** |
@@ -95,8 +98,9 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
 | 会话探测 | `GET /x/web-interface/nav`(isLogin + uname + wbi_img 兼 WBI keys 来源) | bilibili-API-collect 登录信息 |
 
 > 状态:热榜/关注流/推荐/二维码/密码主路径按 bilibili-API-collect 结构核验,
-> 短信 send/login 与 msg/reply|at|like 的**响应字段标 待实测**(容错解析),
-> 待真实 B 站会话联网后再回填。
+> 通知 `/x/msgfeed/*`(unread/reply/at/like/sys)已于 2026-09 用真实会话联网核验
+> 通过(旧 `/x/msg/*` 全局 404 已弃用);短信 send/login 的响应字段标 待实测。
+> 详情事件(按 time_at 字符串解析时间)已实测回填。
 
 ## 文件
 ```
@@ -108,13 +112,14 @@ login.go         登录 UI(随机端口/127.0.0.1/QR+密码+短信+Cookie/用完
 loginpage.go     登录页内联 HTML/JS(Cookie 获取说明 + 粘贴表单)
 hotboard.go      热榜(ranking/v2)拉取与发布
 feed.go          关注动态(feed/all)拉取、字段提取、dedupe
-notify.go        未读聚合 + reply/at/like 事件列表(容错解析)
+notify.go        未读聚合 + reply/at/like/sys 事件列表(/x/msgfeed/* 容错解析 + WAF 退避)
 recommend.go     FetchRecommend(limit) WBI 签名只拉层(不发布/不触登录网关)
 bilibili_test.go 离线单测(WBI/round/dedupe/auth 持久化/网关/风控分类)
+msgfeed_test.go  /x/msgfeed 系列解析快照单测(unread/reply/at/like/sys)
 ```
 
 ## 已知限制与下一步
-- 通知字段、短信登录:需在真实会话下联网验证后回填;邮箱登录未实现。
+- 短信登录:需在真实会话下联网验证后回填;邮箱登录未实现。
 - refresh 采用单次 `/refresh` 调用而非完整 web 仪式;若失效按抓包回退完整仪式。
 - 热榜首轮发布当前全榜(约 100 条),避免冷启动空窗。
 - README 红线:不直接运维运行中的 `./main`;测试用 `HOME=/tmp/opencode/zh-home`。

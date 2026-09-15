@@ -47,12 +47,13 @@ const (
 	qrExpireAfter  = 180 * time.Second
 	successHoldMs  = 1500
 
-	qrGenURL    = passportHost + "/x/passport-login/web/qrcode/generate"
-	qrPollURL   = passportHost + "/x/passport-login/web/qrcode/poll"
-	keyURL      = passportHost + "/x/passport-login/web/key"
-	loginURL    = passportHost + "/x/passport-login/web/login"
-	smsSendURL  = passportHost + "/x/passport-login/web/sms/send"
-	smsLoginURL = passportHost + "/x/passport-login/web/sms/login"
+	qrGenURL      = passportHost + "/x/passport-login/web/qrcode/generate"
+	qrPollURL     = passportHost + "/x/passport-login/web/qrcode/poll"
+	keyURL        = passportHost + "/x/passport-login/web/key"
+	loginURL      = passportHost + "/x/passport-login/web/login"
+	smsSendURL    = passportHost + "/x/passport-login/web/sms/send"
+	smsLoginURL   = passportHost + "/x/passport-login/web/login/sms"
+	smsCaptchaURL = passportHost + "/x/passport-login/captcha?source=main_web"
 )
 
 // login stages surfaced to the page.
@@ -72,6 +73,16 @@ type loginState struct {
 	errMsg string
 	user   string
 }
+
+// SMS 登录人机验证记忆态:token/gt/challenge 由 /api/smscaptcha(或发送失败回退)自动获取,
+// captcha_key 由发送成功时回填,供短信验证码登录兑换会话。
+var (
+	smsStateMu    sync.Mutex
+	smsToken      string
+	smsGT         string
+	smsChallenge  string
+	smsCaptchaKey string
+)
 
 func (s *loginState) snapshot() map[string]any {
 	s.mu.Lock()
@@ -97,6 +108,15 @@ func (s *loginState) set(stage, errMsg string) {
 	if errMsg != "" {
 		s.errMsg = errMsg
 	}
+}
+
+// finalized reports whether a login method already completed. The background
+// QR poller must stop touching the UI state once this flips, otherwise it
+// clobbers the success view during the brief window before the UI shuts down.
+func (s *loginState) finalized() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stage == stageDone
 }
 
 var ui struct {
@@ -217,12 +237,52 @@ func startLoginUI() (string, error) {
 			http.Error(w, "phone required", http.StatusBadRequest)
 			return
 		}
-		if err := smsSend(req); err != nil {
+		token, gt, challenge := smsLastCaptcha()
+		if req.Challenge == "" && challenge != "" {
+			req.Challenge = challenge
+		}
+		needCaptcha := req.Challenge == "" || req.Validate == ""
+		if needCaptcha && token == "" {
+			if tk, g, ch, err := smsCaptchaParams(); err == nil {
+				token, gt, challenge = tk, g, ch
+				req.Challenge = ch
+				needCaptcha = req.Challenge == "" || req.Validate == ""
+			} else {
+				ls.set(stageFailed, err.Error())
+			}
+		}
+		form := smsSendForm(req.Phone, req.Validate, req.Challenge, req.Seccode)
+		preview := smsFormPreview(form)
+		if needCaptcha {
+			writeJSONMap(w, map[string]any{
+				"ok":           false,
+				"need_captcha": true,
+				"error":        "需要极验人机验证:浏览器打开 bilibili.com 完成滑块,粘贴 validate 后重发",
+				"token":        token,
+				"gt":           gt,
+				"challenge":    req.Challenge,
+				"params":       preview,
+			})
+			return
+		}
+		if err := smsSend(req.Phone, req.Validate, req.Challenge, req.Seccode); err != nil {
 			ls.set(stageFailed, err.Error())
+			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error(), "params": preview})
+			return
+		}
+		writeJSONMap(w, map[string]any{"ok": true, "params": preview})
+	})
+	mux.HandleFunc("/api/smscaptcha", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		token, gt, challenge, err := smsCaptchaParams()
+		if err != nil {
 			writeJSONMap(w, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		writeJSONMap(w, map[string]any{"ok": true})
+		writeJSONMap(w, map[string]any{"ok": true, "token": token, "gt": gt, "challenge": challenge})
 	})
 	mux.HandleFunc("/api/smslogin", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -353,23 +413,39 @@ func runQRFlow(ls *loginState) {
 		ls.set(stageFailed, "当前环境无桌面,扫码登录不可用;请使用 Cookie 登录")
 		return
 	}
-	var gen struct {
-		Code int `json:"code"`
-		Data struct {
-			URL       string `json:"url"`
-			QRCodeKey string `json:"qrcode_key"`
-		} `json:"data"`
+	var gen qrGenData
+	// bilibili throttles web/qrcode/generate by silently returning code:0 with
+	// an empty data payload. Retry with backoff; on persistent failure surface
+	// the raw body so the real response shape is visible in the field.
+	var genErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		env, raw, err := qrGenFetch(qrGenURL)
+		if err != nil {
+			genErr = err
+			break
+		}
+		gen, err = parseQRGen(env.Data)
+		if err != nil {
+			genErr = fmt.Errorf("bilibili: parse data %s: %w", qrGenURL, err)
+			break
+		}
+		if gen.URL != "" && gen.QRCodeKey != "" {
+			break
+		}
+		genErr = fmt.Errorf("二维码生成失败:缺少 qrcode_key (code=%d, data=%s)", env.Code, truncate(string(raw), 240))
+		if attempt < 2 {
+			log.Printf("bilibili: qrcode generate returned empty data (attempt %d): %s",
+				attempt+1, truncate(string(raw), 240))
+			time.Sleep(qrGenRetry[attempt])
+		}
 	}
-	if err := getJSON(&gen, qrGenURL, false); err != nil {
-		ls.set(stageFailed, err.Error())
-		return
-	}
-	if gen.Data.URL == "" || gen.Data.QRCodeKey == "" {
-		ls.set(stageFailed, "二维码生成失败:缺少 qrcode_key")
+	if genErr != nil {
+		log.Printf("bilibili: qrcode generate failed: %v", genErr)
+		ls.set(stageFailed, genErr.Error())
 		return
 	}
 	ls.mu.Lock()
-	ls.qrURL = gen.Data.URL
+	ls.qrURL = gen.URL
 	ls.stage = stageWaiting
 	ls.mu.Unlock()
 
@@ -379,6 +455,9 @@ func runQRFlow(ls *loginState) {
 		case <-ui.stop:
 			return
 		default:
+		}
+		if ls.finalized() {
+			return
 		}
 		if time.Now().After(deadline) {
 			ls.set(stageExpired, "")
@@ -390,10 +469,14 @@ func runQRFlow(ls *loginState) {
 			Data    struct {
 				URL          string `json:"url"`
 				RefreshToken string `json:"refresh_token"`
+				Code         int    `json:"code"`
 			} `json:"data"`
 		}
-		u := qrPollURL + "?qrcode_key=" + url.QueryEscape(gen.Data.QRCodeKey)
+		u := qrPollURL + "?qrcode_key=" + url.QueryEscape(gen.QRCodeKey)
 		if err := getJSON(&poll, u, false); err != nil {
+			if ls.finalized() {
+				return
+			}
 			if errors.Is(err, errUnverifiable) {
 				ls.set(stageFailed, "二维码轮询被风控(HTML),请刷新重试或改用 Cookie 登录")
 				return
@@ -405,7 +488,15 @@ func runQRFlow(ls *loginState) {
 			}
 			continue
 		}
-		switch poll.Code {
+		// The live API always returns envelope code:0 and reports the scan
+		// state in data.code (86101 not-scanned, 86090 scanned, 86091
+		// confirmed, 86038 expired). Fall back to the envelope for legacy
+		// behavior where 0 meant scanned-and-confirmed.
+		sc := qrScanState(poll.Data.Code, poll.Code)
+		if ls.finalized() {
+			return
+		}
+		switch sc {
 		case 0:
 			ls.set(stageScanned, "")
 			auth.mu.Lock()
@@ -421,12 +512,28 @@ func runQRFlow(ls *loginState) {
 			}
 			finalizeLogin(ls, "qr")
 			return
-		case 86038, 86101:
+		case 86038:
 			ls.set(stageExpired, "二维码已失效,请刷新页面")
 			return
-		case 86090, 86091:
+		case 86090:
 			ls.set(stageScanned, "")
+		case 86091:
+			ls.set(stageScanned, "")
+			auth.mu.Lock()
+			auth.refreshToken = poll.Data.RefreshToken
+			auth.mu.Unlock()
+			if jar.get("SESSDATA") == "" {
+				ls.set(stageFailed, "扫码登录未获得 SESSDATA cookie")
+				return
+			}
+			if err := probeSession(); err != nil {
+				ls.set(stageFailed, err.Error())
+				return
+			}
+			finalizeLogin(ls, "qr")
+			return
 		default:
+			// 86101 以及未知状态: 未扫码, 继续轮询.
 		}
 		select {
 		case <-ui.stop:
@@ -436,8 +543,82 @@ func runQRFlow(ls *loginState) {
 	}
 }
 
+// qrGenRetry stages the backoff between qrcode/generate attempts on transient
+// empty-data throttling.
+var qrGenRetry = []time.Duration{500 * time.Millisecond, time.Second}
+
+// qrGenFetch performs the qrcode/generate call and returns the raw envelope
+// plus the raw body so callers can surface the exact response on failure.
+func qrGenFetch(u string) (*envResp, []byte, error) {
+	body, status, err := doBili(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, body, err
+	}
+	if status != http.StatusOK {
+		return nil, body, fmt.Errorf("bilibili: http %d %s", status, truncate(string(body), 160))
+	}
+	var env envResp
+	if err := json.Unmarshal(body, &env); err != nil {
+		if looksHTML(body) {
+			return nil, body, fmt.Errorf("%w %s", errUnverifiable, u)
+		}
+		return nil, body, fmt.Errorf("bilibili: parse %s: %w", u, err)
+	}
+	if env.Code != 0 {
+		return &env, body, classifyAPIError(u, env.Code, env.Message)
+	}
+	return &env, body, nil
+}
+
+// qrGenData is the parsed data payload of qrcode/generate — the envelope's
+// "data" object ({"url":...,"qrcode_key":...}), not the full response.
+type qrGenData struct {
+	URL       string `json:"url"`
+	QRCodeKey string `json:"qrcode_key"`
+}
+
+// parseQRGen parses the qrcode/generate data payload, recovering qrcode_key
+// from the scan URL query when the server omits the top-level field.
+func parseQRGen(envData json.RawMessage) (qrGenData, error) {
+	var g qrGenData
+	if len(envData) > 0 {
+		if err := json.Unmarshal(envData, &g); err != nil {
+			return g, err
+		}
+	}
+	if g.URL != "" && g.QRCodeKey == "" {
+		if k := keyFromScanURL(g.URL); k != "" {
+			g.QRCodeKey = k
+		}
+	}
+	return g, nil
+}
+
+// keyFromScanURL extracts the qrcode_key query parameter from a scan URL,
+// covering responses where the server omits the top-level qrcode_key field.
+func keyFromScanURL(u string) string {
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	return p.Query().Get("qrcode_key")
+}
+
+// qrScanState resolves the QR poll status, preferring data.code (the live API
+// keeps the envelope at 0) and falling back to the envelope code (legacy API
+// reported the state directly at the top level).
+func qrScanState(dataCode, envCode int) int {
+	if dataCode != 0 {
+		return dataCode
+	}
+	return envCode
+}
+
 // finalizeLogin marks the successful login and shuts the UI down shortly after.
 func finalizeLogin(ls *loginState, via string) {
+	if jar.get("SESSDATA") != "" {
+		_ = probeSession() // fill the account name; best-effort, keep the session
+	}
 	user := AuthUser()
 	ls.mu.Lock()
 	ls.stage = stageDone
@@ -647,37 +828,111 @@ func rsaEncrypt(pubPEM, plain string) (string, error) {
 	return base64.StdEncoding.EncodeToString(enc), nil
 }
 
-// smsSend requests an SMS code. Like the password route, a risk-gated account
-// demands a geetest triplet (optional fields). Endpoint layout verified against
-// bilibili-API-collect (待现场核实).
-func smsSend(req struct {
-	Phone     string `json:"phone"`
-	Validate  string `json:"validate"`
-	Challenge string `json:"challenge"`
-	Seccode   string `json:"seccode"`
-}) error {
+// smsCaptchaParams 获取短信验证所需的人机验证参数:极验 token + gt + challenge。
+func smsCaptchaParams() (token, gt, challenge string, err error) {
+	var data struct {
+		Type    string `json:"type"`
+		Token   string `json:"token"`
+		Geetest struct {
+			Gt        string `json:"gt"`
+			Challenge string `json:"challenge"`
+		} `json:"geetest"`
+	}
+	if err = getJSON(&data, smsCaptchaURL, false); err != nil {
+		return "", "", "", fmt.Errorf("bilibili: 获取短信验证参数失败: %w", err)
+	}
+	if data.Type != "geetest" || data.Token == "" || data.Geetest.Challenge == "" {
+		return "", "", "", fmt.Errorf("bilibili: 短信验证参数异常 type=%q", data.Type)
+	}
+	smsRememberCaptcha(data.Token, data.Geetest.Gt, data.Geetest.Challenge)
+	return data.Token, data.Geetest.Gt, data.Geetest.Challenge, nil
+}
+
+func smsRememberCaptcha(token, gt, challenge string) {
+	smsStateMu.Lock()
+	defer smsStateMu.Unlock()
+	smsToken, smsGT, smsChallenge = token, gt, challenge
+}
+
+func smsLastCaptcha() (token, gt, challenge string) {
+	smsStateMu.Lock()
+	defer smsStateMu.Unlock()
+	return smsToken, smsGT, smsChallenge
+}
+
+func smsSetCaptchaKey(key string) {
+	smsStateMu.Lock()
+	defer smsStateMu.Unlock()
+	smsCaptchaKey = key
+}
+
+func smsLastCaptchaKey() string {
+	smsStateMu.Lock()
+	defer smsStateMu.Unlock()
+	return smsCaptchaKey
+}
+
+// smsSendForm 构造将提交给 web/sms/send 的表单,不触网。极验字段只在齐备时携带,
+// seccode 留空则按 validate+"|jordan" 自动补齐。
+func smsSendForm(phone, validate, challenge, seccode string) url.Values {
+	token, _, _ := smsLastCaptcha()
 	form := url.Values{}
 	form.Set("cid", "86")
-	form.Set("tel", req.Phone)
+	form.Set("tel", phone)
 	form.Set("source", "main_web")
-	if req.Challenge != "" && req.Validate != "" {
-		form.Set("challenge", req.Challenge)
-		form.Set("validate", req.Validate)
-		form.Set("seccode", req.Seccode)
+	if token != "" {
+		form.Set("token", token)
 	}
-	if err := postForm(nil, smsSendURL, form); err != nil {
+	if challenge != "" && validate != "" {
+		form.Set("challenge", challenge)
+		form.Set("validate", validate)
+		if seccode == "" {
+			seccode = validate + "|jordan"
+		}
+		form.Set("seccode", seccode)
+	}
+	return form
+}
+
+// smsFormPreview 把将提交给 web/sms/send 的表单渲染为只读文本,供页面披露实际发送值。
+func smsFormPreview(form url.Values) string {
+	var parts []string
+	for _, k := range []string{"cid", "tel", "source", "token", "challenge", "validate", "seccode"} {
+		parts = append(parts, k+"="+form.Get(k))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// smsSend requests an SMS code. Like the password route, a risk-gated account
+// demands a geetest triplet (token/challenge/validate/seccode); the form it
+// actually posts is disclosed read-only on the page.
+func smsSend(phone, validate, challenge, seccode string) error {
+	form := smsSendForm(phone, validate, challenge, seccode)
+	var data struct {
+		CaptchaKey string `json:"captcha_key"`
+	}
+	if err := postForm(&data, smsSendURL, form); err != nil {
 		return fmt.Errorf("bilibili: 发送短信验证码失败: %w", err)
+	}
+	if data.CaptchaKey != "" {
+		smsSetCaptchaKey(data.CaptchaKey)
 	}
 	return nil
 }
 
-// smsLogin exchanges the SMS code for the session cookies.
+// smsLogin exchanges the SMS code for the session cookies on the current
+// web/login/sms endpoint, redeeming the captcha_key returned by smsSend.
 func smsLogin(phone, code string) error {
+	ck := smsLastCaptchaKey()
+	if ck == "" {
+		return fmt.Errorf("bilibili: 请先发送短信验证码")
+	}
 	form := url.Values{}
 	form.Set("cid", "86")
 	form.Set("tel", phone)
 	form.Set("code", code)
 	form.Set("source", "main_web")
+	form.Set("captcha_key", ck)
 	form.Set("keep", "true")
 	if err := postForm(nil, smsLoginURL, form); err != nil {
 		return fmt.Errorf("bilibili: 短信验证码登录失败: %w", err)

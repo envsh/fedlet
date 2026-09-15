@@ -1,34 +1,62 @@
 package bilibili
 
-// Notifications: unread counts + the reply / @ / like event lists. Needs
+// Notifications: unread counts + the reply / @ / like / sys event lists. Needs
 // SESSDATA. The unread aggregate is published every round (kind=notify_unread);
-// when it changes, the three event lists are pulled and new events published
-// individually.
+// when it changes, the event lists are pulled and new events published
+// individually (kind=notify_event). Feed comes from the /x/msgfeed/* family
+// (the old /x/msg/* endpoints are retired with a global gateway 404).
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"time"
 )
 
+// The old /x/msg/push-info/unread and /x/msg/reply|at|like endpoints are
+// retired: bilibili's gateway serves a global 404 HTML page for the whole
+// /x/msg/ namespace. The current message-center family is /x/msgfeed/* on
+// apiHost (unread/reply/at/like) plus the sys feed on the message subdomain.
 const (
-	unreadURL = apiHost + "/x/msg/push-info/unread"
-	replyURL  = apiHost + "/x/msg/reply?type=1&page_num=1&page_size=20"
-	atURL     = apiHost + "/x/msg/at?type=1&page_size=20&page_num=1"
-	likeURL   = apiHost + "/x/msg/like?type=1&page_size=20&page_num=1"
+	unreadURL = apiHost + "/x/msgfeed/unread"
+	replyURL  = apiHost + "/x/msgfeed/reply"
+	atURL     = apiHost + "/x/msgfeed/at"
+	likeURL   = apiHost + "/x/msgfeed/like"
 )
 
-// unreadCounts is the shape of /x/msg/push-info/unread. Fields outside the
-// aggregate are optional (可能 待实测, tolerant parsing).
+// msgHost is the message-center subdomain; /x/msgfeed/* carries no system
+// notifications, so those come from here.
+const (
+	msgHost   = "https://message.bilibili.com"
+	sysMsgURL = msgHost + "/x/sys-msg/query_user_notify"
+)
+
+// unreadCounts is the shape of /x/msgfeed/unread. SysMsg is tracked so the
+// aggregate reflects the full notify center; Total is computed in code (the
+// msgfeed payload has no total field).
 type unreadCounts struct {
-	Reply int64 `json:"reply"`
-	At    int64 `json:"at"`
-	Like  int64 `json:"like"`
-	// counts for other biz types are ignored; only reply/at/like events are
-	// fanned out to detail lists.
-	Total int64 `json:"total"`
+	Reply  int64 `json:"reply"`
+	At     int64 `json:"at"`
+	Like   int64 `json:"like"`
+	SysMsg int64 `json:"sys_msg"`
+	// counts for other biz types (coin/danmu/favorite/up/chat) are ignored;
+	// only reply/at/like/sys events are fanned out to detail lists.
+	Total int64 `json:"-"`
+}
+
+// unmarshalUnread decodes the /x/msgfeed/unread payload and computes the total
+// across the tracked biz types.
+func unmarshalUnread(data json.RawMessage) (unreadCounts, error) {
+	var u unreadCounts
+	if err := json.Unmarshal(data, &u); err != nil {
+		return u, err
+	}
+	u.Total = u.Reply + u.At + u.Like + u.SysMsg
+	return u, nil
 }
 
 // notifyEvent is a flattened detail-list event shared by reply/at/like.
@@ -48,14 +76,31 @@ func fetchUnread() (*unreadCounts, error) {
 	if jar.get("SESSDATA") == "" {
 		return nil, ErrNotLoggedIn
 	}
-	var data unreadCounts
-	if err := getJSON(&data, unreadURL, true); err != nil {
+	body, status, err := doBili(http.MethodGet, unreadURL, nil)
+	if err != nil {
 		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("bilibili: unread http %d", status)
+	}
+	var env envResp
+	if err := json.Unmarshal(body, &env); err != nil {
+		if looksHTML(body) {
+			return nil, fmt.Errorf("%w %s", errUnverifiable, unreadURL)
+		}
+		return nil, fmt.Errorf("bilibili: unread parse: %w", err)
+	}
+	if env.Code != 0 {
+		return nil, classifyAPIError(unreadURL, env.Code, env.Message)
+	}
+	data, err := unmarshalUnread(env.Data)
+	if err != nil {
+		return nil, fmt.Errorf("bilibili: unread data parse: %w", err)
 	}
 	return &data, nil
 }
 
-// fetchReplyEvents pulls the newest content reply, @ and like events.
+// fetchReplyEvents pulls the newest content reply, @, like and sys events.
 func fetchReplyEvents() ([]notifyEvent, error) {
 	return fetchNotifyList(replyURL, "reply")
 }
@@ -65,21 +110,24 @@ func fetchAtEvents() ([]notifyEvent, error) {
 }
 
 func fetchLikeEvents() ([]notifyEvent, error) {
-	return fetchNotifyList(likeURL, "like")
+	return fetchLikeList()
 }
 
-// fetchNotifyList parses one msg list endpoint defensively: the exact layout
-// drifts across reply/at/like (marked 待实测), so it tolerates several field
-// spellings and never hard-fails the whole round on a single bad entry.
+func fetchSysEvents() ([]notifyEvent, error) {
+	return fetchSysNotify()
+}
+
+// fetchNotifyList fetches one /x/msgfeed list. The reply/at entries share one
+// shape: {id, user{mid,nickname}, item{...}, reply_time}.
 func fetchNotifyList(u, kind string) ([]notifyEvent, error) {
 	if jar.get("SESSDATA") == "" {
 		return nil, ErrNotLoggedIn
 	}
-	body, status, err := doBili("GET", u, nil)
+	body, status, err := doBili(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	if status != 200 {
+	if status != http.StatusOK {
 		return nil, fmt.Errorf("bilibili: notify %s http %d", kind, status)
 	}
 	var env struct {
@@ -89,82 +137,232 @@ func fetchNotifyList(u, kind string) ([]notifyEvent, error) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
+		if looksHTML(body) {
+			return nil, fmt.Errorf("%w %s", errUnverifiable, u)
+		}
 		return nil, fmt.Errorf("bilibili: notify %s parse: %w", kind, err)
 	}
 	if env.Code != 0 {
 		return nil, classifyAPIError(u, env.Code, "")
 	}
-	events := make([]notifyEvent, 0, len(env.Data.Items))
-	for _, m := range env.Data.Items {
+	return parseMsgfeedItems(env.Data.Items, kind), nil
+}
+
+// parseMsgfeedItems flattens reply/at notification entries into events.
+func parseMsgfeedItems(items []map[string]any, kind string) []notifyEvent {
+	events := make([]notifyEvent, 0, len(items))
+	for _, m := range items {
 		ev := notifyEvent{Type: kind}
-		if id, ok := numAnyAsInt(m["id"]); ok {
-			ev.ID = id
+		ev.ID, _ = numAnyAsInt(m["id"])
+		ev.Ctime, _ = numAnyAsInt(m["reply_time"])
+		if ua, ok := m["user"].(map[string]any); ok {
+			ev.Uname, _ = ua["nickname"].(string)
+			ev.Mid, _ = numAnyAsInt(ua["mid"])
 		}
-		if c, ok := numAnyAsInt(m["ctime"]); ok {
-			ev.Ctime = c
-		}
-		if s, ok := m["dynamic_url"].(string); ok {
-			ev.DynamicURL = s
-		}
-		extractActor := func(k string) {
-			if ua, ok := m[k].(map[string]any); ok {
-				if s, ok := ua["uname"].(string); ok && ev.Uname == "" {
-					ev.Uname = s
-				}
-				if v, ok := numAnyAsInt(ua["mid"]); ok && ev.Mid == 0 {
-					ev.Mid = v
+		if it, ok := m["item"].(map[string]any); ok {
+			for _, k := range []string{"message", "root_reply_content", "source_content", "note", "title"} {
+				if s, ok := it[k].(string); ok && s != "" {
+					ev.Message = s
+					break
 				}
 			}
-		}
-		switch kind {
-		case "reply":
-			if r, ok := m["reply"].(map[string]any); ok {
-				if c, ok := r["content"].(map[string]any); ok {
-					ev.Message, _ = c["message"].(string)
-				}
-				if a, ok := r["member"].(map[string]any); ok {
-					if s, ok := a["uname"].(string); ok && ev.Uname == "" {
-						ev.Uname = s
-					}
-					if v, ok := numAnyAsInt(a["mid"]); ok && ev.Mid == 0 {
-						ev.Mid = v
-					}
-				}
-			}
-			ev.Subject, _ = m["subject"].(string)
-			if p, ok := m["preview"].(map[string]any); ok {
-				if s, ok := p["uname"].(string); ok {
-					ev.Subject = s
-				}
-			}
-		case "at":
-			extractActor("user")
-			extractActor("up")
-			ev.Message, _ = m["message"].(string)
-			ev.Subject, _ = m["video_title"].(string)
-		case "like":
-			extractActor("user")
-			extractActor("up")
-			ev.Message = "赞了你的内容"
-			ev.Subject, _ = m["video_title"].(string)
+			ev.Subject, _ = it["title"].(string)
 			if ev.Subject == "" {
-				ev.Subject, _ = m["subject"].(string)
+				ev.Subject, _ = it["business"].(string)
 			}
+			ev.DynamicURL, _ = it["uri"].(string)
 		}
 		events = append(events, ev)
 	}
-	return events, nil
+	return events
+}
+
+// fetchLikeList fetches /x/msgfeed/like. Likes are grouped per target with the
+// recent likers in users[]; the all-time total.items carry the full set
+// (latest.items only those since last_view_at). Dedupe in the round drops
+// repeats either way.
+func fetchLikeList() ([]notifyEvent, error) {
+	if jar.get("SESSDATA") == "" {
+		return nil, ErrNotLoggedIn
+	}
+	body, status, err := doBili(http.MethodGet, likeURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("bilibili: notify like http %d", status)
+	}
+	var env struct {
+		Code int `json:"code"`
+		Data struct {
+			Latest struct {
+				Items []map[string]any `json:"items"`
+			} `json:"latest"`
+			Total struct {
+				Items []map[string]any `json:"items"`
+			} `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		if looksHTML(body) {
+			return nil, fmt.Errorf("%w %s", errUnverifiable, likeURL)
+		}
+		return nil, fmt.Errorf("bilibili: notify like parse: %w", err)
+	}
+	if env.Code != 0 {
+		return nil, classifyAPIError(likeURL, env.Code, "")
+	}
+	items := env.Data.Total.Items
+	if len(items) == 0 {
+		items = env.Data.Latest.Items
+	}
+	return parseLikeItems(items), nil
+}
+
+// parseLikeItems flattens /x/msgfeed/like entries into events.
+func parseLikeItems(items []map[string]any) []notifyEvent {
+	events := make([]notifyEvent, 0, len(items))
+	for _, m := range items {
+		ev := notifyEvent{Type: "like"}
+		ev.ID, _ = numAnyAsInt(m["id"])
+		ev.Ctime, _ = numAnyAsInt(m["like_time"])
+		if users, ok := m["users"].([]any); ok && len(users) > 0 {
+			if u0, ok := users[0].(map[string]any); ok {
+				ev.Uname, _ = u0["nickname"].(string)
+				ev.Mid, _ = numAnyAsInt(u0["mid"])
+			}
+		}
+		ev.Message = "赞了你的内容"
+		if it, ok := m["item"].(map[string]any); ok {
+			ev.Subject, _ = it["title"].(string)
+			if ev.Subject == "" {
+				ev.Subject, _ = it["business"].(string)
+			}
+			ev.DynamicURL, _ = it["uri"].(string)
+		}
+		events = append(events, ev)
+	}
+	return events
+}
+
+// fetchSysNotify pulls the system-notification feed from the message-center
+// subdomain. The envelope and item shapes differ from the /x/msgfeed family
+// and the host expects a message.bilibili.com referer, so this request is made
+// with its own headers rather than the shared doBili defaults.
+func fetchSysNotify() ([]notifyEvent, error) {
+	if jar.get("SESSDATA") == "" {
+		return nil, ErrNotLoggedIn
+	}
+	req, err := http.NewRequest(http.MethodGet, sysMsgURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", biliUA)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("Referer", msgHost+"/")
+	req.Header.Set("Cookie", jar.header())
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		if looksHTML(body) {
+			return nil, fmt.Errorf("%w http %d %s", errUnverifiable, resp.StatusCode, sysMsgURL)
+		}
+		return nil, fmt.Errorf("bilibili: notify sys http %d", resp.StatusCode)
+	}
+	var env struct {
+		Code int `json:"code"`
+		Data struct {
+			List []map[string]any `json:"system_notify_list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		if looksHTML(body) {
+			return nil, fmt.Errorf("%w %s", errUnverifiable, sysMsgURL)
+		}
+		return nil, fmt.Errorf("bilibili: notify sys parse: %w", err)
+	}
+	if env.Code != 0 {
+		return nil, classifyAPIError(sysMsgURL, env.Code, "")
+	}
+	return parseSysItems(env.Data.List), nil
+}
+
+// parseSysItems flattens system_notify_list entries into events.
+func parseSysItems(list []map[string]any) []notifyEvent {
+	events := make([]notifyEvent, 0, len(list))
+	for _, m := range list {
+		ev := notifyEvent{Type: "sys"}
+		ev.ID, _ = numAnyAsInt(m["id"])
+		ev.Ctime = parseSysTime(m["time_at"])
+		ev.Subject, _ = m["title"].(string)
+		ev.Message, _ = m["content"].(string)
+		ev.DynamicURL, _ = m["card_link"].(string)
+		if p, ok := m["publisher"].(map[string]any); ok {
+			ev.Uname, _ = p["name"].(string)
+			ev.Mid, _ = numAnyAsInt(p["mid"])
+		}
+		events = append(events, ev)
+	}
+	return events
+}
+
+// parseSysTime converts the message-center "2006-01-02 15:04:05" (UTC+8)
+// timestamp to a unix value; anything else yields 0.
+func parseSysTime(v any) int64 {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return 0
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.FixedZone("CST", 8*3600))
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
 // notifyLastUnread remembers the last-published aggregate so rounds report
 // changes without spamming.
 var notifyLastUnread *unreadCounts
 
+// notifyRouteBlockedUntil pauses the notify round while the message-center
+// endpoints answer with gateway HTML (errUnverifiable, e.g. a WAF block), so
+// it is not hammered and re-logged every interval; the round resumes after the
+// window and keeps quiet when the endpoints come back.
+var notifyRouteBlockedUntil time.Time
+
+// notifyBlockProbeInterval is how long a message-center HTML block stays
+// silent before probing again. bilibili anti-bot blocks typically lift within
+// minutes to an hour.
+var notifyBlockProbeInterval = 30 * time.Minute
+
+// isWAFGate reports the hard gateway HTML blocks (200/404/522 anti-bot pages)
+// that make the whole round pointless and noisy.
+func isWAFGate(err error) bool {
+	return errors.Is(err, errUnverifiable)
+}
+
 // notifyRound publishes the aggregate + new detail events. Returns the count
 // of detail events published.
 func notifyRound(state *biliState) int {
+	if time.Now().Before(notifyRouteBlockedUntil) {
+		return 0
+	}
 	un, err := fetchUnread()
 	if err != nil {
+		if isWAFGate(err) {
+			notifyRouteBlockedUntil = time.Now().Add(notifyBlockProbeInterval)
+			log.Printf("bilibili: notify blocked (WAF HTML), pausing ~%s: %v", notifyBlockProbeInterval, err)
+			pushError(err)
+			return 0
+		}
 		log.Printf("bilibili: notify unread error: %v", err)
 		pushError(err)
 		return 0
@@ -187,10 +385,12 @@ func notifyRound(state *biliState) int {
 
 	// First sync: seed the dedupe keys so existing history is not re-published.
 	if len(state.Notifications) == 0 {
-		for _, fn := range []func() ([]notifyEvent, error){fetchReplyEvents, fetchAtEvents, fetchLikeEvents} {
+		for _, fn := range []func() ([]notifyEvent, error){fetchReplyEvents, fetchAtEvents, fetchLikeEvents, fetchSysEvents} {
 			evs, err := fn()
 			if err != nil {
-				log.Printf("bilibili: notify seed error: %v", err)
+				if !isWAFGate(err) {
+					log.Printf("bilibili: notify seed error: %v", err)
+				}
 				continue
 			}
 			for _, e := range evs {
@@ -236,11 +436,14 @@ func notifyRound(state *biliState) int {
 		{"reply", fetchReplyEvents},
 		{"at", fetchAtEvents},
 		{"like", fetchLikeEvents},
+		{"sys", fetchSysEvents},
 	} {
 		evs, err := fn.get()
 		if err != nil {
-			log.Printf("bilibili: notify %s error: %v", fn.kind, err)
-			pushError(err)
+			if !isWAFGate(err) {
+				log.Printf("bilibili: notify %s error: %v", fn.kind, err)
+				pushError(err)
+			}
 			continue
 		}
 		handle(fn.kind, evs)

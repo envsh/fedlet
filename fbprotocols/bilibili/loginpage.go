@@ -16,6 +16,8 @@ button{padding:.55rem 1.4rem;border:0;border-radius:6px;background:#00aeec;color
 button.blue{background:#0d69d5}
 #state{font-weight:600}
 .err{color:#b00020}
+.done{background:#e8f9ee;color:#0a7d33;padding:.9rem 1rem;border-radius:8px;margin-top:.6rem;font-weight:600}
+.ro{background:#f3f3f3;color:#555}
 pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;border-radius:6px}
 .hint{color:#666;font-size:.85rem;line-height:1.6}
 </style>
@@ -29,6 +31,7 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
   <p>用 <b>哔哩哔哩 App</b> 的「扫一扫」登录;<br>或手机浏览器打开:<pre id="qrl"></pre></p>
 </div>
 <div id="userbox" style="display:none">登录成功:<b id="user"></b></div>
+<div id="donebox" class="done" style="display:none">✓ 已登录成功:<b id="doneuser"></b></div>
 <div id="failed" class="err" style="display:none"></div>
 </div>
 <div class="card">
@@ -50,7 +53,20 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
 <h2>手机号 + 验证码</h2>
 <div id="phoneform">
   <input id="sms_phone" type="tel" placeholder="手机号" autocomplete="tel">
-  <button onclick="doSmsSend()">发送验证码</button>
+  <button onclick="startSmsSlider()">内嵌滑块并自动发送</button>
+  <button onclick="doSmsCaptcha()">仅获取极验参数</button>
+  <button onclick="doSmsSend()">发送验证码(兜底)</button>
+  <p class="hint">推荐点「内嵌滑块并自动发送」:本页内完成滑块,自动取 validate 并自动发送短信。<br>
+  若滑块未出现(极验脚本被墙/拦截):请浏览器打开
+  <a href="https://www.bilibili.com" target="_blank" rel="noopener">bilibili.com</a> 完成滑块,然后
+  把 validate 粘贴到下面输入框,再点「发送验证码(兜底)」。提交参数(只读)会自动显示。</p>
+  token: <input id="sms_token" class="ro" readonly placeholder="(未获取)">
+  gt: <input id="sms_gt" class="ro" readonly placeholder="(未获取)">
+  challenge: <input id="sms_challenge" class="ro" readonly placeholder="(未获取)">
+  <div id="sms_gtbox" style="display:none"><div id="sms_geetest"></div></div>
+  validate: <input id="sms_validate" type="text" placeholder="粘贴滑块结果 validate(仅兜底用)">
+  seccode: <input id="sms_seccode" class="ro" readonly placeholder="validate|jordan(自动)">
+  <pre id="smspreview" style="display:none"></pre>
 </div>
 <div id="smscodeform" style="display:none">
   <input id="sms_code" type="text" placeholder="短信验证码" autocomplete="one-time-code">
@@ -90,12 +106,22 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
 <script>
 const $=id=>document.getElementById(id);
 const stage_txt={'idle':'准备二维码…','waiting':'等待扫码…','scanned':'已扫码,确认中…','done':'登录成功','expired':'二维码已过期,请刷新页面','failed':'登录失败'};
+let loginDone=false;
+function showLoginSuccess(user){
+  loginDone=true;
+  clearInterval(pollTimer);
+  ['pwform','phoneform','smscodeform','cookieform','qrbox','userbox','failed']
+    .forEach(id=>{const el=$(id); if(el) el.style.display='none';});
+  $('donebox').style.display=''; $('doneuser').textContent=user||'';
+  $('state').textContent='登录成功';
+}
 async function poll(){
+  if(loginDone){ clearInterval(pollTimer); return; }
   try{
     const r=await fetch('/api/state');const s=await r.json();
     $('state').textContent=stage_txt[s.stage]||s.stage;
     if(s.qr_code_url){$('qrbox').style.display='';$('qr').src=s.qr_code_url;$('qrl').textContent=s.qr_url;}
-    if(s.stage==='done'){ $('qrbox').style.display='none';$('userbox').style.display='';$('user').textContent=s.user||'';}
+    if(s.stage==='done'){ showLoginSuccess(s.user||''); return; }
     if(s.stage==='failed'){ $('failed').style.display='';$('failed').textContent=s.error||'未知错误';}
   }catch(e){}
 }
@@ -107,18 +133,83 @@ async function doPassword(){
   try{
     const r=await fetch('/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,validate,challenge,seccode})});
     const j=await r.json();
-    if(j.ok){ $('pwform').style.display='none'; $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||''; }
+    if(j.ok){ showLoginSuccess(j.user||''); }
     else { msg.style.display=''; msg.textContent='密码登录失败:\n'+j.error; }
   }catch(e){ msg.style.display=''; msg.textContent='密码登录失败:\n'+(e&&e.message||'网络错误'); }
+}
+async function doSmsCaptcha(){
+  const msg=$('smsmsg'); msg.style.display='none';
+  try{
+    const r=await fetch('/api/smscaptcha',{method:'POST'});
+    const j=await r.json();
+    $('sms_token').value=j.token||'';
+    $('sms_gt').value=j.gt||'';
+    $('sms_challenge').value=j.challenge||'';
+    if(!j.ok){ msg.style.display=''; msg.textContent='获取验证参数失败:\n'+(j.error||''); }
+    }catch(e){ msg.style.display=''; msg.textContent='获取验证参数失败:\n'+(e&&e.message||'网络错误'); }
+}
+const GT_LOADERS=[
+  'https://static.geetest.com/static/js/gt.0.5.0.js',
+  'https://static.geetest.com/static/tools/gt.js'
+];
+function loadGtLoader(idx){
+  return new Promise((resolve,reject)=>{
+    if(typeof window.initGeetest==='function'){ resolve(); return; }
+    if(idx>=GT_LOADERS.length){ reject(new Error('名单内极验 loader 均加载失败')); return; }
+    const s=document.createElement('script'); s.src=GT_LOADERS[idx]; s.async=true;
+    const next=()=>loadGtLoader(idx+1).then(resolve,reject);
+    s.onload=()=>{ if(typeof window.initGeetest==='function') resolve(); else next(); };
+    s.onerror=next;
+    document.head.appendChild(s);
+  });
+}
+let smsSliderObj=null;
+async function startSmsSlider(){
+  const msg=$('smsmsg'); msg.style.display='none';
+  try{
+    await doSmsCaptcha();
+    const gt=$('sms_gt').value.trim(), challenge=$('sms_challenge').value.trim();
+    if(!gt||!challenge){ msg.style.display=''; msg.textContent='未取得 gt/challenge,请先点「仅获取极验参数」'; return; }
+    $('sms_gtbox').style.display='';
+    await loadGtLoader(0);
+    initGeetest({
+      gt:gt, challenge:challenge, product:'bind', lang:'zh-cn', width:'100%',
+      new_captcha:true, https:true, api_server:'api.geetest.com'
+    },obj=>{
+      smsSliderObj=obj;
+      smsSliderObj.onReady(()=>smsSliderObj.verify());
+      smsSliderObj.onSuccess(()=>{
+        const p=smsSliderObj.getValidate()||{};
+        if(!p.geetest_validate){ msg.style.display=''; msg.textContent='滑块通过但未取得 validate,请重试'; return; }
+        const seccode=p.geetest_seccode||(p.geetest_validate+'|jordan');
+        $('sms_validate').value=p.geetest_validate;
+        $('sms_challenge').value=p.geetest_challenge||challenge;
+        $('sms_seccode').value=seccode;
+        const pre=$('smspreview'); pre.style.display=''; pre.textContent='将提交(只读):\n'+JSON.stringify({validate:p.geetest_validate,challenge:p.geetest_challenge||challenge,seccode},null,2);
+        doSmsSend();
+      });
+    });
+  }catch(e){
+    $('sms_gtbox').style.display='none';
+    msg.style.display=''; msg.textContent='内嵌滑块不可用:\n'+(e&&e.message||'网络错误')+'\n请按兜底方式:浏览器打开 bilibili.com 完成滑块,把 validate 粘贴到输入框后点「发送验证码(兜底)」。';
+  }
 }
 async function doSmsSend(){
   const phone=$('sms_phone').value.trim(); const msg=$('smsmsg'); msg.style.display='none';
   if(!phone){ msg.style.display=''; msg.textContent='请输入手机号'; return; }
+  const sms_validate=$('sms_validate').value.trim();
+  const sms_challenge=$('sms_challenge').value.trim();
+  const sms_seccode=$('sms_seccode').value.trim();
   try{
-    const r=await fetch('/api/sms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+    const r=await fetch('/api/sms',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({phone,validate:sms_validate,challenge:sms_challenge,seccode:sms_seccode})});
     const j=await r.json();
+    if(j.params||j.need_captcha){ const pre=$('smspreview'); pre.style.display=''; pre.textContent='将提交(只读):\n'+j.params; }
+    if(j.token){ $('sms_token').value=j.token; }
+    if(j.challenge){ $('sms_challenge').value=j.challenge; }
+    if(j.gt){ $('sms_gt').value=j.gt; }
     if(j.ok){ $('phoneform').style.display='none'; $('smscodeform').style.display=''; msg.style.display='none'; }
-    else { msg.style.display=''; msg.textContent='发送短信失败:\n'+j.error; }
+    else { msg.style.display=''; msg.textContent='发送短信失败:\n'+(j.error||'未知错误'); }
   }catch(e){ msg.style.display=''; msg.textContent='发送短信失败:\n'+(e&&e.message||'网络错误'); }
 }
 async function doSmsLogin(){
@@ -126,7 +217,7 @@ async function doSmsLogin(){
   try{
     const r=await fetch('/api/smslogin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
     const j=await r.json();
-    if(j.ok){ $('phoneform').style.display='none'; $('smscodeform').style.display='none'; $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||''; }
+    if(j.ok){ showLoginSuccess(j.user||''); }
     else { msg.style.display=''; msg.textContent='短信登录失败:\n'+j.error; }
   }catch(e){ msg.style.display=''; msg.textContent='短信登录失败:\n'+(e&&e.message||'网络错误'); }
 }
@@ -139,12 +230,11 @@ async function cookieLogin(){
   try{
     const r=await fetch('/api/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({SESSDATA,bili_jct,DedeUserID,DedeUserID__ckMd5,refresh_token})});
     const j=await r.json();
-    if(j.ok){ $('cookieform').style.display='none'; msg.style.display='none'; $('qrbox').style.display='none';
-      $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||''; }
+    if(j.ok){ showLoginSuccess(j.user||''); }
     else { msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+j.error; }
   }catch(e){ msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+(e&&e.message||'网络错误'); }
 }
-poll();setInterval(poll,1500);
+const pollTimer=setInterval(poll,1500);poll();
 </script>
 </body>
 </html>

@@ -388,9 +388,10 @@ func TestNotifyParseReplyTolerant(t *testing.T) {
 	resetBili(t)
 	jar.set("SESSDATA", "sess")
 	body := []byte(`{"code":0,"data":{"items":[
-	{"id":1,"ctime":1700000000,"dynamic_url":"https://t.bilibili.com/1",
-	 "reply":{"content":{"message":"评论内容"},"member":{"uname":"甲","mid":7}}},
-	{"id":2,"ctime":1700000001}
+	{"id":1,"reply_time":1700000000,
+	 "user":{"mid":7,"nickname":"甲"},
+	 "item":{"title":"主题","message":"评论内容","root_reply_content":"","source_content":"","uri":"https://t.bilibili.com/1"}},
+	{"id":2}
 	]}}`)
 	oldHC := hc
 	hc = stubClient(replyURL, body, http.StatusOK, []byte(`{"code":0,"data":{"items":[]}}`))
@@ -409,7 +410,7 @@ func TestNotifyParseReplyTolerant(t *testing.T) {
 	if evs[0].DynamicURL != "https://t.bilibili.com/1" || evs[0].Ctime != 1700000000 {
 		t.Fatalf("reply event meta: %+v", evs[0])
 	}
-	// Entry without a reply object must be tolerated (empty but present).
+	// Entry without a user/item object must be tolerated (empty but present).
 	if evs[1].ID != 2 || evs[1].Uname != "" {
 		t.Fatalf("bare entry: %+v", evs[1])
 	}
@@ -418,10 +419,11 @@ func TestNotifyParseReplyTolerant(t *testing.T) {
 func TestNotifyParseLikeTolerant(t *testing.T) {
 	resetBili(t)
 	jar.set("SESSDATA", "sess")
-	body := []byte(`{"code":0,"data":{"items":[
-	{"id":11,"ctime":1700000010,"like_time":1700000011,
-	 "user":{"uname":"乙","mid":8},"video_title":"视频标题"}
-	]}}`)
+	body := []byte(`{"code":0,"data":{"latest":{"items":[]},"total":{"items":[
+	{"id":11,"like_time":1700000011,
+	 "users":[{"mid":8,"nickname":"乙"}],
+	 "item":{"title":"视频标题","uri":"https://www.bilibili.com/video/BV1x"}}
+	]}}}`)
 	oldHC := hc
 	hc = stubClient(likeURL, body, http.StatusOK, []byte(`{"code":0,"data":{"items":[]}}`))
 	defer func() { hc = oldHC }()
@@ -437,7 +439,7 @@ func TestNotifyParseLikeTolerant(t *testing.T) {
 	if ev.Type != "like" || ev.Uname != "乙" || ev.Mid != 8 || ev.Subject != "视频标题" {
 		t.Fatalf("like event: %+v", ev)
 	}
-	if ev.ID != 11 || ev.Ctime != 1700000010 {
+	if ev.ID != 11 || ev.Ctime != 1700000011 || ev.Message != "赞了你的内容" {
 		t.Fatalf("like event meta: %+v", ev)
 	}
 }
