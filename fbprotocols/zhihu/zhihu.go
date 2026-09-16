@@ -246,16 +246,26 @@ func hotRound(state *zhihuState) {
 	published := 0
 	for i := range resp.Data {
 		it := &resp.Data[i]
-		if _, seen := state.Hotlist[it.ID]; seen {
+		title := HotlistTitle(it.Target)
+		key, ok := HotlistKey(it)
+		if !ok {
+			// The feed wrapper id ("<rank>_<unix_ms>") is volatile per request,
+			// so an item with neither card_id nor target.id has no stable
+			// identity to dedupe on: skip it instead of re-publishing each round.
+			log.Printf("zhihu: hotlist #%d skipped, no stable id: %s", i+1, truncate(title, 80))
 			continue
 		}
-		state.Hotlist[it.ID] = now.Unix()
-		title := HotlistTitle(it.Target)
+		if _, seen := state.Hotlist[key]; seen {
+			continue
+		}
+		state.Hotlist[key] = now.Unix()
 		detail := HotlistDetail(it.Target)
-		log.Printf("zhihu: hotlist #%d %s %s", i+1, it.ID, truncate(title, 80))
+		log.Printf("zhihu: hotlist #%d %s %s", i+1, key, truncate(title, 80))
 		payload := map[string]any{
 			"kind":         "hotlist",
 			"rank":         i,
+			"card_id":      it.CardID,
+			"content_id":   HotlistTargetID(it.Target),
 			"feed_id":      it.ID,
 			"type":         it.Type,
 			"title":        title,
@@ -267,7 +277,7 @@ func hotRound(state *zhihuState) {
 			"published_at": now.Unix(),
 		}
 		if err := publish(payload); err != nil {
-			log.Printf("zhihu: publish hotlist %s error: %v", it.ID, err)
+			log.Printf("zhihu: publish hotlist %s error: %v", key, err)
 		}
 		published++
 	}

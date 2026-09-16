@@ -65,11 +65,11 @@ func TestEncodeOutputAlphabet(t *testing.T) {
 
 func TestHotlistParse(t *testing.T) {
 	const js = `{"fresh_text":"刚刚更新","data":[
-		{"id":"1","type":"hot_list_feed",
+		{"id":"0_1782366660.1","card_id":"Q_609686334","type":"hot_list_feed",
 		 "target":{"id":609686334,"type":"question","title":"如何评价?",
 		           "excerpt":"补充说明","detail_text":"1亿热度 · 讨论 5 万",
 		           "answer_count":123,"author":{"name":"甲"}}},
-		{"id":"2","type":"hot_list_feed",
+		{"id":"1_1782366660.2","type":"hot_list_feed",
 		 "target":{"id":1,"type":"pin","detail_text":"想法摘要"}}
 	]}`
 	var r HotlistResp
@@ -88,15 +88,27 @@ func TestHotlistParse(t *testing.T) {
 	if got := HotlistTitle(r.Data[1].Target); got != "想法摘要" {
 		t.Fatalf("pin title = %q", got)
 	}
+	// card_id wins over target.id; a volatile feed id is never the dedupe key.
+	if got, ok := HotlistKey(&r.Data[0]); !ok || got != "Q_609686334" {
+		t.Fatalf("hotlist key with card_id = %q/%v", got, ok)
+	}
+	// without card_id the target's own id is used verbatim.
+	if got, ok := HotlistKey(&r.Data[1]); !ok || got != "1" {
+		t.Fatalf("hotlist key fallback = %q/%v", got, ok)
+	}
+	if got := HotlistTargetID(r.Data[0].Target); got != "609686334" {
+		t.Fatalf("target id = %q", got)
+	}
 }
 
 func TestHotlistNewShape(t *testing.T) {
-	const js = `{"data":[{"id":"3","type":"hot_list_feed","target":{
+	const js = `{"data":[{"id":"0_1782366660.3","card_id":"Q_123","type":"hot_list_feed","target":{
 		"title_area":{"text":"新结构标题"},
 		"excerpt_area":{"text":"摘要文字"},
 		"metrics_area":{"text":"2.3亿热度 · 1.8万回答"},
 		"link":{"url":"https://www.zhihu.com/question/12345"}}},
-	{"id":"4","type":"hot_list_feed","target":{
+	{"id":"1_1782366660.4","type":"hot_list_feed","target":{
+		"id":2052718434220073058,"type":"question",
 		"metrics_area":{"text":"393万热度"}}}
 	]}`
 	var r HotlistResp
@@ -120,6 +132,132 @@ func TestHotlistNewShape(t *testing.T) {
 	}
 	if got := HotlistLink(r.Data[1].Target); got != "" {
 		t.Fatalf("link should be empty, got %q", got)
+	}
+	// long 64-bit target id must survive without precision loss.
+	if got := HotlistTargetID(r.Data[1].Target); got != "2052718434220073058" {
+		t.Fatalf("64-bit target id = %q", got)
+	}
+}
+
+func TestHotlistKey(t *testing.T) {
+	cases := []struct {
+		name string
+		item HotlistItem
+		key  string
+		ok   bool
+	}{
+		{"card id wins", HotlistItem{ID: "0_1.2", CardID: "Q_100", Target: json.RawMessage(`{"id":100}`)}, "Q_100", true},
+		{"numeric target id", HotlistItem{ID: "0_1.2", Target: json.RawMessage(`{"id":200,"type":"question"}`)}, "200", true},
+		{"string target id", HotlistItem{ID: "0_1.2", Target: json.RawMessage(`{"id":"2052718434220073058"}`)}, "2052718434220073058", true},
+		{"no target", HotlistItem{ID: "0_1.2", Target: nil}, "", false},
+		{"no id anywhere", HotlistItem{ID: "0_1.2", Target: json.RawMessage(`{"type":"question"}`)}, "", false},
+		{"null target id", HotlistItem{ID: "0_1.2", Target: json.RawMessage(`{"id":null}`)}, "", false},
+		{"object target id", HotlistItem{ID: "0_1.2", Target: json.RawMessage(`{"id":{"value":1}}`)}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			key, ok := HotlistKey(&tc.item)
+			if ok != tc.ok || key != tc.key {
+				t.Fatalf("HotlistKey = %q/%v, want %q/%v", key, ok, tc.key, tc.ok)
+			}
+		})
+	}
+}
+
+func TestHotlistRoundDedupesByStableID(t *testing.T) {
+	resetSessionCreds()
+	setupGatewaySession()
+	defer resetSessionCreds()
+
+	r1 := `{"data":[
+		{"id":"0_1782366660.1","card_id":"Q_100","type":"hot_list_feed",
+		 "target":{"id":100,"type":"question","title_area":{"text":"甲题"}}},
+		{"id":"1_1782366660.2","card_id":"Q_200","type":"hot_list_feed",
+		 "target":{"id":200,"type":"question","title_area":{"text":"乙题"}}}]}`
+	r2 := `{"data":[
+		{"id":"0_1783000000.3","card_id":"Q_100","type":"hot_list_feed",
+		 "target":{"id":100,"type":"question","title_area":{"text":"甲题"}}},
+		{"id":"1_1783000000.4","card_id":"Q_300","type":"hot_list_feed",
+		 "target":{"id":300,"type":"question","title_area":{"text":"丙题"}}}]}`
+	bodies := []string{r1, r2}
+	hotCalls := 0
+	oldHC := hc
+	hc = &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		// Serve the two hot-list snapshots only to the hot-list endpoint; the
+		// warmup requests (signin/udid/captcha) must not consume the sequence.
+		body := []byte(`{"data":[]}`)
+		if r.URL.String() == hotlistURL && hotCalls < len(bodies) {
+			body = []byte(bodies[hotCalls])
+			hotCalls++
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+	})}
+	defer func() { hc = oldHC }()
+
+	var got []map[string]any
+	oldPub := pubfn_
+	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	defer func() { pubfn_ = oldPub }()
+
+	state := newState()
+	hotRound(state)
+	if len(got) != 2 {
+		t.Fatalf("round 1 published %d, want 2", len(got))
+	}
+	if p := got[0]; p["card_id"] != "Q_100" || p["content_id"] != "100" || p["feed_id"] != "0_1782366660.1" {
+		t.Fatalf("round 1 payload: %+v", p)
+	}
+
+	// Same cards reappear with fresh volatile feed ids: nothing republishes,
+	// while the genuinely new Q_300 does.
+	got = nil
+	hotRound(state)
+	if len(got) != 1 {
+		t.Fatalf("round 2 published %d, want 1", len(got))
+	}
+	if p := got[0]; p["card_id"] != "Q_300" || p["feed_id"] != "1_1783000000.4" {
+		t.Fatalf("round 2 payload: %+v", p)
+	}
+	if _, seen := state.Hotlist["Q_100"]; !seen {
+		t.Fatal("Q_100 not seeded in state")
+	}
+	if _, seen := state.Hotlist["Q_300"]; !seen {
+		t.Fatal("Q_300 not seeded in state")
+	}
+}
+
+func TestHotlistRoundSkipsWithoutStableID(t *testing.T) {
+	resetSessionCreds()
+	setupGatewaySession()
+	defer resetSessionCreds()
+
+	js := `{"data":[
+		{"id":"0_1782366660.1","card_id":"Q_1","type":"hot_list_feed","target":{}},
+		{"id":"1_1782366660.2","type":"hot_list_feed","target":{"type":"pin"}},
+		{"id":"2_1782366660.3","type":"hot_list_feed","target":{"id":3,"type":"question"}}]}`
+	oldHC := hc
+	hc = stubClient("", []byte(js), http.StatusOK, []byte(js))
+	defer func() { hc = oldHC }()
+
+	var got []map[string]any
+	oldPub := pubfn_
+	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	defer func() { pubfn_ = oldPub }()
+
+	state := newState()
+	hotRound(state)
+
+	if len(got) != 2 {
+		t.Fatalf("published %d, want 2 (Q_1 and target id 3)", len(got))
+	}
+	if len(state.Hotlist) != 2 {
+		t.Fatalf("state seeded %d keys, want 2", len(state.Hotlist))
+	}
+	if _, seen := state.Hotlist["Q_1"]; !seen {
+		t.Fatal("Q_1 missing from state")
+	}
+	if _, seen := state.Hotlist["3"]; !seen {
+		t.Fatal("target-id key 3 missing from state")
 	}
 }
 

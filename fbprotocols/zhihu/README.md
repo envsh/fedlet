@@ -4,7 +4,7 @@ fedlet 的知乎接入协议。登录仪式对齐 **zly2006/zhihu-plus-plus(KMP,
 (数据签名参见 zhihu_sign_rs,同为 zhihu++ 衍生)。
 
 ## 行为(第一阶段)
-- **热榜**:拉取知乎热榜(`/api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true`),按 feed id 去重,**仅发布新上榜条目**;轮询默认 600s。
+- **热榜**:拉取知乎热榜(`/api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true`),按**稳定内容 id 去重**(`card_id`,如 `Q_2052718434220073058`,缺失时回退 `target.id`;`data[].id` 为每次请求易变的 `<rank>_<unix_ms>`,**不做去重键**;两者皆缺的条目日志并忽略),**仅发布新上榜条目**;轮询默认 600s。
 - **通知事件**(被赞/评论/关注等):拉取登录态通知流(`/api/v3/notifications`),按 id 去重,**仅发布新事件**;轮询默认 60s。
 - **收藏夹**:读本人收藏夹列表
   (`GET /api/v4/members/{url_token}/favlists?offset=&limit=`,url_token 取自 `/api/v4/me`

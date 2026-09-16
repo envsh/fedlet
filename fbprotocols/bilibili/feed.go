@@ -53,14 +53,14 @@ type feedItem struct {
 			Major struct {
 				Type    string `json:"type"`
 				Archive *struct {
-					Title string `json:"title"`
-					Bvid  string `json:"bvid"`
-					Aid   int64  `json:"aid"`
-					Pic   string `json:"cover"`
-					Desc  string `json:"desc"`
+					Title string    `json:"title"`
+					Bvid  string    `json:"bvid"`
+					Aid   flexInt64 `json:"aid"`
+					Pic   string    `json:"cover"`
+					Desc  string    `json:"desc"`
 					Stat  struct {
-						View int64 `json:"view"`
-						Like int64 `json:"like"`
+						View flexInt64 `json:"view"`
+						Like flexInt64 `json:"like"`
 					} `json:"stat"`
 				} `json:"archive"`
 				Draw *struct {

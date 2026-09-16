@@ -11,6 +11,7 @@ package zhihu
 // by their feed id so a stable board only publishes newly-appeared entries.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -23,6 +24,7 @@ const hotlistURL = "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?l
 // (question/pin/topic…) so it is kept as raw JSON and only lightly inspected.
 type HotlistItem struct {
 	ID     string          `json:"id"`
+	CardID string          `json:"card_id"`
 	Type   string          `json:"type"`
 	Detail string          `json:"detail_text,omitempty"`
 	Target json.RawMessage `json:"target"`
@@ -32,6 +34,48 @@ type HotlistItem struct {
 type HotlistResp struct {
 	Data      []HotlistItem `json:"data"`
 	FreshText string        `json:"fresh_text,omitempty"`
+}
+
+// HotlistCardID returns the stable card id of a hot list entry, if the API
+// sends one (e.g. "Q_2052718434220073058"). It is the primary dedupe key.
+func HotlistCardID(it *HotlistItem) string {
+	return it.CardID
+}
+
+// HotlistTargetID extracts the content id of the hot list target (target.id)
+// as a string, whether the API sends a number or a string wrapper. The raw
+// JSON is kept verbatim so 64-bit ids (e.g. 2052718434220073058) do not lose
+// precision through float64.
+func HotlistTargetID(raw json.RawMessage) string {
+	var t struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if len(raw) == 0 {
+		return ""
+	}
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return ""
+	}
+	b := bytes.TrimSpace(t.ID)
+	if len(b) == 0 || bytes.Equal(b, []byte("null")) || b[0] == '{' || b[0] == '[' {
+		return ""
+	}
+	return string(bytes.Trim(b, `"`))
+}
+
+// HotlistKey returns the stable identity of a hot list entry for deduplication.
+// The feed wrapper id (data[].id) is a per-request volatile value like
+// "0_1782366660.747819" ("<rank>_<unix_ms>"), so it must not be used as the
+// dedupe key. card_id wins, then the target's own content id. An entry with
+// neither has no stable identity: ok=false and the publisher must skip it.
+func HotlistKey(it *HotlistItem) (string, bool) {
+	if k := HotlistCardID(it); k != "" {
+		return k, true
+	}
+	if k := HotlistTargetID(it.Target); k != "" {
+		return k, true
+	}
+	return "", false
 }
 
 // FetchHotlist fetches the current hot list with the shared session.
