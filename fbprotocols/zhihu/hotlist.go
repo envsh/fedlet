@@ -23,11 +23,24 @@ const hotlistURL = "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?l
 // HotlistItem is one entry of the hot list. The target payload shape varies
 // (question/pin/topic…) so it is kept as raw JSON and only lightly inspected.
 type HotlistItem struct {
-	ID     string          `json:"id"`
-	CardID string          `json:"card_id"`
-	Type   string          `json:"type"`
-	Detail string          `json:"detail_text,omitempty"`
-	Target json.RawMessage `json:"target"`
+	ID        string          `json:"id"`
+	CardID    string          `json:"card_id"`
+	Type      string          `json:"type"`
+	StyleType string          `json:"style_type,omitempty"`
+	Detail    string          `json:"detail_text,omitempty"`
+	Trend     int             `json:"trend,omitempty"`
+	Debut     bool            `json:"debut,omitempty"`
+	Target    json.RawMessage `json:"target"`
+	Children  []HotlistChild  `json:"children,omitempty"`
+}
+
+// HotlistChild is one element of a hot feed's children array. On the hot board
+// its thumbnail is the entry cover: the first answer's thumbnail for a
+// question, the article cover for an article (zhihu-plus-plus HotListScreen
+// renders children.firstOrNull().thumbnail).
+type HotlistChild struct {
+	Type      string `json:"type"`
+	Thumbnail string `json:"thumbnail"`
 }
 
 // HotlistResp is the response envelope of the hot list endpoint.
@@ -149,15 +162,73 @@ func HotlistDetail(raw json.RawMessage) string {
 	return ""
 }
 
-// HotlistLink returns the target's own link (target.link.url) verbatim, as
-// given by the hot list API, without any path/id extraction.
-func HotlistLink(raw json.RawMessage) string {
-	m := targetMap(raw)
-	link, ok := m["link"].(map[string]any)
-	if !ok {
+// HotlistDetailText returns the feed's one-line heat summary. The feed-level
+// detail_text ("899 万热度") wins; the target excerpt/metrics area is the
+// fallback for payload shapes that carry no feed detail.
+func HotlistDetailText(it *HotlistItem) string {
+	if it == nil {
 		return ""
 	}
-	u, _ := link["url"].(string)
+	if it.Detail != "" {
+		return it.Detail
+	}
+	return HotlistDetail(it.Target)
+}
+
+// HotlistImage returns the entry cover: the newer image_area.url when present,
+// else children[0].thumbnail (answer thumbnail for a question, article cover
+// for an article), else the target's own thumbnail(s).
+func HotlistImage(it *HotlistItem) string {
+	if it == nil {
+		return ""
+	}
+	m := targetMap(it.Target)
+	if a, ok := m["image_area"].(map[string]any); ok {
+		if u, _ := a["url"].(string); u != "" {
+			return u
+		}
+	}
+	for _, c := range it.Children {
+		if c.Thumbnail != "" {
+			return c.Thumbnail
+		}
+	}
+	if u, _ := m["thumbnail"].(string); u != "" {
+		return u
+	}
+	if ts, ok := m["thumbnails"].([]any); ok {
+		for _, v := range ts {
+			if u, _ := v.(string); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
+// HotlistAuthor returns the target's author object verbatim (target.author).
+// Question targets carry a placeholder ("用户", empty url_token); it is
+// published as-is by request.
+func HotlistAuthor(it *HotlistItem) map[string]any {
+	if it == nil {
+		return nil
+	}
+	m := targetMap(it.Target)
+	a, _ := m["author"].(map[string]any)
+	return a
+}
+
+// HotlistLink returns the target's own link (target.link.url) verbatim, as
+// given by the hot list API, without any path/id extraction. When the payload
+// has no link block (the live mobile hot-board shape), target.url is used.
+func HotlistLink(raw json.RawMessage) string {
+	m := targetMap(raw)
+	if link, ok := m["link"].(map[string]any); ok {
+		if u, _ := link["url"].(string); u != "" {
+			return u
+		}
+	}
+	u, _ := m["url"].(string)
 	return u
 }
 

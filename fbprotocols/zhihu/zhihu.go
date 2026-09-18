@@ -259,7 +259,7 @@ func hotRound(state *zhihuState) {
 			continue
 		}
 		state.Hotlist[key] = now.Unix()
-		detail := HotlistDetail(it.Target)
+		detail := HotlistDetailText(it)
 		log.Printf("zhihu: hotlist #%d %s %s", i+1, key, truncate(title, 80))
 		payload := map[string]any{
 			"kind":         "hotlist",
@@ -268,9 +268,14 @@ func hotRound(state *zhihuState) {
 			"content_id":   HotlistTargetID(it.Target),
 			"feed_id":      it.ID,
 			"type":         it.Type,
+			"style_type":   it.StyleType,
 			"title":        title,
 			"detail":       detail,
 			"url":          HotlistLink(it.Target),
+			"image":        HotlistImage(it),
+			"author":       HotlistAuthor(it),
+			"trend":        it.Trend,
+			"debut":        it.Debut,
 			"target":       it.Target,
 			"fresh_text":   resp.FreshText,
 			"count":        len(resp.Data),

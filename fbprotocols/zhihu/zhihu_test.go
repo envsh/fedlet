@@ -139,6 +139,47 @@ func TestHotlistNewShape(t *testing.T) {
 	}
 }
 
+func TestHotlistImageAuthorLink(t *testing.T) {
+	const js = `{"data":[
+		{"id":"0_1.1","card_id":"Q_1","type":"hot_list_feed","detail_text":"899 万热度",
+		 "target":{"id":1,"type":"question","title":"甲","url":"https://api.zhihu.com/questions/1",
+		           "author":{"name":"用户","url_token":"","avatar_url":"https://pic.zhimg/a.jpg"}},
+		 "children":[{"type":"answer","thumbnail":"https://pic.zhimg/cover.jpg"}]},
+		{"id":"1_1.2","card_id":"Q_2","type":"hot_list_feed","detail_text":"100 万热度",
+		 "target":{"id":2,"type":"article","title":"乙","url":"https://api.zhihu.com/articles/2",
+		           "author":{"name":"作者乙","url_token":"author-b","avatar_url":"https://pic.zhimg/b.jpg"},
+		           "image_area":{"url":"https://pic.zhimg/article-cover.jpg"}},
+		 "children":[]}]}`
+	var r HotlistResp
+	if err := json.Unmarshal([]byte(js), &r); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	q, art := &r.Data[0], &r.Data[1]
+	// question: children[0].thumbnail is the cover.
+	if got := HotlistImage(q); got != "https://pic.zhimg/cover.jpg" {
+		t.Errorf("question cover = %q", got)
+	}
+	// article: image_area.url wins, so the article cover is published too.
+	if got := HotlistImage(art); got != "https://pic.zhimg/article-cover.jpg" {
+		t.Errorf("article cover = %q", got)
+	}
+	// placeholder author is published verbatim.
+	if au := HotlistAuthor(q); au["name"] != "用户" {
+		t.Errorf("placeholder author = %v", au)
+	}
+	if au := HotlistAuthor(art); au["name"] != "作者乙" || au["url_token"] != "author-b" {
+		t.Errorf("article author = %v", au)
+	}
+	// no link block -> fall back to target.url.
+	if got := HotlistLink(q.Target); got != "https://api.zhihu.com/questions/1" {
+		t.Errorf("link fallback = %q", got)
+	}
+	// feed detail_text outranks the target excerpt/metrics.
+	if got := HotlistDetailText(art); got != "100 万热度" {
+		t.Errorf("detail_text priority = %q", got)
+	}
+}
+
 func TestHotlistKey(t *testing.T) {
 	cases := []struct {
 		name string

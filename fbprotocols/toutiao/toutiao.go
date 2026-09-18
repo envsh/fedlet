@@ -222,6 +222,7 @@ func hotRound(state *toutiaoState) {
 			"detail":       HotlistDetail(it),
 			"hot":          HotlistHot(it),
 			"url":          HotlistLink(it),
+			"image":        HotlistImage(it),
 			"count":        len(resp.Data),
 			"published_at": now.Unix(),
 		}

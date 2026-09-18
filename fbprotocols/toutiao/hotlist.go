@@ -67,6 +67,19 @@ func (it *HotlistItem) Key() string {
 	return ""
 }
 
+// HotlistImage returns the signed new-CDN image url for the item (Image.url),
+// or "" when absent. Matches the feed side's image semantics: first usable, no
+// fallback fudging.
+func HotlistImage(it *HotlistItem) string {
+	if it == nil {
+		return ""
+	}
+	if u, _ := it.Image["url"].(string); u != "" {
+		return u
+	}
+	return ""
+}
+
 // HotlistTitle returns the display title, falling back to the query word.
 func HotlistTitle(it *HotlistItem) string {
 	if it == nil {

@@ -114,7 +114,7 @@ x-requested-with:   fetch
 | 参数 | 值 | 来源(资料项目) |
 |---|---|---|
 | 热榜端点 | `GET /api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true`(**需 z_c0**) | zhihu-plus-plus `HotListViewModel.kt`(同源签名);RSSHub PR #19075(`reverse_order=0`,需 ZHIHU_COOKIES);2026-09 实测匿名 101;待真实会话回填字段 |
-| 热榜目标字段 | `target.title_area.text` / `excerpt_area.text` / `metrics_area.text` / `link.url`,旧结构回退 `target.title / detail_text / excerpt` | SnailDev/zhihu-hot-hub 实测结构;RSSHub hot.ts 旧结构对照 |
+| 热榜目标字段 | `target.title_area.text` / `excerpt_area.text` / `metrics_area.text` / `link.url`,旧结构回退 `target.title / url / excerpt`;封面 `target.image_area.url` 或 item 级 `children[0].thumbnail`(题目=回答缩略图,文章=文章封面);作者 `target.author`(题目类目为占位"用户",原样发布) | SnailDev/zhihu-hot-hub 实测结构;RSSHub hot.ts;zhihu++ `HotListScreen` 取图 |
 | 通知端点 | `GET /api/v3/notifications?limit=20&offset=0`(**需 z_c0**) | pyzhihu-cli 通知命令 + zhihu web;待实测回填 |
 | 收藏夹 | `GET /api/v4/members/{url_token}/favlists?offset=&limit=`;`GET /api/v4/collections/{cid}/contents?offset=&limit=` | **2026-09 真实会话实测通过**(8 夹、default 184 条、分页正常);条目 `type` 在顶层(如 `answer`,退化 `attachment.type`),answer 无顶层 title、取 `question.title`;url/question_id 实测存在,无需 x-zse-96 |
 | 浏览历史 | `GET /api/v4/unify-consumption/read_history?offset=&limit=20`(ref=`https://www.zhihu.com/`) | **2026-09 真实会话实测通过**(totals=565 透传);条目 `data[].data.{extra{content_token,content_type,read_time,question_token},content{author_name,summary,cover_image},action.url}` 与实现逐字段一致,无签名要求 |
@@ -143,7 +143,7 @@ encryptor.go    BMV 加密体 Go 移植(PROTOCOL_DATA / 10 轮 / HMAC-SHA1,参�
 phonelogin.go   Android 手机号登录客户端(guest init / captcha / digits / sign_in)
 auth.go         登录 API(二维码 + 手机验证码)、会话持久化、过期检测
 loginsrv.go     自包含登录 UI(随机端口 / 127.0.0.1 / openurl / 用完即退 / Cookie 粘贴登录)
-hotlist.go      热榜拉取与字段提取(title_area/excerpt_area/metrics_area/link)
+hotlist.go      热榜拉取与字段提取(title_area/excerpt_area/metrics_area/link/children/image/author)
 notify.go       通知拉取
 collection.go   收藏夹(favlists + contents)拉取、url_token 缓存、字段提取、去重、发布
 history.go      浏览历史(read_history offset 翻页 + totals)拉取与发布
