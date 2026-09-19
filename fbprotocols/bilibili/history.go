@@ -2,6 +2,7 @@ package bilibili
 
 // Watch history (x/web-interface/history/cursor). Needs SESSDATA. Publishes
 // newly-watched entries only (dedupe by business+kid).
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 //
 // The endpoint paginates with an opaque cursor (max/business/view_at echoed
 // back). The per-item `business` lives nested under history.business, and the
@@ -11,10 +12,13 @@ package bilibili
 // Verified live 2026-09 against the production response shape.
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -49,6 +53,19 @@ type histItem struct {
 		Bvid     string `json:"bvid"`
 		Business string `json:"business"`
 	} `json:"history"`
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *histItem) UnmarshalJSON(b []byte) error {
+	type alias histItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = histItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 type histData struct {
@@ -153,7 +170,15 @@ func historyRound(state *biliState) int {
 			"followed_by":  jar.get("DedeUserID"),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(items),
+		})
+		if aerr != nil {
+			log.Printf("bilibili: publish history %s error: %v", key, aerr)
+		} else if m, derr := biliMutableMap(raw); derr != nil {
+			log.Printf("bilibili: publish history %s error: %v", key, derr)
+		} else if err := publish(m); err != nil {
 			log.Printf("bilibili: publish history %s error: %v", key, err)
 		}
 		published++

@@ -36,6 +36,19 @@ type DailyStory struct {
 	ImageHue string   `json:"image_hue"`
 	Type     int      `json:"type"`
 	GaPrefix string   `json:"ga_prefix"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *DailyStory) UnmarshalJSON(b []byte) error {
+	type alias DailyStory
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = DailyStory(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // DailyLatest is the /news/latest envelope.

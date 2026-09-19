@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const readHistoryURL = "https://www.zhihu.com/api/v4/unify-consumption/read_history?offset=%d&limit=%d"
@@ -37,6 +39,7 @@ type HistoryEntry struct {
 	Summary       string
 	Cover         string
 	URL           string
+	Raw           json.RawMessage
 }
 
 // parseHistoryEntry decodes one unify-consumption record into the flat view.
@@ -46,6 +49,7 @@ func parseHistoryEntry(raw json.RawMessage) HistoryEntry {
 		return HistoryEntry{}
 	}
 	var e HistoryEntry
+	e.Raw = append(json.RawMessage(nil), raw...)
 	e.CardType, _ = m["card_type"].(string)
 	// The payload nests under data.data (the read record) -> data.extra + data.content.
 	rec, ok := m["data"].(map[string]any)
@@ -180,7 +184,13 @@ func historyRound(state *zhihuState) {
 			"total":          total,
 			"published_at":   now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(e.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(entries),
+		})
+		if aerr != nil {
+			log.Printf("zhihu: publish history %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("zhihu: publish history %s error: %v", key, err)
 		}
 		published++

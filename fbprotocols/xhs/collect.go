@@ -11,9 +11,12 @@ package xhs
 // successful sync seeds the current shelf silently.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const collectURL = "/api/sns/web/v2/note/collect/page"
@@ -33,6 +36,7 @@ type CollectNote struct {
 	AuthorID       string
 	LikedCount     int64
 	CollectedCount int64
+	Raw            map[string]any
 }
 
 // collectPageResp is the parsed {cursor,has_more,notes} envelope.
@@ -86,6 +90,7 @@ func parseCollectNote(m map[string]any) CollectNote {
 		Title:  xstr(m, "display_title"),
 		Type:   xstr(m, "type"),
 		Cover:  xstr(m, "cover"),
+		Raw:    m,
 	}
 	if n.Title == "" {
 		n.Title = xstr(m, "title")
@@ -186,7 +191,14 @@ func collectRound(state *xhsState) {
 			"url":             collectLink(it),
 			"published_at":    now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		itemB, _ := json.Marshal(it.Raw)
+		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(notes),
+		})
+		if aerr != nil {
+			logPrefix("publish collect %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			logPrefix("publish collect %s error: %v", key, err)
 		}
 		published++

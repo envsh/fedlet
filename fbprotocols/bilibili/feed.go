@@ -2,13 +2,17 @@ package bilibili
 
 // Follow feed (x/polymer/web-dynamic/v1/feed/all). Needs SESSDATA.
 // Publishes newly-appeared updates only (dedupe by id_str).
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 // flexInt64 accepts either a JSON number or a "123" string. Bilibili has been
@@ -86,6 +90,19 @@ type feedItem struct {
 			} `json:"major"`
 		} `json:"module_dynamic"`
 	} `json:"modules"`
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *feedItem) UnmarshalJSON(b []byte) error {
+	type alias feedItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = feedItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 type feedData struct {
@@ -233,7 +250,15 @@ func feedRound(state *biliState) int {
 			"followed_by":  jar.get("DedeUserID"),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(items),
+		})
+		if aerr != nil {
+			log.Printf("bilibili: publish feed %s error: %v", key, aerr)
+		} else if m, derr := biliMutableMap(raw); derr != nil {
+			log.Printf("bilibili: publish feed %s error: %v", key, derr)
+		} else if err := publish(m); err != nil {
 			log.Printf("bilibili: publish feed %s error: %v", key, err)
 		}
 		published++

@@ -49,6 +49,7 @@ type NotifyItem struct {
 	Type        string          `json:"type"`
 	Actor       json.RawMessage `json:"actor"`
 	Target      json.RawMessage `json:"target"`
+	Raw         json.RawMessage `json:"-"`
 }
 
 // NotifyResp is the notifications payload handed to the poll loop.
@@ -66,6 +67,19 @@ type notifPageItem struct {
 	MergeCount int             `json:"mergeCount"`
 	Content    notifContent    `json:"content"`
 	Target     json.RawMessage `json:"target"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original page entity bytes for verbatim forwarding.
+func (it *notifPageItem) UnmarshalJSON(b []byte) error {
+	type alias notifPageItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = notifPageItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // flexInt64 accepts a number or a numeric string (the live page encodes
@@ -201,6 +215,7 @@ func parseNotificationsPage(body []byte) ([]NotifyItem, error) {
 			Type:        it.Type,
 			Actor:       it.Content.Actors,
 			Target:      it.Target,
+			Raw:         it.Raw,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedTime > items[j].CreatedTime })

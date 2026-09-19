@@ -13,6 +13,7 @@ package xhs
 //     client risk interceptor; rounds are throttled by the rate gate
 //
 // State (dedupe, 72h window) persists to ~/.config/fedlet/xhs-state.json.
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
 	"encoding/json"
@@ -26,6 +27,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -236,7 +239,14 @@ func hotRound(state *xhsState) {
 			"count":        len(resp.Data),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		itemB, _ := json.Marshal(it.Raw)
+		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Data),
+		})
+		if aerr != nil {
+			logPrefix("publish hotlist %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			logPrefix("publish hotlist %s error: %v", key, err)
 		}
 		published++
@@ -283,7 +293,14 @@ func notifyRound(state *xhsState) {
 			"unread_total": resp.Unread,
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		itemB, _ := json.Marshal(it.Raw)
+		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Items),
+		})
+		if aerr != nil {
+			logPrefix("publish notification %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			logPrefix("publish notification %s error: %v", key, err)
 		}
 		published++

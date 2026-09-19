@@ -40,6 +40,7 @@ type NotificationItem struct {
 	NoteTitle  string
 	CreateTime int64
 	Unread     bool
+	Raw        map[string]any
 }
 
 // NotificationsResp aggregates one poll of the three streams.
@@ -99,7 +100,7 @@ func parseYouKind(out map[string]any, kind NotificationKind) []NotificationItem 
 		if !ok {
 			continue
 		}
-		it := NotificationItem{Kind: kind}
+		it := NotificationItem{Kind: kind, Raw: m}
 		if s, ok := m["id"].(string); ok {
 			it.ID = s
 		} else if v, ok := numAsInt(m["id"]); ok {

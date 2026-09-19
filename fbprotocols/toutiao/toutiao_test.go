@@ -1,6 +1,7 @@
 package toutiao
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -161,8 +162,12 @@ func TestNewsWatermark(t *testing.T) {
 
 	var published []string
 	SetPublishInfo(func(v any) error {
-		m := v.(map[string]any)
-		published = append(published, m["id"].(string))
+		m := v.(json.RawMessage)
+		var mm map[string]any
+		if err := json.Unmarshal(m, &mm); err != nil {
+			return err
+		}
+		published = append(published, mm["group_id"].(string))
 		return nil
 	})
 	defer SetPublishInfo(nil)

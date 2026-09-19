@@ -1,3 +1,8 @@
+// Protocol orchestrator: Start / poll loop / dedupe state.
+// Publishes thread metadata once per new tid (tieba_thread) and incremental
+// floor posts (tieba_post); each forwarded verbatim (forum+thread+post objects)
+// + flat proto_type/cycle_count (top level). State persists to
+// ~/.config/fedlet/bdtieba-state.json.
 package bdtieba
 
 import (
@@ -11,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -147,7 +154,14 @@ func processThreads(kw string, d *FrsData, state threadState, now time.Time) (ne
 		if !seen {
 			log.Printf("bdtieba: [%s] %s (tid=%d reply=%d) %s",
 				forumName(d.Forum, kw), truncate(t.Title, 80), t.Tid, t.ReplyNum, authorNick(t.Author))
-			if err := publish(publishPayload(d.Forum, t)); err != nil {
+			itemB, _ := json.Marshal(map[string]any{"forum": d.Forum.Raw, "thread": t.Raw})
+			raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+				"proto_type":  "tieba_thread",
+				"cycle_count": len(d.ThreadList),
+			})
+			if aerr != nil {
+				log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, aerr)
+			} else if err := publish(raw); err != nil {
 				log.Printf("bdtieba: publish %q tid=%d error: %v", kw, t.Tid, err)
 			}
 		}
@@ -188,7 +202,14 @@ func processThreadReplies(kw string, f Forum, t *Thread, basePID int64) int64 {
 		return basePID
 	}
 	for i := range posts {
-		if err := publish(publishPostPayload(f, t, &posts[i])); err != nil {
+		itemB, _ := json.Marshal(map[string]any{"forum": f.Raw, "thread": t.Raw, "post": posts[i].Raw})
+		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+			"proto_type":  "tieba_post",
+			"cycle_count": len(posts),
+		})
+		if aerr != nil {
+			log.Printf("bdtieba: publish post %q tid=%d pid=%d error: %v", kw, t.Tid, posts[i].ID, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("bdtieba: publish post %q tid=%d pid=%d error: %v", kw, t.Tid, posts[i].ID, err)
 		}
 	}

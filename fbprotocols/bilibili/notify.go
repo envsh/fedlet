@@ -5,6 +5,7 @@ package bilibili
 // when it changes, the event lists are pulled and new events published
 // individually (kind=notify_event). Feed comes from the /x/msgfeed/* family
 // (the old /x/msg/* endpoints are retired with a global gateway 404).
+// Publish: each event forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
 	"bytes"
@@ -16,6 +17,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 // The old /x/msg/push-info/unread and /x/msg/reply|at|like endpoints are
@@ -43,6 +46,13 @@ func unmarshalUseNumber(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	return dec.Decode(v)
+}
+
+// biliMutableMap decodes a json.RawMessage back into map[string]any with
+// UseNumber so large ids (subject_id ~1e18) survive the publish map round-trip.
+func biliMutableMap(raw json.RawMessage) (map[string]any, error) {
+	var m map[string]any
+	return m, unmarshalUseNumber(raw, &m)
 }
 
 // unreadCounts is the shape of /x/msgfeed/unread. SysMsg is tracked so the
@@ -100,6 +110,7 @@ type notifyEvent struct {
 	CardMsgBrief   string
 	CardStoryTitle string
 	Source         map[string]any
+	Raw            map[string]any `json:"-"`
 }
 
 // fetchUnread pulls the aggregate unread counter.
@@ -184,6 +195,7 @@ func parseMsgfeedItems(items []map[string]any, kind string) []notifyEvent {
 	events := make([]notifyEvent, 0, len(items))
 	for _, m := range items {
 		ev := notifyEvent{Type: kind}
+		ev.Raw = m
 		ev.ID, _ = numAnyAsInt(m["id"])
 		ev.Ctime, _ = numAnyAsInt(m["reply_time"])
 		if ua, ok := m["user"].(map[string]any); ok {
@@ -269,6 +281,7 @@ func parseLikeItems(items []map[string]any) []notifyEvent {
 	events := make([]notifyEvent, 0, len(items))
 	for _, m := range items {
 		ev := notifyEvent{Type: "like"}
+		ev.Raw = m
 		ev.ID, _ = numAnyAsInt(m["id"])
 		ev.Ctime, _ = numAnyAsInt(m["like_time"])
 		if users, ok := m["users"].([]any); ok && len(users) > 0 {
@@ -354,6 +367,7 @@ func parseSysItems(list []map[string]any) []notifyEvent {
 	events := make([]notifyEvent, 0, len(list))
 	for _, m := range list {
 		ev := notifyEvent{Type: "sys"}
+		ev.Raw = m
 		ev.ID, _ = numAnyAsInt(m["id"])
 		ev.Ctime = parseSysTime(m["time_at"])
 		ev.Subject, _ = m["title"].(string)
@@ -514,7 +528,16 @@ func notifyRound(state *biliState) int {
 				"event_ts":             it.Ctime,
 				"published_at":         now.Unix(),
 			}
-			if err := publish(payload); err != nil {
+			itemB, _ := json.Marshal(it.Raw)
+			raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
+				"proto_type":  payload["kind"],
+				"cycle_count": len(evs),
+			})
+			if aerr != nil {
+				log.Printf("bilibili: publish notify %s error: %v", key, aerr)
+			} else if m, derr := biliMutableMap(raw); derr != nil {
+				log.Printf("bilibili: publish notify %s error: %v", key, derr)
+			} else if err := publish(m); err != nil {
 				log.Printf("bilibili: publish notify %s error: %v", key, err)
 			}
 			published++

@@ -8,6 +8,7 @@ package toutiao
 //
 // State (dedupe, 72h window) persists to ~/.config/fedlet/toutiao-state.json.
 // Feed errors are surfaced through LastErrs; rounds never block each other.
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
 	"encoding/json"
@@ -22,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -226,7 +229,13 @@ func hotRound(state *toutiaoState) {
 			"count":        len(resp.Data),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Data),
+		})
+		if aerr != nil {
+			logPrefix("publish hotlist %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			logPrefix("publish hotlist %s error: %v", key, err)
 		}
 		published++
@@ -291,7 +300,13 @@ func newsRound(state *toutiaoState) {
 			"count":        len(resp.Data),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Data),
+		})
+		if aerr != nil {
+			logPrefix("publish news %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			logPrefix("publish news %s error: %v", key, err)
 		}
 		published++

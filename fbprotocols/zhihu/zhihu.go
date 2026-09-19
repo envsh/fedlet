@@ -14,6 +14,7 @@ package zhihu
 //     restarts the login UI (cooldown-gated; resets once the session verifies OK)
 //
 // State (dedupe, 72h window) persists to ~/.config/fedlet/zhihu-state.json.
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
 	"encoding/json"
@@ -24,6 +25,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -281,7 +284,13 @@ func hotRound(state *zhihuState) {
 			"count":        len(resp.Data),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Data),
+		})
+		if aerr != nil {
+			log.Printf("zhihu: publish hotlist %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("zhihu: publish hotlist %s error: %v", key, err)
 		}
 		published++
@@ -334,7 +343,13 @@ func notifyRound(state *zhihuState) {
 			"created_time": it.CreatedTime,
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Data),
+		})
+		if aerr != nil {
+			log.Printf("zhihu: publish notification %d error: %v", it.ID, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("zhihu: publish notification %d error: %v", it.ID, err)
 		}
 		published++
@@ -402,7 +417,13 @@ func dailyRound(state *zhihuState) {
 			"count":        len(resp.Stories),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(resp.Stories),
+		})
+		if aerr != nil {
+			log.Printf("zhihu: publish daily %d error: %v", it.ID, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("zhihu: publish daily %d error: %v", it.ID, err)
 		}
 		state.Daily[key] = now.Unix()

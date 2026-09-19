@@ -16,6 +16,7 @@ package toutiao
 // answers anonymously but may tighten without notice.
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -51,6 +52,19 @@ type NewsItem struct {
 	CommentsCount int64  `json:"comments_count"`
 	ImageURL      string `json:"image_url"`
 	IsFeedAd      bool   `json:"is_feed_ad"`
+	Raw           json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *NewsItem) UnmarshalJSON(b []byte) error {
+	type alias NewsItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = NewsItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // FetchNews fetches page 1 of the feed (newest-first) starting from the given

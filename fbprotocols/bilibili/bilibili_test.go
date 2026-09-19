@@ -308,11 +308,14 @@ func TestHotRoundPublishesNewOnly(t *testing.T) {
 		t.Fatalf("payload count=%d", len(*got))
 	}
 	p := (*got)[0]
-	if p["kind"] != "hotboard" || p["bvid"] != "BV2B" || p["title"] != "第二条" {
+	if p["proto_type"] != "hotboard" || p["bvid"] != "BV2B" || p["title"] != "第二条" {
 		t.Fatalf("bad payload: %+v", p)
 	}
-	if p["url"] != "https://www.bilibili.com/video/BV2B" {
-		t.Fatalf("bad url: %+v", p)
+	if p["cycle_count"] != json.Number("2") {
+		t.Fatalf("bad cycle_count: %+v", p)
+	}
+	if _, ok := p["url"]; ok {
+		t.Fatalf("custom url key leaked: %+v", p)
 	}
 	// second round: everything known, nothing published.
 	*got = (*got)[:0]
@@ -387,20 +390,21 @@ func TestFeedRoundPublishesNewOnly(t *testing.T) {
 		t.Fatalf("published %d, want 1", n)
 	}
 	p := (*got)[0]
-	if p["kind"] != "follow_feed" || p["id"] != "d2" || p["author"] != "b" {
+	if p["proto_type"] != "follow_feed" || p["id_str"] != "d2" {
 		t.Fatalf("bad payload: %+v", p)
 	}
-	if p["text"] != "D2" {
-		t.Fatalf("bad draw text: %+v", p)
+	if p["cycle_count"] != json.Number("2") {
+		t.Fatalf("bad cycle_count: %+v", p)
 	}
-	if p["image"] != "http://img/1.png" {
-		t.Fatalf("bad draw image: %+v", p)
+	ma, _ := p["modules"].(map[string]any)
+	md, _ := ma["module_dynamic"].(map[string]any)
+	major, _ := md["major"].(map[string]any)
+	draw, _ := major["draw"].(map[string]any)
+	if draw["title"] != "D2" {
+		t.Fatalf("bad draw title: %+v", draw)
 	}
-	if ims, _ := p["images"].([]string); len(ims) != 2 || ims[0] != "http://img/1.png" || ims[1] != "http://img/2.png" {
-		t.Fatalf("bad draw images: %+v", p["images"])
-	}
-	if arc, ok := p["image"]; ok && arc != "http://img/1.png" {
-		t.Fatalf("unexpected archive cover leak: %+v", p)
+	if ims, _ := draw["items"].([]any); len(ims) != 2 {
+		t.Fatalf("bad draw items: %+v", draw)
 	}
 }
 
@@ -516,70 +520,78 @@ func TestNotifyRoundPayloadFields(t *testing.T) {
 	if n := notifyRound(state); n != 3 {
 		t.Fatalf("second round published %d detail events, want 3", n)
 	}
-	byKind := map[string]map[string]any{}
+	var rp, lp, sp map[string]any
 	for _, p := range *got {
-		byKind[p["event_type"].(string)] = p
+		if p["proto_type"] != "notify_event" || p["cycle_count"] != json.Number("1") {
+			t.Fatalf("bad proto fields: %+v", p)
+		}
+		switch {
+		case p["reply_time"] != nil:
+			rp = p
+		case p["like_time"] != nil:
+			lp = p
+		case p["card_brief"] != nil:
+			sp = p
+		default:
+			t.Fatalf("unknown event payload: %+v", p)
+		}
+	}
+	if rp == nil || lp == nil || sp == nil {
+		t.Fatalf("missing event kinds: %+v", *got)
 	}
 
-	rp, ok := byKind["reply"]
-	if !ok {
-		t.Fatalf("no reply event published: %+v", *got)
+	if rp["id"] != json.Number("101") {
+		t.Fatalf("bad reply id: %+v", rp)
 	}
-	if rp["id"] != int64(101) || rp["actor"] != "甲" || rp["actor_mid"] != int64(7) {
-		t.Fatalf("bad reply core: %+v", rp)
+	ru, _ := rp["user"].(map[string]any)
+	if ru == nil || ru["nickname"] != "甲" || ru["mid"] != json.Number("7") || ru["avatar"] != "http://av/a.jpg" {
+		t.Fatalf("bad reply user: %+v", rp["user"])
 	}
-	if rp["avatar"] != "http://av/a.jpg" || rp["image"] != "http://img/r.jpg" {
-		t.Fatalf("bad reply avatar/image: %+v", rp)
+	ri, _ := rp["item"].(map[string]any)
+	if ri == nil || ri["subject_id"] != json.Number("55") || ri["source_id"] != json.Number("66") || ri["target_id"] != json.Number("77") {
+		t.Fatalf("bad reply item ids: %+v", rp["item"])
 	}
-	au, _ := rp["author"].(map[string]any)
-	if au == nil || au["nickname"] != "甲" || !authorNum(au, "fans", 3) {
-		t.Fatalf("bad reply author: %+v", rp["author"])
+	if ri["type"] != "reply" || ri["business"] != "评论" || ri["image"] != "http://img/r.jpg" {
+		t.Fatalf("bad reply item meta: %+v", rp["item"])
 	}
-	if rp["item_type"] != "reply" || rp["business"] != "评论" {
-		t.Fatalf("bad reply item meta: %+v", rp)
+	if ri["target_reply_content"] != "被回复内容" {
+		t.Fatalf("bad reply target content: %+v", rp["item"])
 	}
-	if rp["subject_id"] != int64(55) || rp["source_id"] != int64(66) || rp["target_id"] != int64(77) {
-		t.Fatalf("bad reply ids: %+v", rp)
+	if ad, _ := ri["at_details"].([]any); len(ad) != 1 {
+		t.Fatalf("bad reply at_details: %+v", rp["item"])
 	}
-	if rp["root_reply_content"] != "" || rp["target_reply_content"] != "被回复内容" {
-		t.Fatalf("bad reply contents: %+v", rp)
+	if td, _ := ri["topic_details"].([]any); len(td) != 1 {
+		t.Fatalf("bad reply topic_details: %+v", rp["item"])
 	}
-	if ad, _ := rp["at_details"].([]any); len(ad) != 1 {
-		t.Fatalf("bad reply at_details: %+v", rp)
-	}
-	if td, _ := rp["topic_details"].([]any); len(td) != 1 {
-		t.Fatalf("bad reply topic_details: %+v", rp)
-	}
-	if rp["liker_count"] != int64(1) {
-		t.Fatalf("bad reply liker_count: %+v", rp)
+	if rp["counts"] != json.Number("1") {
+		t.Fatalf("bad reply counts: %+v", rp)
 	}
 
-	lp, ok := byKind["like"]
-	if !ok {
-		t.Fatalf("no like event published: %+v", *got)
+	if lp["id"] != json.Number("201") {
+		t.Fatalf("bad like id: %+v", lp)
 	}
-	if lp["avatar"] != "http://av/b.jpg" || lp["liker_count"] != int64(5) || lp["content_ctime"] != int64(1600000000) {
-		t.Fatalf("bad like meta: %+v", lp)
+	li, _ := lp["item"].(map[string]any)
+	if li == nil || li["item_id"] != json.Number("440") || li["type"] != "video" || li["business"] != "视频" {
+		t.Fatalf("bad like item: %+v", lp["item"])
 	}
-	if lp["image"] != "http://img/l.jpg" || lp["item_type"] != "video" || lp["business"] != "视频" {
-		t.Fatalf("bad like item: %+v", lp)
+	if li["image"] != "http://img/l.jpg" || li["ctime"] != json.Number("1600000000") {
+		t.Fatalf("bad like item meta: %+v", lp["item"])
 	}
-	if lp["subject_id"] != int64(440) {
-		t.Fatalf("bad like subject_id: %+v", lp)
+	if lp["counts"] != json.Number("5") {
+		t.Fatalf("bad like counts: %+v", lp)
 	}
 
-	sp, ok := byKind["sys"]
-	if !ok {
-		t.Fatalf("no sys event published: %+v", *got)
-	}
-	if sp["notify_type"] != int64(4) || sp["card_type"] != int64(2) || sp["item_type"] != "4" {
+	if sp["id"] != json.Number("301") || sp["type"] != json.Number("4") || sp["card_type"] != json.Number("2") {
 		t.Fatalf("bad sys types: %+v", sp)
-	}
-	if sp["avatar"] != "http://av/f.jpg" || sp["image"] != "http://img/card.jpg" {
-		t.Fatalf("bad sys avatar/image: %+v", sp)
 	}
 	if sp["card_brief"] != "brief" || sp["card_msg_brief"] != "msgBrief" || sp["card_story_title"] != "故事" {
 		t.Fatalf("bad sys card text: %+v", sp)
+	}
+	if sp["card_cover"] != "http://img/card.jpg" || sp["card_link"] != "https://b23.tv/x" {
+		t.Fatalf("bad sys card: %+v", sp)
+	}
+	if spu, _ := sp["publisher"].(map[string]any); spu == nil || spu["name"] != "官" || spu["mid"] != json.Number("9") || spu["face"] != "http://av/f.jpg" {
+		t.Fatalf("bad sys publisher: %+v", sp["publisher"])
 	}
 	if src, _ := sp["source"].(map[string]any); src == nil || src["name"] != "源" || src["logo"] != "http://img/logo.png" {
 		t.Fatalf("bad sys source: %+v", sp["source"])

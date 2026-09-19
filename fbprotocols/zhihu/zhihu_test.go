@@ -237,7 +237,14 @@ func TestHotlistRoundDedupesByStableID(t *testing.T) {
 
 	var got []map[string]any
 	oldPub := pubfn_
-	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	pubfn_ = func(v any) error {
+		var m map[string]any
+		if err := json.Unmarshal(v.(json.RawMessage), &m); err != nil {
+			return err
+		}
+		got = append(got, m)
+		return nil
+	}
 	defer func() { pubfn_ = oldPub }()
 
 	state := newState()
@@ -245,8 +252,14 @@ func TestHotlistRoundDedupesByStableID(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("round 1 published %d, want 2", len(got))
 	}
-	if p := got[0]; p["card_id"] != "Q_100" || p["content_id"] != "100" || p["feed_id"] != "0_1782366660.1" {
+	if p := got[0]; p["card_id"] != "Q_100" || p["id"] != "0_1782366660.1" {
 		t.Fatalf("round 1 payload: %+v", p)
+	}
+	if tg, _ := got[0]["target"].(map[string]any); tg["id"] != float64(100) {
+		t.Fatalf("round 1 target: %+v", tg)
+	}
+	if got[0]["proto_type"] != "hotlist" || got[0]["cycle_count"] != float64(2) {
+		t.Fatalf("round 1 proto_type/cycle_count: %+v", got[0])
 	}
 
 	// Same cards reappear with fresh volatile feed ids: nothing republishes,
@@ -256,7 +269,7 @@ func TestHotlistRoundDedupesByStableID(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("round 2 published %d, want 1", len(got))
 	}
-	if p := got[0]; p["card_id"] != "Q_300" || p["feed_id"] != "1_1783000000.4" {
+	if p := got[0]; p["card_id"] != "Q_300" || p["id"] != "1_1783000000.4" {
 		t.Fatalf("round 2 payload: %+v", p)
 	}
 	if _, seen := state.Hotlist["Q_100"]; !seen {
@@ -282,7 +295,14 @@ func TestHotlistRoundSkipsWithoutStableID(t *testing.T) {
 
 	var got []map[string]any
 	oldPub := pubfn_
-	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	pubfn_ = func(v any) error {
+		var m map[string]any
+		if err := json.Unmarshal(v.(json.RawMessage), &m); err != nil {
+			return err
+		}
+		got = append(got, m)
+		return nil
+	}
 	defer func() { pubfn_ = oldPub }()
 
 	state := newState()
@@ -1352,7 +1372,14 @@ func TestDailyRoundPublishesNewOnly(t *testing.T) {
 
 	var got []map[string]any
 	oldPub := pubfn_
-	pubfn_ = func(v any) error { got = append(got, v.(map[string]any)); return nil }
+	pubfn_ = func(v any) error {
+		var m map[string]any
+		if err := json.Unmarshal(v.(json.RawMessage), &m); err != nil {
+			return err
+		}
+		got = append(got, m)
+		return nil
+	}
 	defer func() { pubfn_ = oldPub }()
 
 	state := newState()
@@ -1363,18 +1390,14 @@ func TestDailyRoundPublishesNewOnly(t *testing.T) {
 		t.Fatalf("published %d, want 1", len(got))
 	}
 	p := got[0]
-	if p["kind"] != "daily" || p["id"] != int64(9792481) {
+	if p["proto_type"] != "daily" || p["id"] != float64(9792481) {
 		t.Fatalf("bad payload: %+v", p)
 	}
-	if p["title"] != "瞎扯 · 如何正确地吐槽" || p["date"] != "20260910" {
-		t.Fatalf("bad title/date: %+v", p)
+	if p["cycle_count"] != float64(2) {
+		t.Fatalf("bad cycle_count: %+v", p)
 	}
-	if p["image"] != "https://pic1.zhimg.com/img.jpg" {
-		t.Fatalf("bad image fallback: %+v", p)
-	}
-	desc, ok := p["description"].(string)
-	if !ok || !strings.Contains(desc, "吐槽要讲究方法") {
-		t.Fatalf("bad description: %+v", desc)
+	if p["title"] != "瞎扯 · 如何正确地吐槽" {
+		t.Fatalf("bad title: %+v", p)
 	}
 	if _, seen := state.Daily["9792481"]; !seen {
 		t.Fatalf("new id not seeded after publish")

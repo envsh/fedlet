@@ -32,6 +32,19 @@ type HotlistItem struct {
 	Debut     bool            `json:"debut,omitempty"`
 	Target    json.RawMessage `json:"target"`
 	Children  []HotlistChild  `json:"children,omitempty"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *HotlistItem) UnmarshalJSON(b []byte) error {
+	type alias HotlistItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = HotlistItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // HotlistChild is one element of a hot feed's children array. On the hot board

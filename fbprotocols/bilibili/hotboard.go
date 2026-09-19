@@ -2,11 +2,15 @@ package bilibili
 
 // Global hot board (x/web-interface/ranking/v2). Public — no session needed.
 // Publishes newly-appeared entries only (dedupe by aid/bvid).
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const rankingURL = apiHost + "/x/web-interface/ranking/v2?rid=0&type=all&web_location=333.934"
@@ -37,6 +41,19 @@ type rankingItem struct {
 		Like     int64 `json:"like"`
 	} `json:"stat"`
 	ShortLinkV2 string `json:"short_link_v2"`
+	Raw          json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *rankingItem) UnmarshalJSON(b []byte) error {
+	type alias rankingItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = rankingItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 type rankingData struct {
@@ -103,7 +120,15 @@ func hotRound(state *biliState) int {
 			"count":        len(list),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(list),
+		})
+		if aerr != nil {
+			log.Printf("bilibili: publish hotboard %s error: %v", key, aerr)
+		} else if m, derr := biliMutableMap(raw); derr != nil {
+			log.Printf("bilibili: publish hotboard %s error: %v", key, derr)
+		} else if err := publish(m); err != nil {
 			log.Printf("bilibili: publish hotboard %s error: %v", key, err)
 		}
 		published++

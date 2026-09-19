@@ -38,6 +38,20 @@ type HotlistItem struct {
 	HotValue         json.RawMessage `json:"HotValue"`
 	Url              string          `json:"Url"`
 	Image            map[string]any  `json:"Image"`
+	Raw              json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes so publish can forward them
+// verbatim (only proto_type / cycle_count are layered on top).
+func (it *HotlistItem) UnmarshalJSON(b []byte) error {
+	type alias HotlistItem
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = HotlistItem(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // FetchHotlist fetches the current hot board anonymously.

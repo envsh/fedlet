@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -54,6 +56,7 @@ type CollectionItem struct {
 	Author      string `json:"author"`
 	QuestionID  int64  `json:"question_id"`
 	VoteupCount int64  `json:"voteup_count"`
+	Raw         json.RawMessage `json:"-"`
 }
 
 // CollectionEntry pairs a collected item with its collection.
@@ -111,6 +114,7 @@ func parseCollectionItem(raw json.RawMessage) CollectionItem {
 		Excerpt:     strField(m, "excerpt"),
 		URL:         strField(m, "url"),
 		VoteupCount: intField(m, "voteup_count"),
+		Raw:         append(json.RawMessage(nil), raw...),
 	}
 	if a, ok := m["author"].(map[string]any); ok {
 		it.Author = strField(a, "name")
@@ -258,7 +262,13 @@ func collectionRound(state *zhihuState) {
 			"url":              ce.Item.URL,
 			"published_at":     now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(ce.Item.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(entries),
+		})
+		if aerr != nil {
+			log.Printf("zhihu: publish collection %s error: %v", key, aerr)
+		} else if err := publish(raw); err != nil {
 			log.Printf("zhihu: publish collection %s error: %v", key, err)
 		}
 		published++

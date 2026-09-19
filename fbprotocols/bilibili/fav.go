@@ -2,6 +2,7 @@ package bilibili
 
 // My favorites (x/v3/fav/folder/created/list-all + x/v3/fav/resource/list).
 // Needs SESSDATA. Publishes newly-added favorites only (dedupe by media_id+id).
+// Publish: each entry forwarded verbatim + flat proto_type/cycle_count (top level).
 //
 // The folder list is fetched for the logged-in account (DedeUserID), which is
 // the only way to see private folders. Each folder is then walked page by page
@@ -9,10 +10,13 @@ package bilibili
 // against the dedupe set of already-published media ids.
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const (
@@ -41,6 +45,19 @@ type favMedia struct {
 		Mid  int64  `json:"mid"`
 		Name string `json:"name"`
 	} `json:"upper"`
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps the original entry bytes for verbatim forwarding.
+func (it *favMedia) UnmarshalJSON(b []byte) error {
+	type alias favMedia
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*it = favMedia(a)
+	it.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 type favFoldersData struct {
@@ -170,7 +187,15 @@ func favRound(state *biliState) int {
 			"followed_by":  jar.get("DedeUserID"),
 			"published_at": now.Unix(),
 		}
-		if err := publish(payload); err != nil {
+		raw, aerr := fbshared.InsertFlatFields(it.Raw, map[string]any{
+			"proto_type":  payload["kind"],
+			"cycle_count": len(items),
+		})
+		if aerr != nil {
+			log.Printf("bilibili: publish favorite %d error: %v", it.ID, aerr)
+		} else if m, derr := biliMutableMap(raw); derr != nil {
+			log.Printf("bilibili: publish favorite %d error: %v", it.ID, derr)
+		} else if err := publish(m); err != nil {
 			log.Printf("bilibili: publish favorite %d error: %v", it.ID, err)
 		}
 		published++

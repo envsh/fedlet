@@ -63,6 +63,19 @@ type Post struct {
 	Time     int64             `json:"time"`
 	ReplyNum int64             `json:"reply_num"`
 	SubPosts []SubPost         `json:"sub_post_list,omitempty"`
+	Raw      json.RawMessage   `json:"-"`
+}
+
+// UnmarshalJSON keeps the original post bytes for verbatim forwarding.
+func (p *Post) UnmarshalJSON(b []byte) error {
+	type alias Post
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*p = Post(a)
+	p.Raw = append(json.RawMessage(nil), b...)
+	return nil
 }
 
 // SubPost is a reply inside a floor (楼中楼).
