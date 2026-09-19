@@ -65,6 +65,9 @@ type feedItem struct {
 				} `json:"archive"`
 				Draw *struct {
 					Title string `json:"title"`
+					Items []struct {
+						Src string `json:"src"`
+					} `json:"items"`
 				} `json:"draw"`
 				Article *struct {
 					Title string `json:"title"`
@@ -72,6 +75,14 @@ type feedItem struct {
 				Common *struct {
 					Title string `json:"title"`
 				} `json:"common"`
+				UgcSeason *struct {
+					Title string `json:"title"`
+					Pic   string `json:"cover"`
+				} `json:"ugc_season"`
+				Pgc *struct {
+					Title string `json:"title"`
+					Pic   string `json:"cover"`
+				} `json:"pgc"`
 			} `json:"major"`
 		} `json:"module_dynamic"`
 	} `json:"modules"`
@@ -143,6 +154,44 @@ func feedURLFor(it *feedItem) string {
 	return ""
 }
 
+// feedImage returns the entry visual: video/season cover, else the first draw
+// image. Covers are published verbatim; bilibili serves them over http, which
+// the hdslb CDN transparently upgrades to https.
+func feedImage(it *feedItem) string {
+	m := it.Modules.ModuleDynamic.Major
+	if a := m.Archive; a != nil && a.Pic != "" {
+		return a.Pic
+	}
+	if s := m.UgcSeason; s != nil && s.Pic != "" {
+		return s.Pic
+	}
+	if p := m.Pgc; p != nil && p.Pic != "" {
+		return p.Pic
+	}
+	if d := m.Draw; d != nil && len(d.Items) > 0 {
+		return d.Items[0].Src
+	}
+	return ""
+}
+
+// feedImages returns all attached images (draw items); nil otherwise.
+func feedImages(it *feedItem) []string {
+	d := it.Modules.ModuleDynamic.Major.Draw
+	if d == nil {
+		return nil
+	}
+	out := make([]string, 0, len(d.Items))
+	for _, im := range d.Items {
+		if im.Src != "" {
+			out = append(out, im.Src)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // feedRound fetches + publishes new follow updates. Returns the number
 // published (0 on first sync: the existing history is seeded silently).
 func feedRound(state *biliState) int {
@@ -179,6 +228,8 @@ func feedRound(state *biliState) int {
 			"pub_ts":       it.Modules.ModuleAuthor.PubTime,
 			"text":         text,
 			"url":          feedURLFor(it),
+			"image":        feedImage(it),
+			"images":       feedImages(it),
 			"followed_by":  jar.get("DedeUserID"),
 			"published_at": now.Unix(),
 		}

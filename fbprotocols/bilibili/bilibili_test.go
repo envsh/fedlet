@@ -128,7 +128,7 @@ func TestFeedTextAndURL(t *testing.T) {
 	body := []byte(`{"id_str":"12345","type":"DYNAMIC_TYPE_AV",
 		"modules":{"module_author":{"name":"up1","mid":99},
 		"module_dynamic":{"desc":{"text":"发布了一个视频"},
-		"major":{"archive":{"title":"标题A","bvid":"BV1x","aid":42,"desc":"d"}}}}}`)
+		"major":{"archive":{"title":"标题A","bvid":"BV1x","aid":42,"desc":"d","cover":"http://cover/v.jpg"}}}}}`)
 	if err := json.Unmarshal(body, &it); err != nil {
 		t.Fatal(err)
 	}
@@ -141,10 +141,17 @@ func TestFeedTextAndURL(t *testing.T) {
 	if got := feedItemID(&it); got != "12345" {
 		t.Fatalf("feedItemID=%q", got)
 	}
+	if got := feedImage(&it); got != "http://cover/v.jpg" {
+		t.Fatalf("feedImage(archive)=%q", got)
+	}
+	if got := feedImages(&it); got != nil {
+		t.Fatalf("feedImages(archive)=%v, want nil", got)
+	}
 
 	var fp feedItem
 	if err := json.Unmarshal([]byte(`{"id_str":"","type":"DYNAMIC_TYPE_DRAW",
-		"modules":{"module_dynamic":{"major":{"draw":{"title":"绘画"}}}}}`), &fp); err != nil {
+		"modules":{"module_dynamic":{"major":{"draw":{"title":"绘画",
+		"items":[{"src":"http://img/a.png"},{"src":"http://img/b.png"}]}}}}}`), &fp); err != nil {
 		t.Fatal(err)
 	}
 	if got := feedText(&fp); got != "绘画" {
@@ -152,6 +159,12 @@ func TestFeedTextAndURL(t *testing.T) {
 	}
 	if got := feedItemID(&fp); got != "feed:DYNAMIC_TYPE_DRAW:0" {
 		t.Fatalf("fallback feedItemID=%q", got)
+	}
+	if got := feedImage(&fp); got != "http://img/a.png" {
+		t.Fatalf("feedImage(draw)=%q", got)
+	}
+	if got := feedImages(&fp); len(got) != 2 || got[1] != "http://img/b.png" {
+		t.Fatalf("feedImages(draw)=%v", got)
 	}
 }
 
@@ -324,8 +337,8 @@ func TestHotRoundSkipsOnError(t *testing.T) {
 // ---- round tests (follow feed) ----
 
 const feedTestBody = `{"code":0,"data":{"items":[
-{"id_str":"d1","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"name":"a","mid":1},"module_dynamic":{"desc":{"text":"v1"},"major":{"archive":{"title":"T1","bvid":"BVX1"}}}}},
-{"id_str":"d2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"b","mid":2},"module_dynamic":{"desc":{"text":"v2"},"major":{"draw":{"title":"D2"}}}}}
+{"id_str":"d1","type":"DYNAMIC_TYPE_AV","modules":{"module_author":{"name":"a","mid":1},"module_dynamic":{"desc":{"text":"v1"},"major":{"archive":{"title":"T1","bvid":"BVX1","cover":"http://cover/d1.jpg"}}}}},
+{"id_str":"d2","type":"DYNAMIC_TYPE_DRAW","modules":{"module_author":{"name":"b","mid":2},"module_dynamic":{"desc":{"text":"v2"},"major":{"draw":{"title":"D2","items":[{"src":"http://img/1.png"},{"src":"http://img/2.png"}]}}}}}
 ]}}`
 
 func TestFeedRoundRequiresSession(t *testing.T) {
@@ -379,6 +392,15 @@ func TestFeedRoundPublishesNewOnly(t *testing.T) {
 	}
 	if p["text"] != "D2" {
 		t.Fatalf("bad draw text: %+v", p)
+	}
+	if p["image"] != "http://img/1.png" {
+		t.Fatalf("bad draw image: %+v", p)
+	}
+	if ims, _ := p["images"].([]string); len(ims) != 2 || ims[0] != "http://img/1.png" || ims[1] != "http://img/2.png" {
+		t.Fatalf("bad draw images: %+v", p["images"])
+	}
+	if arc, ok := p["image"]; ok && arc != "http://img/1.png" {
+		t.Fatalf("unexpected archive cover leak: %+v", p)
 	}
 }
 
@@ -441,6 +463,126 @@ func TestNotifyParseLikeTolerant(t *testing.T) {
 	}
 	if ev.ID != 11 || ev.Ctime != 1700000011 || ev.Message != "赞了你的内容" {
 		t.Fatalf("like event meta: %+v", ev)
+	}
+}
+
+func TestNotifyRoundPayloadFields(t *testing.T) {
+	resetBili(t)
+	jar.set("SESSDATA", "sess")
+
+	replyRound, likeRound, sysRound := 0, 0, 0
+	oldHC := hc
+	hc = &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		var body []byte
+		switch {
+		case strings.HasPrefix(r.URL.String(), unreadURL):
+			body = []byte(`{"code":0,"data":{"reply":3,"at":0,"like":0,"sys_msg":2}}`)
+		case strings.HasPrefix(r.URL.String(), atURL):
+			body = []byte(`{"code":0,"data":{"cursor":{"is_end":true},"items":[]}}`)
+		case strings.HasPrefix(r.URL.String(), replyURL):
+			replyRound++
+			id := 100 + replyRound - 1
+			body = []byte(fmt.Sprintf(`{"code":0,"data":{"items":[{"id":%d,"reply_time":1700000001,"user":{"mid":7,"nickname":"甲","avatar":"http://av/a.jpg","fans":3,"follow":false},"item":{"subject_id":55,"source_id":66,"target_id":77,"type":"reply","business":"评论","title":"回复主题","image":"http://img/r.jpg","root_reply_content":"","source_content":"回复内容","target_reply_content":"被回复内容","at_details":[{"mid":1,"nickname":"被@甲"}],"topic_details":[{"topic_id":9,"topic_content":"话题A"}],"uri":"https://t.bilibili.com/1"},"counts":1}]}}}`, id))
+		case strings.HasPrefix(r.URL.String(), likeURL):
+			likeRound++
+			id := 200 + likeRound - 1
+			body = []byte(fmt.Sprintf(`{"code":0,"data":{"latest":{"items":[]},"total":{"items":[{"id":%d,"like_time":1700000002,"users":[{"mid":8,"nickname":"乙","avatar":"http://av/b.jpg","fans":0,"follow":false}],"item":{"item_id":440,"type":"video","business":"视频","title":"视频标题","image":"http://img/l.jpg","desc":"-","uri":"https://www.bilibili.com/video/BV1x","ctime":1600000000},"counts":5}]}}}`, id))
+		case strings.HasPrefix(r.URL.String(), sysMsgURL):
+			sysRound++
+			id := 300 + sysRound - 1
+			body = []byte(fmt.Sprintf(`{"code":0,"data":{"system_notify_list":[{"id":%d,"type":4,"card_type":2,"title":"系统通知","content":"内容","card_brief":"brief","card_msg_brief":"msgBrief","card_story_title":"故事","card_cover":"http://img/card.jpg","card_link":"https://b23.tv/x","source":{"name":"源","logo":"http://img/logo.png"},"publisher":{"name":"官","mid":9,"face":"http://av/f.jpg"},"time_at":"2023-04-17 18:03:08"}]}}`, id))
+		default:
+			body = []byte(`{"code":0,"data":{}}`)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+	})}
+	defer func() { hc = oldHC }()
+
+	got := guardPublish(t)
+	state := newBiliState()
+
+	if n := notifyRound(state); n != 0 {
+		t.Fatalf("seed round published %d detail events", n)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("seed round published %d payloads (%+v)", len(*got), *got)
+	}
+	un := (*got)[0]
+	if un["kind"] != "notify_unread" || un["reply"] != int64(3) || un["sys_msg"] != int64(2) || un["total"] != int64(5) {
+		t.Fatalf("bad unread payload: %+v", un)
+	}
+
+	*got = (*got)[:0]
+	if n := notifyRound(state); n != 3 {
+		t.Fatalf("second round published %d detail events, want 3", n)
+	}
+	byKind := map[string]map[string]any{}
+	for _, p := range *got {
+		byKind[p["event_type"].(string)] = p
+	}
+
+	rp, ok := byKind["reply"]
+	if !ok {
+		t.Fatalf("no reply event published: %+v", *got)
+	}
+	if rp["id"] != int64(101) || rp["actor"] != "甲" || rp["actor_mid"] != int64(7) {
+		t.Fatalf("bad reply core: %+v", rp)
+	}
+	if rp["avatar"] != "http://av/a.jpg" || rp["image"] != "http://img/r.jpg" {
+		t.Fatalf("bad reply avatar/image: %+v", rp)
+	}
+	au, _ := rp["author"].(map[string]any)
+	if au == nil || au["nickname"] != "甲" || !authorNum(au, "fans", 3) {
+		t.Fatalf("bad reply author: %+v", rp["author"])
+	}
+	if rp["item_type"] != "reply" || rp["business"] != "评论" {
+		t.Fatalf("bad reply item meta: %+v", rp)
+	}
+	if rp["subject_id"] != int64(55) || rp["source_id"] != int64(66) || rp["target_id"] != int64(77) {
+		t.Fatalf("bad reply ids: %+v", rp)
+	}
+	if rp["root_reply_content"] != "" || rp["target_reply_content"] != "被回复内容" {
+		t.Fatalf("bad reply contents: %+v", rp)
+	}
+	if ad, _ := rp["at_details"].([]any); len(ad) != 1 {
+		t.Fatalf("bad reply at_details: %+v", rp)
+	}
+	if td, _ := rp["topic_details"].([]any); len(td) != 1 {
+		t.Fatalf("bad reply topic_details: %+v", rp)
+	}
+	if rp["liker_count"] != int64(1) {
+		t.Fatalf("bad reply liker_count: %+v", rp)
+	}
+
+	lp, ok := byKind["like"]
+	if !ok {
+		t.Fatalf("no like event published: %+v", *got)
+	}
+	if lp["avatar"] != "http://av/b.jpg" || lp["liker_count"] != int64(5) || lp["content_ctime"] != int64(1600000000) {
+		t.Fatalf("bad like meta: %+v", lp)
+	}
+	if lp["image"] != "http://img/l.jpg" || lp["item_type"] != "video" || lp["business"] != "视频" {
+		t.Fatalf("bad like item: %+v", lp)
+	}
+	if lp["subject_id"] != int64(440) {
+		t.Fatalf("bad like subject_id: %+v", lp)
+	}
+
+	sp, ok := byKind["sys"]
+	if !ok {
+		t.Fatalf("no sys event published: %+v", *got)
+	}
+	if sp["notify_type"] != int64(4) || sp["card_type"] != int64(2) || sp["item_type"] != "4" {
+		t.Fatalf("bad sys types: %+v", sp)
+	}
+	if sp["avatar"] != "http://av/f.jpg" || sp["image"] != "http://img/card.jpg" {
+		t.Fatalf("bad sys avatar/image: %+v", sp)
+	}
+	if sp["card_brief"] != "brief" || sp["card_msg_brief"] != "msgBrief" || sp["card_story_title"] != "故事" {
+		t.Fatalf("bad sys card text: %+v", sp)
+	}
+	if src, _ := sp["source"].(map[string]any); src == nil || src["name"] != "源" || src["logo"] != "http://img/logo.png" {
+		t.Fatalf("bad sys source: %+v", sp["source"])
 	}
 }
 

@@ -7,6 +7,7 @@ package bilibili
 // (the old /x/msg/* endpoints are retired with a global gateway 404).
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,15 @@ const (
 	sysMsgURL = msgHost + "/x/sys-msg/query_user_notify"
 )
 
+// unmarshalUseNumber decodes JSON preserving exact numeric digits (json.Number)
+// inside map[string]any. Without it, numbers decode as float64 and the large
+// msgfeed ids (subject_id ~1e18) silently lose precision beyond 2^53.
+func unmarshalUseNumber(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+
 // unreadCounts is the shape of /x/msgfeed/unread. SysMsg is tracked so the
 // aggregate reflects the full notify center; Total is computed in code (the
 // msgfeed payload has no total field).
@@ -61,14 +71,35 @@ func unmarshalUnread(data json.RawMessage) (unreadCounts, error) {
 
 // notifyEvent is a flattened detail-list event shared by reply/at/like.
 type notifyEvent struct {
-	ID         int64 `json:"id"`
-	Type       string
-	Ctime      int64
-	Uname      string
-	Mid        int64
-	Message    string
-	DynamicURL string
-	Subject    string
+	ID             int64
+	Type           string
+	Ctime          int64
+	Uname          string
+	Mid            int64
+	Author         map[string]any // 原始 user / publisher 对象(含 avatar/face、fans、follow、mid_link)
+	Avatar         string
+	Message        string
+	DynamicURL     string
+	Subject        string
+	Image          string
+	Desc           string
+	ItemType       string
+	Business       string
+	SubjectID      int64
+	SourceID       int64
+	TargetID       int64
+	RootReply      string
+	TargetReply    string
+	AtDetails      []any
+	TopicDetails   []any
+	Counts         int64 // like 点赞人数(counts)
+	ItemCtime      int64 // like 内容创建时间(item.ctime)
+	NotifyType     int64 // sys type
+	CardType       int64
+	CardBrief      string
+	CardMsgBrief   string
+	CardStoryTitle string
+	Source         map[string]any
 }
 
 // fetchUnread pulls the aggregate unread counter.
@@ -136,7 +167,7 @@ func fetchNotifyList(u, kind string) ([]notifyEvent, error) {
 			Items []map[string]any `json:"items"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil {
+	if err := unmarshalUseNumber(body, &env); err != nil {
 		if looksHTML(body) {
 			return nil, fmt.Errorf("%w %s", errUnverifiable, u)
 		}
@@ -158,6 +189,8 @@ func parseMsgfeedItems(items []map[string]any, kind string) []notifyEvent {
 		if ua, ok := m["user"].(map[string]any); ok {
 			ev.Uname, _ = ua["nickname"].(string)
 			ev.Mid, _ = numAnyAsInt(ua["mid"])
+			ev.Author = ua
+			ev.Avatar, _ = ua["avatar"].(string)
 		}
 		if it, ok := m["item"].(map[string]any); ok {
 			for _, k := range []string{"message", "root_reply_content", "source_content", "note", "title"} {
@@ -171,7 +204,19 @@ func parseMsgfeedItems(items []map[string]any, kind string) []notifyEvent {
 				ev.Subject, _ = it["business"].(string)
 			}
 			ev.DynamicURL, _ = it["uri"].(string)
+			ev.Image, _ = it["image"].(string)
+			ev.Desc, _ = it["desc"].(string)
+			ev.ItemType, _ = it["type"].(string)
+			ev.Business, _ = it["business"].(string)
+			ev.SubjectID, _ = numAnyAsInt(it["subject_id"])
+			ev.SourceID, _ = numAnyAsInt(it["source_id"])
+			ev.TargetID, _ = numAnyAsInt(it["target_id"])
+			ev.RootReply, _ = it["root_reply_content"].(string)
+			ev.TargetReply, _ = it["target_reply_content"].(string)
+			ev.AtDetails, _ = it["at_details"].([]any)
+			ev.TopicDetails, _ = it["topic_details"].([]any)
 		}
+		ev.Counts, _ = numAnyAsInt(m["counts"])
 		events = append(events, ev)
 	}
 	return events
@@ -203,7 +248,7 @@ func fetchLikeList() ([]notifyEvent, error) {
 			} `json:"total"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil {
+	if err := unmarshalUseNumber(body, &env); err != nil {
 		if looksHTML(body) {
 			return nil, fmt.Errorf("%w %s", errUnverifiable, likeURL)
 		}
@@ -230,6 +275,8 @@ func parseLikeItems(items []map[string]any) []notifyEvent {
 			if u0, ok := users[0].(map[string]any); ok {
 				ev.Uname, _ = u0["nickname"].(string)
 				ev.Mid, _ = numAnyAsInt(u0["mid"])
+				ev.Author = u0
+				ev.Avatar, _ = u0["avatar"].(string)
 			}
 		}
 		ev.Message = "赞了你的内容"
@@ -239,7 +286,14 @@ func parseLikeItems(items []map[string]any) []notifyEvent {
 				ev.Subject, _ = it["business"].(string)
 			}
 			ev.DynamicURL, _ = it["uri"].(string)
+			ev.Image, _ = it["image"].(string)
+			ev.Desc, _ = it["desc"].(string)
+			ev.ItemType, _ = it["type"].(string)
+			ev.Business, _ = it["business"].(string)
+			ev.SubjectID, _ = numAnyAsInt(it["item_id"])
+			ev.ItemCtime, _ = numAnyAsInt(it["ctime"])
 		}
+		ev.Counts, _ = numAnyAsInt(m["counts"])
 		events = append(events, ev)
 	}
 	return events
@@ -283,7 +337,7 @@ func fetchSysNotify() ([]notifyEvent, error) {
 			List []map[string]any `json:"system_notify_list"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil {
+	if err := unmarshalUseNumber(body, &env); err != nil {
 		if looksHTML(body) {
 			return nil, fmt.Errorf("%w %s", errUnverifiable, sysMsgURL)
 		}
@@ -305,9 +359,24 @@ func parseSysItems(list []map[string]any) []notifyEvent {
 		ev.Subject, _ = m["title"].(string)
 		ev.Message, _ = m["content"].(string)
 		ev.DynamicURL, _ = m["card_link"].(string)
+		ev.NotifyType, _ = numAnyAsInt(m["type"])
+		ev.CardType, _ = numAnyAsInt(m["card_type"])
+		ev.CardBrief, _ = m["card_brief"].(string)
+		ev.CardMsgBrief, _ = m["card_msg_brief"].(string)
+		ev.CardStoryTitle, _ = m["card_story_title"].(string)
+		ev.Image, _ = m["card_cover"].(string)
+		ev.ItemType = strconv.FormatInt(ev.NotifyType, 10)
 		if p, ok := m["publisher"].(map[string]any); ok {
 			ev.Uname, _ = p["name"].(string)
 			ev.Mid, _ = numAnyAsInt(p["mid"])
+			ev.Author = p
+			ev.Avatar, _ = p["face"].(string)
+		}
+		if src, ok := m["source"].(map[string]any); ok {
+			ev.Source = src
+			if ev.Image == "" {
+				ev.Image, _ = src["logo"].(string)
+			}
 		}
 		events = append(events, ev)
 	}
@@ -374,6 +443,7 @@ func notifyRound(state *biliState) int {
 			"reply":        un.Reply,
 			"at":           un.At,
 			"like":         un.Like,
+			"sys_msg":      un.SysMsg,
 			"total":        un.Total,
 			"published_at": now.Unix(),
 		}
@@ -412,16 +482,37 @@ func notifyRound(state *biliState) int {
 			state.Notifications[key] = now.Unix()
 			log.Printf("bilibili: notify %s id=%d by %s %s", kind, it.ID, it.Uname, truncate(it.Message, 40))
 			payload := map[string]any{
-				"kind":         "notify_event",
-				"event_type":   kind,
-				"id":           it.ID,
-				"actor":        it.Uname,
-				"actor_mid":    it.Mid,
-				"message":      it.Message,
-				"subject":      it.Subject,
-				"url":          it.DynamicURL,
-				"event_ts":     it.Ctime,
-				"published_at": now.Unix(),
+				"kind":                 "notify_event",
+				"event_type":           kind,
+				"id":                   it.ID,
+				"actor":                it.Uname,
+				"actor_mid":            it.Mid,
+				"author":               it.Author,
+				"avatar":               it.Avatar,
+				"message":              it.Message,
+				"subject":              it.Subject,
+				"url":                  it.DynamicURL,
+				"image":                it.Image,
+				"desc":                 it.Desc,
+				"item_type":            it.ItemType,
+				"business":             it.Business,
+				"subject_id":           it.SubjectID,
+				"source_id":            it.SourceID,
+				"target_id":            it.TargetID,
+				"root_reply_content":   it.RootReply,
+				"target_reply_content": it.TargetReply,
+				"at_details":           it.AtDetails,
+				"topic_details":        it.TopicDetails,
+				"liker_count":          it.Counts,
+				"content_ctime":        it.ItemCtime,
+				"notify_type":          it.NotifyType,
+				"card_type":            it.CardType,
+				"card_brief":           it.CardBrief,
+				"card_msg_brief":       it.CardMsgBrief,
+				"card_story_title":     it.CardStoryTitle,
+				"source":               it.Source,
+				"event_ts":             it.Ctime,
+				"published_at":         now.Unix(),
 			}
 			if err := publish(payload); err != nil {
 				log.Printf("bilibili: publish notify %s error: %v", key, err)

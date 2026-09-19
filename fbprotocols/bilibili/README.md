@@ -12,8 +12,11 @@ fedlet 的 B 站接入协议(web 端 bilibili web api)。协议后端路径镜�
   轮询默认 600s;首次轮询静默播种存量(不发布)。
 - **通知事件**:未读数(`GET /x/msgfeed/unread`)+ 评论/回复、@、赞、系统通知
   四个列表(`GET /x/msgfeed/reply|at|like`,`GET message.bilibili.com/x/sys-msg/query_user_notify`),
-  未读数变化即发布聚合(`kind=notify_unread`),详情事件按 `type:id` 去重回填
+  未读数变化即发布聚合(`kind=notify_unread`,含 `sys_msg`),详情事件按 `type:id` 去重回填
   (`kind=notify_event`);**需登录**;轮询默认 60s;首次轮询静默播种。
+- **消息图片字段**:`notify_event` 含 `author`(原始 user/publisher 对象,侧重头像/face)、
+  `avatar`、`image`(item.image / sys card_cover→回退 source.logo);`follow_feed`
+  含 `image`(archive/ugc_season/pgc 封面 → draw 首图)与 `images`(draw 全部图片 src);
 - 注:旧 `/x/msg/push-info/unread`、`/x/msg/reply|at|like` 已被 B 站网关
      整体下线(全局 404 HTML `出错啦!`),现统一走 `/x/msgfeed/*` 消息中心新接口;
 - **收藏(最新收藏夹)**:读收藏夹列表
