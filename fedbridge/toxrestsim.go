@@ -224,11 +224,45 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, "missing url parameter", http.StatusBadRequest)
 		return
 	}
+	dlClient := &http.Client{Timeout: 30 * time.Second}
+
 	const prefix = "mxc://"
-	if !strings.HasPrefix(raw, prefix) {
-		writeErr(w, "invalid mxc url", http.StatusBadRequest)
+	mxc := strings.HasPrefix(raw, prefix)
+	var u string
+	switch {
+	case mxc:
+		u = raw
+	case strings.HasPrefix(raw, "//"):
+		u = "https:" + raw
+	case strings.HasPrefix(raw, "http://"), strings.HasPrefix(raw, "https://"):
+		u = raw
+	default:
+		writeErr(w, "invalid media url scheme", http.StatusBadRequest)
 		return
 	}
+	if !mxc {
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+		if err != nil {
+			writeErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.Header.Set("User-Agent", "Fedlet/1.0")
+		resp, err := dlClient.Do(req)
+		if err != nil {
+			writeErr(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			writeErr(w, "download failed", resp.StatusCode)
+			return
+		}
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, resp.Body)
+		return
+	}
+
 	rest := raw[len(prefix):]
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

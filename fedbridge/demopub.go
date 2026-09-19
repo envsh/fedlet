@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
+// would block, call with `go`
 func poll_demopub() {
 	// var channel_name = "v2ex"
 
 	for i := 0; ; i++ {
-		time.Sleep(15 * time.Second)
+		time.Sleep(25 * time.Second)
 		scc := fmt.Sprintf(`{"vvv": "ddddddd %v"}`, i)
 		err := publish("demopub", channel_name, json.RawMessage(scc))
 		if err != nil {
