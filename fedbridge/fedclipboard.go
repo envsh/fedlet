@@ -79,15 +79,15 @@ func clipWaitProc() {
 		select {
 		case data, ok := <-chText:
 			if !ok {
-				log.Println("clip watch failed", clipboard.FmtText)
+				log.Println("clipboard: clip watch failed", clipboard.FmtText)
 				return
 			}
 			scc := string(data)
-			log.Println("text:", len(scc), scc)
+			log.Printf("clipboard: pid=%d name=%s text: %d %s", -1, "", len(scc), scc)
 			if !clipDedupText(scc) {
 				log.Printf("clipboard: dedup text %q within 2s, skip", scc)
 			} else {
-				pid, appName, appPath := clipOwner()
+    			pid, appName, appPath := clipOwner()
 				log.Printf("clipboard: owner pid=%d name=%s path=%s", pid, appName, appPath)
 				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("text", "", scc, 0, 0, 0, pid, appName, appPath)))
 			}

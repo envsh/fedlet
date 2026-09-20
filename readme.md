@@ -17,6 +17,10 @@
 	github.com/microsoftgraph/msgraph-sdk-go/models 编译该包内存炸了，有问题
 	不要引入该包。
 	本协议组实现,注重拉取与透明转发消息,不做二次格式化.这样客户端只处理标准消息格式即可.
+	发布统一为"条目原样转发":各协议把列表中的单条原始 JSON 条目逐条发布,
+	并在每个条目顶级(0级)插入 proto_type(协议/来源类型)与 cycle_count(本轮条数),
+	见 fbshared.InsertFlatFields(fbprotocols/fbshared/listmsg.go)。
+	已生效协议:toutiao / zhihu / bilibili / xhs / weibo / bdtieba。
 
 * fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
   客户端也要使用，必须轻量
