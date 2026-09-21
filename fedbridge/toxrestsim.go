@@ -18,6 +18,10 @@ import (
 	"github.com/kitech/touse/oai"
 )
 
+// mediaDownloadUA is the browser User-Agent used by the /api/media_download
+// forwarding requests (some media servers/CDNs reject non-browser UAs).
+const mediaDownloadUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
 type selfInfo struct {
 	Address          string `json:"address"`
 	Name             string `json:"name"`
@@ -246,8 +250,8 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		req.Header.Set("User-Agent", "Fedlet/1.0")
-		resp, err := dlClient.Do(req)
+req.Header.Set("User-Agent", mediaDownloadUA)
+	resp, err := dlClient.Do(req)
 		if err != nil {
 			writeErr(w, err.Error(), http.StatusBadGateway)
 			return
@@ -314,7 +318,7 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	proxyReq.Header.Set("User-Agent", "Fedlet/1.0")
+	proxyReq.Header.Set("User-Agent", mediaDownloadUA)
 
 	client := &http.Client{Timeout: 330 * time.Second}
 	resp, err := client.Do(proxyReq)
