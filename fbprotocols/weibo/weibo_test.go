@@ -141,6 +141,9 @@ func TestHotRoundPublishesAllSections(t *testing.T) {
 			t.Fatalf("bad cycle_count %v", p["cycle_count"])
 		}
 		if w, ok := p["word"].(string); ok {
+			if u, _ := p["url"].(string); u != WeiboLink(w) {
+				t.Fatalf("bad url for %q: %q", w, u)
+			}
 			words[w]++
 		}
 	}

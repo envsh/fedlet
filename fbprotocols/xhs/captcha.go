@@ -27,7 +27,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg"
+	_ "image/png"
+	"math"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -128,6 +135,15 @@ func clearRisk() {
 func relayRisk(sig riskSignal, cookies map[string]string) (bool, map[string]string) {
 	ch := parseRiskChallenge(sig.status, sig.headers)
 	noteRisk(ch, cookies)
+
+	// verifyType 102 (redcaptcha v2 rotation slider): attempt programmatic
+	// solve first; on any failure the interactive path below stays available.
+	if ch.verifyType == "102" && ch.status != 0 && ch.verifyUUID != "" {
+		if newJar, ok := autoSolveSlider(ch, cookies); ok {
+			return true, newJar
+		}
+		logPrefix("slider auto-solve failed; falling back to manual")
+	}
 
 	// Network/decrypt work happens WITHOUT holding riskMu (captchaRegister
 	// needs the lock itself); results are then snapshotted into the shared
@@ -306,4 +322,375 @@ func desECBDecrypt(data, key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("bad pkcs7 padding %d", pad)
 	}
 	return out[:len(out)-pad], nil
+}
+
+// ---- programmatic redcaptcha v2 rotation-slider solving ----
+
+// captchaCheckURL submits the solved rotation slider (known from the 2024
+// "红书旋转滑块" protocol write-up). 待实测: endpoint path may drift.
+const captchaCheckURL = "https://edith.xiaohongshu.com/api/redcaptcha/v2/captcha/check"
+
+// desECBEncrypt is the DES-ECB PKCS7 encrypt half of desECBDecrypt; the web
+// client encrypts the track/geometry fields of the check payload with it.
+func desECBEncrypt(plain, key []byte) ([]byte, error) {
+	block, err := des.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	pad := des.BlockSize - len(plain)%des.BlockSize
+	if pad == 0 {
+		pad = des.BlockSize
+	}
+	data := make([]byte, len(plain)+pad)
+	copy(data, plain)
+	for i := len(plain); i < len(data); i++ {
+		data[i] = byte(pad)
+	}
+	for off := 0; off < len(data); off += des.BlockSize {
+		block.Encrypt(data[off:off+des.BlockSize], data[off:off+des.BlockSize])
+	}
+	return data, nil
+}
+
+// generateTrack mirrors the web client's generate_Track(slideDistance): a
+// JSON [[x,y,z],...] mouse-path for a slide of `distance` px.
+func generateTrack(distance int) []byte {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	first := true
+	for x := 0; x < distance; {
+		x += 2
+		y := -(x / 10)
+		z := 2*(x-1) + rand.Intn(7) + 1
+		if !first {
+			sb.WriteByte(',')
+		}
+		first = false
+		fmt.Fprintf(&sb, "[%d,%d,%d]", x, y, z)
+	}
+	sb.WriteByte(']')
+	return []byte(sb.String())
+}
+
+// autoSolveSlider registers the challenge, solves the rotation angle and
+// submits the check. Returns the refreshed cookie jar on verified success.
+func autoSolveSlider(ch riskChallenge, cookies map[string]string) (map[string]string, bool) {
+	rid, err := captchaRegister(ch)
+	if err != nil {
+		logPrefix("slider register failed: %v", err)
+		return nil, false
+	}
+	riskMu.Lock()
+	imgs := riskImages
+	riskMu.Unlock()
+	if imgs == nil {
+		return nil, false
+	}
+	angle, width, ok := rotationAngle(imgs)
+	if !ok {
+		logPrefix("slider angle solve failed")
+		return nil, false
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if jar, ok := submitSliderCheck(ch, rid, angle, width, attempt); ok {
+			return jar, true
+		}
+		// checkCount increments per failed attempt; the server tolerates a few
+		// before forcing a fresh challenge.
+	}
+	return nil, false
+}
+
+// rotationAngle returns the disc rotation (degrees) and the canvas width (px)
+// that maps degrees → drag distance. The decrypted captchaInfo may already
+// carry the expected conclusion; otherwise a gradient search is run.
+func rotationAngle(imgs *riskCaptchaData) (float64, float64, bool) {
+	if f, ok := parseAngleConclusion(imgs.AngleConclusion); ok {
+		return f, captchaCanvasWidth(imgs), true
+	}
+	bg, err := fetchCaptchaImage(imgs.BackgroundURL)
+	if err != nil {
+		logPrefix("captcha bg fetch: %v", err)
+		return 0, 0, false
+	}
+	q, err := fetchCaptchaImage(imgs.CaptchaURL)
+	if err != nil {
+		logPrefix("captcha query fetch: %v", err)
+		return 0, 0, false
+	}
+	width := float64(bg.Bounds().Dx())
+	angle, ok := searchRotationAngle(grayOf(bg), grayOf(q))
+	return angle, width, ok
+}
+
+// parseAngleConclusion accepts a numeric angle over the confident range.
+// 待实测: whether the web client leaks the answer here at all.
+func parseAngleConclusion(s string) (float64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || f <= 0 || f > 360 {
+		return 0, false
+	}
+	return f, true
+}
+
+// captchaCanvasWidth is the slider canvas width used for the DES "width" field
+// and the degrees→px mapping; defaults to 320 when the image can't be fetched.
+func captchaCanvasWidth(imgs *riskCaptchaData) float64 {
+	if bg, err := fetchCaptchaImage(imgs.BackgroundURL); err == nil {
+		return float64(bg.Bounds().Dx())
+	}
+	return 320
+}
+
+func fetchCaptchaImage(u string) (image.Image, error) {
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", xhsUA)
+	req.Header.Set("Referer", xhsBaseURL+"/")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+func grayOf(im image.Image) *image.Gray {
+	b := im.Bounds()
+	g := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			g.SetGray(x, y, color.GrayModel.Convert(im.At(x, y)).(color.Gray))
+		}
+	}
+	return g
+}
+
+// searchRotationAngle rotates the query disc over the background and minimises
+// the ring-vs-disc Sobel-gradient difference (a pure-Go, no-dependency port of
+// the CV2 approach).
+func searchRotationAngle(bg, q *image.Gray) (float64, bool) {
+	qb := q.Bounds()
+	r := min(qb.Dx(), qb.Dy()) / 2
+	if r < 20 {
+		return 0, false
+	}
+	disc := cropCircle(q, r)
+	cx := bg.Bounds().Dx() / 2
+	cy := bg.Bounds().Dy() / 2
+	best, bestAng := math.Inf(1), 0.0
+	// Scan coarse then fine around the best coarse bin to keep runtime bounded.
+	for ang := 0.0; ang < 360; ang += 6 {
+		d := mergedGradientDiff(bg, rotateNearest(disc, ang), cx, cy, r*7/9)
+		if d < best {
+			best, bestAng = d, ang
+		}
+	}
+	for ang := bestAng - 5; ang <= bestAng+5; ang += 2 {
+		a := math.Mod(ang+360, 360)
+		d := mergedGradientDiff(bg, rotateNearest(disc, a), cx, cy, r*7/9)
+		if d < best {
+			best, bestAng = d, a
+		}
+	}
+	return math.Mod(bestAng+360, 360), true
+}
+
+// cropCircle keeps the central disc of radius r (nearest-neighbour) in a new
+// image with the same bounds, transparent being black here.
+func cropCircle(g *image.Gray, r int) *image.Gray {
+	b := g.Bounds()
+	out := image.NewGray(g.Bounds())
+	cx, cy := (b.Min.X+b.Max.X)/2, (b.Min.Y+b.Max.Y)/2
+	r2 := r * r
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			dx, dy := x-cx, y-cy
+			if dx*dx+dy*dy <= r2 {
+				out.SetGray(x, y, g.GrayAt(x, y))
+			}
+		}
+	}
+	return out
+}
+
+// rotateNearest rotates src by deg degrees around its centre (nearest sample).
+func rotateNearest(src *image.Gray, deg float64) *image.Gray {
+	b := src.Bounds()
+	out := image.NewGray(b)
+	cw, ch := float64(b.Dx()), float64(b.Dy())
+	cos, sin := math.Cos(deg*math.Pi/180), math.Sin(deg*math.Pi/180)
+	hx, hy := cw/2, ch/2
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			fx, fy := float64(x)-hx, float64(y)-hy
+			sx := fx*cos + fy*sin + hx
+			sy := -fx*sin + fy*cos + hy
+			xi, yi := int(sx), int(sy)
+			if xi < b.Min.X || xi >= b.Max.X || yi < b.Min.Y || yi >= b.Max.Y {
+				continue
+			}
+			out.SetGray(x, y, src.GrayAt(xi, yi))
+		}
+	}
+	return out
+}
+
+// mergedGradientDiff pastes disc over bg, then returns (outer-ring Sobel sum)
+// − (inner-disc Sobel sum) on the merged canvas.
+func mergedGradientDiff(bg, disc *image.Gray, cx, cy, r int) float64 {
+	merged := image.NewGray(bg.Bounds())
+	copy(merged.Pix, bg.Pix)
+	db := disc.Bounds()
+	for y := db.Min.Y; y < db.Max.Y; y++ {
+		for x := db.Min.X; x < db.Max.X; x++ {
+			px, py := cx-db.Dx()/2+(x-db.Min.X), cy-db.Dy()/2+(y-db.Min.Y)
+			if px < merged.Bounds().Min.X || px >= merged.Bounds().Max.X ||
+				py < merged.Bounds().Min.Y || py >= merged.Bounds().Max.Y {
+				continue
+			}
+			if disc.GrayAt(x, y).Y != 0 {
+				merged.SetGray(px, py, disc.GrayAt(x, y))
+			}
+		}
+	}
+	inner, outer := 0.0, 0.0
+	m := merged.Bounds()
+	rIn, rOut := r, r+30
+	for y := m.Min.Y + 1; y < m.Max.Y-1; y++ {
+		for x := m.Min.X + 1; x < m.Max.X-1; x++ {
+			dx, dy := x-cx, y-cy
+			d2 := dx*dx + dy*dy
+			if d2 > rOut*rOut {
+				continue
+			}
+			g := sobelMag(merged, x, y)
+			if d2 <= rIn*rIn {
+				inner += g
+			} else {
+				outer += g
+			}
+		}
+	}
+	return outer - inner
+}
+
+func sobelMag(g *image.Gray, x, y int) float64 {
+	gx := float64(g.GrayAt(x+1, y-1).Y) + 2*float64(g.GrayAt(x+1, y).Y) + float64(g.GrayAt(x+1, y+1).Y) -
+		float64(g.GrayAt(x-1, y-1).Y) - 2*float64(g.GrayAt(x-1, y).Y) - float64(g.GrayAt(x-1, y+1).Y)
+	gy := float64(g.GrayAt(x-1, y+1).Y) + 2*float64(g.GrayAt(x, y+1).Y) + float64(g.GrayAt(x+1, y+1).Y) -
+		float64(g.GrayAt(x-1, y-1).Y) - 2*float64(g.GrayAt(x, y-1).Y) - float64(g.GrayAt(x+1, y-1).Y)
+	return math.Sqrt(gx*gx + gy*gy)
+}
+
+// submitSliderCheck posts the solved rotation to the check endpoint and takes
+// any Set-Cookie/refresh jar from the response.
+func submitSliderCheck(ch riskChallenge, rid string, angleDeg, width float64, attempt int) (map[string]string, bool) {
+	distance := int(angleDeg / 360.0 * width)
+	if distance < 10 {
+		distance = 10
+	}
+	ms := 400 + rand.Intn(400)
+	track, _ := desECBEncrypt(generateTrack(distance), []byte("PYrm8rMk"))
+	mouseEnd, _ := desECBEncrypt([]byte(strconv.Itoa(distance)), []byte("WquqhEkd"))
+	timeEn, _ := desECBEncrypt([]byte(strconv.Itoa(ms)), []byte("vPMvCY4K"))
+	widthEn, _ := desECBEncrypt([]byte(strconv.Itoa(int(width))), []byte("WquqhEkd"))
+
+	ci := struct {
+		MouseEnd string `json:"mouseEnd"`
+		Time     string `json:"time"`
+		Track    string `json:"track"`
+		Width    string `json:"width"`
+	}{string(mouseEnd), string(timeEn), string(track), string(widthEn)}
+	cib, err := json.Marshal(ci)
+	if err != nil {
+		return nil, false
+	}
+	payload := struct {
+		RID            string `json:"rid"`
+		VerifyType     string `json:"verifyType"`
+		VerifyBiz      string `json:"verifyBiz"`
+		VerifyUUID     string `json:"verifyUuid"`
+		SourceSite     string `json:"sourceSite"`
+		CaptchaVersion string `json:"captchaVersion"`
+		CheckCount     string `json:"checkCount"`
+		CaptchaInfo    string `json:"captchaInfo"`
+	}{rid, "102", strconv.Itoa(ch.status), ch.verifyUUID, "", "2.0.0",
+		strconv.Itoa(attempt), string(cib)}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	body := string(bodyBytes)
+
+	req, err := http.NewRequest(http.MethodPost, captchaCheckURL, strings.NewReader(body))
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	req.Header.Set("Origin", xhsBaseURL)
+	req.Header.Set("Referer", xhsBaseURL+"/")
+	req.Header.Set("User-Agent", xhsUA)
+	if a1 := client().cookies.get("a1"); a1 != "" {
+		cookieRaw := client().cookieHeader()
+		sh, err := buildSignedHeaders(signHeadersOptions{
+			method:    http.MethodPost,
+			uri:       captchaCheckURL,
+			a1:        a1,
+			cookieRaw: cookieRaw,
+			body:      body,
+			ts:        float64AtNow(),
+		})
+		if err == nil {
+			req.Header.Set("Cookie", cookieRaw)
+			for _, kv := range sh.render() {
+				k, v, _ := strings.Cut(kv, ": ")
+				req.Header.Set(k, v)
+			}
+		}
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		logPrefix("slider check request: %v", err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	out, err := decodeJSON(resp.Body)
+	if err != nil {
+		logPrefix("slider check decode: %v", err)
+		return nil, false
+	}
+	code, _ := out["code"].(float64)
+	var jar map[string]string
+	for _, ck := range resp.Cookies() {
+		if jar == nil {
+			jar = map[string]string{}
+		}
+		jar[ck.Name] = ck.Value
+	}
+	if code == 0 && resp.StatusCode == http.StatusOK {
+		// Any extra cookies the body carries (rare) are merged too.
+		if data, ok := out["data"].(map[string]any); ok {
+			for k, v := range data {
+				if s, ok := v.(string); ok && len(jar) < 24 && (k == "rid" || strings.Contains(strings.ToLower(k), "cookie")) {
+					jar[k] = s
+				}
+			}
+		}
+		return jar, true
+	}
+	logPrefix("slider check rejected: http %d code %v", resp.StatusCode, code)
+	return nil, false
 }

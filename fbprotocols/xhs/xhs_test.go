@@ -12,6 +12,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,7 +250,7 @@ func TestEnsureGuestSessionBypass(t *testing.T) {
 	}()
 	uiSpy := 0
 	probeSession = func() error { return nil }
-	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:0/", nil }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:33099/", nil }
 
 	s := client()
 	s.opts.auth.mu.Lock()
@@ -276,6 +279,162 @@ func TestEnsureGuestSessionBypass(t *testing.T) {
 	defer reLoginMu.Unlock()
 	if !reLogin.nextAt.IsZero() {
 		t.Errorf("guest session must leave the re-login cooldown cleared, nextAt=%s", reLogin.nextAt)
+	}
+}
+
+func TestGuestWithNeedRealLoginOpensUI(t *testing.T) {
+	oldProbe := probeSession
+	oldUI := startLoginUIFn
+	defer func() {
+		probeSession = oldProbe
+		startLoginUIFn = oldUI
+	}()
+	uiSpy := 0
+	probeSession = func() error { return nil }
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:33099/", nil }
+
+	s := client()
+	s.opts.auth.mu.Lock()
+	old := s.opts.auth.status
+	s.opts.auth.status = authStatusGuest
+	s.opts.auth.mu.Unlock()
+	s.cookies.set(xhsWebSessionName, "guest-session")
+	defer func() {
+		s.opts.auth.mu.Lock()
+		s.opts.auth.status = old
+		s.opts.auth.mu.Unlock()
+		s.cookies.set(xhsWebSessionName, "")
+	}()
+
+	muClient.Lock()
+	oldNotify, oldCollect := notifyOn, collectOn
+	notifyOn = true
+	collectOn = true
+	muClient.Unlock()
+	defer func() {
+		muClient.Lock()
+		notifyOn, collectOn = oldNotify, oldCollect
+		muClient.Unlock()
+	}()
+
+	reLoginMu.Lock()
+	reLogin.nextAt = time.Time{}
+	reLoginMu.Unlock()
+
+	ensureSession(time.Now(), true)
+	if uiSpy == 0 {
+		t.Error("guest session with a real login required must schedule the login UI")
+	}
+	reLoginMu.Lock()
+	defer reLoginMu.Unlock()
+	if reLogin.nextAt.IsZero() {
+		t.Error("scheduled login must set the re-login cooldown")
+	}
+}
+
+func TestReadyDowngradedToGuestWithNeedOpensUI(t *testing.T) {
+	oldProbe := probeSession
+	oldUI := startLoginUIFn
+	defer func() {
+		probeSession = oldProbe
+		startLoginUIFn = oldUI
+	}()
+	uiSpy := 0
+	// probeSession mirrors verifySession downgrading a stored "ready" session
+	// (auth.json guest is loaded as ready) back to guest, returning nil.
+	probeSession = func() error {
+		s := client()
+		s.opts.auth.mu.Lock()
+		s.opts.auth.status = authStatusGuest
+		s.opts.auth.mu.Unlock()
+		return nil
+	}
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:33099/", nil }
+
+	s := client()
+	s.opts.auth.mu.Lock()
+	old := s.opts.auth.status
+	s.opts.auth.status = AuthStatusReady
+	s.opts.auth.mu.Unlock()
+	s.cookies.set(xhsWebSessionName, "guest-session")
+	defer func() {
+		s.opts.auth.mu.Lock()
+		s.opts.auth.status = old
+		s.opts.auth.mu.Unlock()
+		s.cookies.set(xhsWebSessionName, "")
+	}()
+
+	muClient.Lock()
+	oldNotify, oldCollect := notifyOn, collectOn
+	notifyOn = true
+	collectOn = true
+	muClient.Unlock()
+	defer func() {
+		muClient.Lock()
+		notifyOn, collectOn = oldNotify, oldCollect
+		muClient.Unlock()
+	}()
+
+	reLoginMu.Lock()
+	reLogin.nextAt = time.Time{}
+	reLoginMu.Unlock()
+
+	ensureSession(time.Now(), true)
+	if uiSpy == 0 {
+		t.Error("ready session downgraded to guest with a real login required must open the login UI")
+	}
+	reLoginMu.Lock()
+	defer reLoginMu.Unlock()
+	if reLogin.nextAt.IsZero() {
+		t.Error("scheduled login must set the re-login cooldown")
+	}
+}
+
+func TestEmptyWithGuestOnlyMintsNoUI(t *testing.T) {
+	oldUI := startLoginUIFn
+	oldGuest := ensureGuest
+	defer func() {
+		startLoginUIFn = oldUI
+		ensureGuest = oldGuest
+	}()
+	uiSpy := 0
+	guestSpy := 0
+	startLoginUIFn = func() (string, error) { uiSpy++; return "http://127.0.0.1:33099/", nil }
+	ensureGuest = func() { guestSpy++ }
+
+	s := client()
+	s.opts.auth.mu.Lock()
+	old := s.opts.auth.status
+	s.opts.auth.mu.Unlock()
+	s.cookies.set(xhsWebSessionName, "") // AuthStatus() becomes empty without web_session
+	defer func() {
+		s.opts.auth.mu.Lock()
+		s.opts.auth.status = old
+		s.opts.auth.mu.Unlock()
+		s.cookies.set(xhsWebSessionName, "")
+	}()
+
+	muClient.Lock()
+	oldNotify, oldCollect := notifyOn, collectOn
+	notifyOn = false
+	collectOn = false
+	muClient.Unlock()
+	defer func() {
+		muClient.Lock()
+		notifyOn, collectOn = oldNotify, oldCollect
+		muClient.Unlock()
+	}()
+
+	reLoginMu.Lock()
+	reLogin.nextAt = time.Time{}
+	reLoginMu.Unlock()
+
+	ensureSession(time.Now(), true)
+	if guestSpy == 0 {
+		t.Error("empty status without a real-login feed must mint a guest session")
+	}
+	if uiSpy != 0 {
+		t.Errorf("guest-only run must not open the login UI, ui=%d", uiSpy)
 	}
 }
 
@@ -467,5 +626,217 @@ func TestUIAddrUsable(t *testing.T) {
 		if got := uiAddrUsable(c.addr); got != c.ok {
 			t.Fatalf("uiAddrUsable(%q)=%v want %v", c.addr, got, c.ok)
 		}
+	}
+}
+
+// urlRecorder is a RoundTripper that captures outgoing request URLs and Cookie
+// headers.
+type urlRecorder struct {
+	mu      sync.Mutex
+	urls    []*url.URL
+	cookies []string
+	bodies  []string
+}
+
+func (r *urlRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.urls = append(r.urls, req.URL)
+	r.cookies = append(r.cookies, req.Header.Get("Cookie"))
+	var bodyText string
+	if req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		bodyText = string(b)
+		req.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	r.bodies = append(r.bodies, bodyText)
+	r.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewBufferString(`{"code":0,"data":{}}`)),
+		Request:    req,
+	}, nil
+}
+
+// TestSignedURLCarriesRealPath is a regression test: getJSONOpts/postJSONOpts
+// must forward the caller's uri (and GET params) into the signed request.
+// Dropping them sent every request to the bare host root (nginx HTML reply,
+// "bad json", throttling).
+func TestSignedURLCarriesRealPath(t *testing.T) {
+	rec := &urlRecorder{}
+	c := newXHSClient(clientOptions{})
+	c.http = &http.Client{Transport: rec}
+	c.cookies.set("a1", generateA1())
+
+	if _, _, err := c.getJSON("/api/sns/web/v2/user/me", []kvParam{{key: "num", val: "50"}}); err != nil {
+		t.Fatalf("getJSON: %v", err)
+	}
+	if _, _, err := c.postJSONOpts(loginCodeURL, nil, phoneSignOpts()); err != nil {
+		t.Fatalf("postJSONOpts: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.urls) != 2 {
+		t.Fatalf("got %d requests, want 2", len(rec.urls))
+	}
+	getURL := rec.urls[0]
+	if getURL.Path != "/api/sns/web/v2/user/me" {
+		t.Errorf("GET path = %q want /api/sns/web/v2/user/me", getURL.Path)
+	}
+	if got := getURL.Query().Get("num"); got != "50" {
+		t.Errorf("GET num = %q want 50", got)
+	}
+	if postURL := rec.urls[1]; postURL.Path != loginCodeURL {
+		t.Errorf("POST path = %q want %s", postURL.Path, loginCodeURL)
+	}
+}
+
+// TestQueryOrderMatchesSignedContent is a regression test for HTTP 406 on
+// multi-param GETs: the wire query must be byte-identical (same order, same
+// escaping) to the content the signature hashes. url.Values.Encode re-sorts
+// keys alphabetically, which broke send_code/check_code/qr_status.
+func TestQueryOrderMatchesSignedContent(t *testing.T) {
+	params := []kvParam{{key: "phone", val: "13800138000"}, {key: "zone", val: "86"}, {key: "type", val: "login"}}
+	const uri = "/api/sns/web/v2/login/send_code"
+	const want = "phone=13800138000&zone=86&type=login"
+
+	wire := buildURL(xhsAPIHost+uri, params)
+	if !strings.HasSuffix(wire, "?"+want) {
+		t.Errorf("wire URL = %q, want suffix ?%s (kvParam order preserved)", wire, want)
+	}
+	if !strings.HasPrefix(wire, xhsAPIHost) {
+		t.Errorf("wire URL = %q, want prefix %q", wire, xhsAPIHost)
+	}
+	if signed := buildContentString("GET", uri, params, ""); signed != uri+"?"+want {
+		t.Errorf("signed content = %q, want %q", signed, uri+"?"+want)
+	}
+}
+
+// TestSignedQueryOrderIsRaw verifies a real signed GET request carries the
+// query exactly as signed (order preserved, not re-sorted by encoding).
+func TestSignedQueryOrderIsRaw(t *testing.T) {
+	rec := &urlRecorder{}
+	c := newXHSClient(clientOptions{})
+	c.http = &http.Client{Transport: rec}
+	c.cookies.set("a1", generateA1())
+
+	params := []kvParam{{key: "phone", val: "13800138000"}, {key: "zone", val: "86"}, {key: "type", val: "login"}}
+	if _, _, err := c.getJSONOpts("/api/sns/web/v2/login/send_code", params, phoneSignOpts()); err != nil {
+		t.Fatalf("getJSONOpts: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.urls) != 1 {
+		t.Fatalf("got %d requests, want 1", len(rec.urls))
+	}
+	u := rec.urls[0]
+	if u.Path != "/api/sns/web/v2/login/send_code" {
+		t.Fatalf("path = %q, want /api/sns/web/v2/login/send_code", u.Path)
+	}
+	if got := u.RawQuery; got != "phone=13800138000&zone=86&type=login" {
+		t.Errorf("RawQuery = %q, want %q (order must match the signed content)", got, "phone=13800138000&zone=86&type=login")
+	}
+}
+
+// TestPhoneLoginEndpointVersions pins the phone-login endpoint versions against
+// the current PC client (Spider_XHS 2026-09): send_code is v2, check_code is
+// v1 and login/code is v2 (verified live 2026-09-21). The earlier v1
+// expectation — and the "v2 is rejected with -1" hypothesis behind its comment —
+// was dropped once the live SMS login succeeded on the v2 endpoint with the
+// body-only wire pinned by TestPhoneLoginWireMatchesReference.
+func TestPhoneLoginEndpointVersions(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"sendCodeURL", sendCodeURL, "/api/sns/web/v2/login/send_code"},
+		{"checkCodeURL", checkCodeURL, "/api/sns/web/v1/login/check_code"},
+		{"loginCodeURL", loginCodeURL, "/api/sns/web/v2/login/code"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestPhoneLoginOmitsSessionCookies pins that the phone-login family strips the
+// session identity cookies (guest web_session otherwise makes login/code answer
+// -104 "您当前登录的账号没有权限访问") while every other request keeps them.
+func TestPhoneLoginOmitsSessionCookies(t *testing.T) {
+	rec := &urlRecorder{}
+	c := newXHSClient(clientOptions{})
+	c.http = &http.Client{Transport: rec}
+	c.cookies.set("a1", generateA1())
+	c.cookies.set("webId", "w1")
+	c.cookies.set(xhsWebSessionName, "guest-session")
+	c.cookies.set("web_session", "guest-session")
+	c.cookies.set(webSessionSecCookie, "sec")
+
+	params := []kvParam{{key: "phone", val: "13800138000"}, {key: "zone", val: "86"}, {key: "type", val: "login"}}
+	if _, _, err := c.getJSONOpts(sendCodeURL, params, phoneSignOpts()); err != nil {
+		t.Fatalf("phone getJSONOpts: %v", err)
+	}
+	if _, _, err := c.getJSON("/api/sns/web/v2/user/me", nil); err != nil {
+		t.Fatalf("plain getJSON: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.cookies) != 2 {
+		t.Fatalf("got %d requests, want 2", len(rec.cookies))
+	}
+	phone := rec.cookies[0]
+	if !strings.Contains(phone, "a1=") {
+		t.Errorf("phone request Cookie = %q, want a1 kept", phone)
+	}
+	for _, sess := range []string{"web_session", xhsWebSessionName, webSessionSecCookie} {
+		if strings.Contains(phone, sess+"=") {
+			t.Errorf("phone request Cookie contains session cookie %q: %q", sess, phone)
+		}
+	}
+	if plain := rec.cookies[1]; !strings.Contains(plain, xhsWebSessionName+"=") {
+		t.Errorf("plain request Cookie = %q, want session cookies kept", plain)
+	}
+}
+
+// TestPhoneLoginWireMatchesReference pins the login/code POST exactly as the
+// current PC client (Spider_XHS 2026-09) sends it: POST to /api/sns/web/v2/
+// login/code with the params in the JSON body only (zone as the string "86",
+// never in the URL query). postJSONOpts appends params to the query string
+// too, which the login-guild answers with -101 "无登录信息".
+func TestPhoneLoginWireMatchesReference(t *testing.T) {
+	rec := &urlRecorder{}
+	c := newXHSClient(clientOptions{})
+	c.http = &http.Client{Transport: rec}
+	c.cookies.set("a1", generateA1())
+	c.cookies.set("webId", "w1")
+
+	o := phoneSignOpts()
+	o.body = `{"mobile_token":` + marshalJSONScalar("tokval") +
+		`,"zone":` + marshalJSONScalar("86") + `,"phone":` + marshalJSONScalar("13800138000") + `}`
+	if _, _, err := c.postJSONOpts(loginCodeURL, nil, o); err != nil {
+		t.Fatalf("postJSONOpts: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.urls) != 1 {
+		t.Fatalf("got %d requests, want 1", len(rec.urls))
+	}
+	if got := rec.urls[0].Path; got != "/api/sns/web/v2/login/code" {
+		t.Errorf("login/code URL path = %q, want /api/sns/web/v2/login/code", got)
+	}
+	if q := rec.urls[0].RawQuery; q != "" {
+		t.Errorf("login/code URL query = %q, want empty (params must be body-only)", q)
+	}
+	if got := rec.bodies[0]; got != `{"mobile_token":"tokval","zone":"86","phone":"13800138000"}` {
+		t.Errorf("login/code body = %q, want ref-exact body with string zone", got)
+	}
+	if got := rec.cookies[0]; !strings.Contains(got, "a1=") {
+		t.Errorf("login/code Cookie = %q, want a1 kept", got)
 	}
 }

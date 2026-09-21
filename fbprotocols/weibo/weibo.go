@@ -210,21 +210,10 @@ func hotRound(state *weiboState) {
 		state.Hot[key] = now.Unix()
 		title := e.word
 		logPrefix("hot #%d %s %s %s", i+1, e.section, WeiboLink(e.word), truncate(title, 60))
-		payload := map[string]any{
-			"kind":         "weibo_hot",
-			"section":      e.section,
-			"word":         e.word,
-			"note":         e.note,
-			"rank":         e.rank,
-			"label":        e.label,
-			"hot":          e.heat,
-			"url":          WeiboLink(e.word),
-			"count":        len(entries),
-			"published_at": now.Unix(),
-		}
 		raw, aerr := fbshared.InsertFlatFields(e.raw, map[string]any{
-			"proto_type":  payload["kind"],
+			"proto_type":  "weibo_hot",
 			"cycle_count": len(entries),
+			"url":         WeiboLink(e.word),
 		})
 		if aerr != nil {
 			logPrefix("publish hot %s error: %v", key, aerr)

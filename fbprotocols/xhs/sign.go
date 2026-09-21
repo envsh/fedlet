@@ -5,7 +5,10 @@ package xhs
 //
 // Produces the headers the xhs web client needs:
 //   - x-s:          XYS_ (default, non-data APIs) or XYW_ (data APIs that
-//                   reject XYS_ with HTTP 406 since ~March 2026)
+//                   reject XYS_ with HTTP 406 since ~March 2026; includes the
+//                   phone-login family: send_code / check_code / login/code)
+//   - x-s-common:   embedded SDK/web versions default 4.3.5/4.86.0, overridable
+//                   per request (phone family ships 4.3.3/6.3.0, xhshow PR #106)
 //   - x-s-common:   ARC4-encrypted browser fingerprint (b1) + JS-style CRC32
 //   - x-t:          request timestamp (ms)
 //   - x-b3-traceid / x-xray-traceid: trace ids
@@ -38,6 +41,7 @@ import (
 	"math/rand"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -391,17 +395,13 @@ func buildContentString(method, uri string, params []kvParam, body string) strin
 	if len(params) == 0 {
 		return uri
 	}
-	parts := make([]string, 0, len(params))
-	for _, p := range params {
-		parts = append(parts, p.key+"="+percentEncodeValue(p.pValue()))
-	}
-	return uri + "?" + strings.Join(parts, "&")
+	return uri + "?" + buildQueryString(params)
 }
 
 // ---------------------------------------------------------------------------
 // Signature entry points.
 
-func (s *signer) signXS(method, uri, a1 string, appID string, body string, params []kvParam, ts float64) (string, error) {
+func (s *signer) signXS(method, uri, a1 string, appID string, body string, params []kvParam, ts float64, sdkVer string) (string, error) {
 	uri = extractURI(uri)
 	content := buildContentString(method, uri, params, body)
 	dVal := md5hex(content)
@@ -429,7 +429,7 @@ func (s *signer) signXS(method, uri, a1 string, appID string, body string, param
 		X2 string `json:"x2"`
 		X3 string `json:"x3"`
 		X4 string `json:"x4"`
-	}{"4.3.5", "xhs-pc-web", "Windows", x3Prefix + x3, "object"}
+	}{sdkVer, "xhs-pc-web", "Windows", x3Prefix + x3, "object"}
 	env, err := json.Marshal(sig)
 	if err != nil {
 		return "", err
@@ -482,12 +482,31 @@ func pkcs7Pad(in []byte, blockSize int) ([]byte, error) {
 	return append(in, pad...), nil
 }
 
+// x-s-common carries the ARC4-encrypted browser fingerprint (b1). A real
+// browser's b1 is a STABLE device fingerprint (constant across all requests
+// of a page/session); rotating it on every request is a trivial non-browser
+// signal, so the fingerprint header is cached per (a1, sdkVer, webBuild).
+var (
+	xscMu  sync.Mutex
+	xscKey string
+	xscVal string
+)
+
 // signXSCommon builds the x-s-common header (ARC4 b1 fingerprint + template).
-func (s *signer) signXSCommon(cookies map[string]string) (string, error) {
+func (s *signer) signXSCommon(cookies map[string]string, sdkVer, webBuild string) (string, error) {
 	a1 := cookies["a1"]
 	if a1 == "" {
 		return "", fmt.Errorf("xhs: sign x-s-common: missing a1 cookie")
 	}
+	key := a1 + "|" + sdkVer + "|" + webBuild
+	xscMu.Lock()
+	defer xscMu.Unlock()
+	if xscVal != "" && xscKey == key {
+		return xscVal, nil
+	}
+
+	// First build for this key: b1's random/timestamp fields (x36/x44) get
+	// fixed now and are reused from the cache for every later request.
 	b1, err := generateB1(cookies, publicUserAgent)
 	if err != nil {
 		return "", err
@@ -511,7 +530,7 @@ func (s *signer) signXSCommon(cookies map[string]string) (string, error) {
 		X11 string `json:"x11"`
 	}{
 		S0: 5, S1: "",
-		X0: "1", X1: "4.3.5", X2: "Windows", X3: "xhs-pc-web", X4: "4.86.0",
+		X0: "1", X1: sdkVer, X2: "Windows", X3: "xhs-pc-web", X4: webBuild,
 		X5: a1, X6: "", X7: "", X8: b1, X9: x9,
 		X10: 0, X11: "normal",
 	}
@@ -519,7 +538,9 @@ func (s *signer) signXSCommon(cookies map[string]string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return s.enc.encodeCustom(env), nil
+	xscVal = s.enc.encodeCustom(env)
+	xscKey = key
+	return xscVal, nil
 }
 
 // decodeXS decrypts an XYS_ signature envelope back into its JSON fields —

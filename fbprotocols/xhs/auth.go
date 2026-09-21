@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -96,6 +97,7 @@ func newSession() *xhsClient {
 	c := newXHSClient(clientOptions{})
 	loadAuthInto(c)
 	session = c
+	warmupVisitor(c)
 	return c
 }
 
@@ -106,8 +108,45 @@ func client() *xhsClient {
 	if session == nil {
 		session = newXHSClient(clientOptions{})
 		loadAuthInto(session)
+		warmupVisitor(session)
 	}
 	return session
+}
+
+// warmupOnce keeps the homepage warmup to the first session lazily (a fresh
+// browser visits the page before its first API call; the WAF/visitor cookies it
+// sets — gid, websectiga, acw_* — complete the cookie set the signature
+// headers assume).
+var warmupOnce sync.Once
+
+func warmupVisitor(c *xhsClient) {
+	if os.Getenv("XHS_DISABLE_WARMUP") != "" {
+		return
+	}
+	warmupOnce.Do(func() {
+		req, _ := http.NewRequest(http.MethodGet, xhsBaseURL+"/", nil)
+		req.Header.Set("User-Agent", xhsUA)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		resp, err := hc.Do(req)
+		if err != nil {
+			logPrefix("warmup GET / failed: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		var jar map[string]string
+		for _, ck := range resp.Cookies() {
+			if jar == nil {
+				jar = map[string]string{}
+			}
+			jar[ck.Name] = ck.Value
+		}
+		if len(jar) > 0 {
+			c.cookies.load(jar)
+			c.syncFromJar()
+		}
+		logPrefix("warmup absorbed %d cookies", len(jar))
+	})
 }
 
 // AuthStatus returns the current credential state: empty/ready/invalid.
@@ -367,12 +406,26 @@ func foldSecureSession(out map[string]any) {
 	client().cookies.set(webSessionSecCookie, sec)
 }
 
-// ---- phone + verify code login (official web flow, verified 2026-09) ----
+// ---- phone + verify code login (web flow, wire aligned with the actively
+// maintained Spider_XHS PC client 2026-09) ----
 //
 // GET /api/sns/web/v2/login/send_code (phone/zone/type) mails the code; the
 // code is then exchanged for a mobile_token via GET /api/sns/web/v1/login/
 // check_code and finally POST /api/sns/web/v2/login/code
-// {"mobile_token","zone","phone"} returns the session.
+// {"mobile_token","zone","phone"} (zone as the string "86") returns the
+// session. mobile_token is relayed verbatim (the "mobile_token:" prefix is
+// kept); mobile_token_security from check_code is NOT sent into the body.
+
+// phoneSignOpts is the signing profile for the phone-login API family
+// (send_code / check_code / login/code): XYW_ (login/data API family, XYS_
+// rejected with HTTP 406 since ~2026-03) plus the current web SDK/build
+// versions matching xhshow PR #106 (4.3.3 / 6.3.0).
+func phoneSignOpts() signHeadersOptions {
+	// Phone-login family (send_code/check_code/login/code) runs WITHOUT session
+	// cookies, mirroring ReaJason/xhs login_phone.py: replaying the guest
+	// web_session makes login/code answer -104 (guest lacks permission).
+	return signHeadersOptions{format: "xyw", sdkVer: "4.3.3", webBuild: "6.3.0", omitSessions: true}
+}
 
 // phoneSendCode requests an SMS code to be sent to a mobile number.
 func phoneSendCode(phone string, zone string) error {
@@ -382,11 +435,11 @@ func phoneSendCode(phone string, zone string) error {
 	if zone == "" {
 		zone = "86"
 	}
-	_, status, err := client().getJSON(sendCodeURL, []kvParam{
+	_, status, err := client().getJSONOpts(sendCodeURL, []kvParam{
 		{key: "phone", val: phone},
 		{key: "zone", val: zone},
 		{key: "type", val: "login"},
-	})
+	}, phoneSignOpts())
 	if err != nil {
 		if isHttpAuthErr(err, status) {
 			return nil // 401-ish means "code throttled/flooded", treated as transient
@@ -401,15 +454,28 @@ func phoneCheckCode(phone, code, zone string) (string, error) {
 	if zone == "" {
 		zone = "86"
 	}
-	out, _, err := client().getJSON(checkCodeURL, []kvParam{
+	var before map[string]string
+	if xhsDebug {
+		before = client().cookies.all()
+	}
+	out, _, err := client().getJSONOpts(checkCodeURL, []kvParam{
 		{key: "phone", val: phone},
 		{key: "zone", val: zone},
 		{key: "code", val: code},
-	})
+	}, phoneSignOpts())
 	if err != nil {
 		return "", fmt.Errorf("xhs: check code: %w", err)
 	}
 	tok, _ := out["mobile_token"].(string)
+	if xhsDebug {
+		added := []string{}
+		for k, v := range client().cookies.all() {
+			if before[k] != v {
+				added = append(added, k+"="+v)
+			}
+		}
+		logPrefix("check_code resp=%v cookie_delta=%v", out, added)
+	}
 	if tok == "" {
 		return "", errors.New("xhs: check code returned no mobile_token")
 	}
@@ -423,16 +489,29 @@ func phoneLogin(phone, code, zone string) error {
 	if err != nil {
 		return err
 	}
-	out, status, err := client().postJSON(loginCodeURL, []kvParam{
-		{key: "mobile_token", val: tok},
-		{key: "zone", val: zone},
-		{key: "phone", val: phone},
-	})
+	if zone == "" {
+		zone = "86"
+	}
+	o := phoneSignOpts()
+	// Wire aligned with the current PC client (Spider_XHS 2026-09): the login
+	// params live in the JSON body ONLY on /api/sns/web/v2/login/code, with
+	// zone as the string "86" (never a numeral, never in the URL query).
+	// postJSONOpts would append params to the query string, which the
+	// login-guild answers with -101 "无登录信息".
+	o.body = `{"mobile_token":` + marshalJSONScalar(tok) +
+		`,"zone":` + marshalJSONScalar(zone) + `,"phone":` + marshalJSONScalar(phone) + `}`
+	out, status, err := client().postJSONOpts(loginCodeURL, nil, o)
 	if err != nil {
+		if xhsDebug {
+			logPrefix("login_code failed jar=%v", client().cookies.all())
+		}
 		if isHttpAuthErr(err, status) {
 			return fmt.Errorf("xhs: login code rejected (wrong code?): %v", err)
 		}
 		return fmt.Errorf("xhs: login code: %w", err)
+	}
+	if xhsDebug {
+		logPrefix("login_code resp=%v jar=%v", out, client().cookies.all())
 	}
 	sess, _ := out["session"].(string)
 	if sess == "" {

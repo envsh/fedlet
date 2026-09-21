@@ -31,7 +31,17 @@ fedlet 的小红书接入协议(web 端 xhs.pc 协议 + xhshow 0.2.0 签名算�
      (`data.session` 或 `login_info.session`)。
 2. **手机号 + 验证码**:`GET /api/sns/web/v2/login/send_code`(phone/zone=86/type=login)
    → `GET /api/sns/web/v1/login/check_code` 换 `mobile_token`
-   → `POST /api/sns/web/v2/login/code` 取 `web_session`。
+   → `POST /api/sns/web/v2/login/code` `{"mobile_token","zone","phone"}` 取 `web_session`。
+   - 该族属**登录/数据 API**,x-s 用 **XYW_** 签名(自 2026-03 起 XYS_ 被服务端
+     拒收,HTTP 406 `{"code":-1,"success":false}`);仍带 `x-s-common`。
+   - 前置:发码前必须有 `web_session` cookie(游客激活即可获得;缺则 406)。
+   - 端点版本(Spider_XHS 2026-09 PC 客户端逐字节对齐):send_code 为 `v2`、check_code 为 `v1`、
+     login/code 为 **`v2`**;body 内 zone 为**字符串 `"86"`**(非数字、非 URL query,query 必须为空);
+     `mobile_token` 原样透传(保留 `mobile_token:` 前缀);check_code 返回的 `mobile_token_security`
+     **不进 body**。回归 `TestPhoneLoginWireMatchesReference`。
+   - 状态:**全链路实跑成功(2026-09-21)**,会话正确写入 `~/.config/fedlet/xhs-auth.json`;
+     此前 v1 误用 → `-101 无登录信息,或登录信息为空`,v2+query 混发 → `-1 "fail"`,
+     现行 wire(v2、body-only、字符串 zone)收口。
 3. **Cookie 粘贴登录**(无需扫码/短信,浏览器手动获取):
    - 获取路径:打开 xiaohongshu.com 登录后,F12 → Application → Cookies → `xiaohongshu.com` →
      复制 `a1`(必填)、`web_session`(必填)、`web_session_sec`(可选)、`webId`(可选)。
@@ -77,8 +87,26 @@ fedlet 的小红书接入协议(web 端 xhs.pc 协议 + xhshow 0.2.0 签名算�
   `xpos_test.go` 有确定性/黄金向量/跨实现用例(a1/webId、shardingKey、CRC32、XYS/XYW、
   x-s-common、x-rap)。
 - 请求头顺序约定:`Cookie` → `x-t`+`x-b3-traceid` → `x-s`/`x-s-common` → `xy-direction`。
-- **x-s-common 与现网浏览器的差异**(待实测):浏览器 `s0=3 / x4=6.2.0`、约 328 字符(xhshow
-  注释中 300/328 两种);本实现(xhshow 0.2.0)**约 1292 字符**、`s0=5 / x4=4.86.0`,
+- **认证/签名核对(2026-09 联网复核)**:
+  - 签名双族:XYS_ = 读接口主流(homefeed 现网仍可行);XYW_ = 登录/数据族
+    (`send_code`/`check_code`/`login/code` 等)。
+  - xhshow **PR #106**(2026-06 合入,修复 `user/otherinfo`/`user_posted` 406):
+    内嵌 SDK → 4.3.3、web build → 6.3.0 + 载荷哈希改全长请求串;
+    → 签名内 SDK/web 版本号过旧同样触发 406。
+  - 406 四类成因:① 签名族用错(XYS_/XYW_);② 缺 `a1`+`web_session` cookie;
+    ③ 内嵌版本串陈旧;④ **GET 查询参数顺序/编码与签名串不一致**——`url.Values.Encode()`
+    按 key 字母序重排,而签名内容按参数给定顺序拼接,wire query ≠ 签名串,
+    服务端按收到的原始 query 校验 → 406(send_code 实锤)。**已修(2026-09-21)**:
+    `buildURL` 与 `buildContentString` 共用 `buildQueryString`(给定顺序 +
+    percentEncodeValue),发青字节恒等于签名;回归
+    `TestQueryOrderMatchesSignedContent`/`TestSignedQueryOrderIsRaw`。
+  - 本实现:核心哈希已是"全长请求串"(相符);x-s envelope `x0=4.3.5`、
+    x-s-common `x1=4.3.5 / x4=4.86.0`(早于 PR#106 的 4.3.3 / 6.3.0)→ 待实测对照。
+  - 反证:homefeed 仍以 XYS_ + 现状版本串通过 → 版本非全局死因,
+    406 优先归因"端点自身风控类(XYW_)"或"缺 web_session"。
+- **x-s-common 与现网浏览器的差异**(待实测):浏览器 `s0=3 / x1=4.3.3 / x4=6.3.0`、约 328
+  字符(xhshow 注释中 300/328 两种;PR #106 确认现网 SDK 4.3.3 / web 6.3.0);本实现
+  (xhshow 0.2.0)**约 1292 字符**、`s0=5 / x1=4.3.5 / x4=4.86.0`,
   `b1` 为合成指纹(无真实浏览器设备信息,xhshow 同款限制)——有一定概率被判定为
   非真实浏览器而触发 v2 风控;若账号/网络下 461 高发,优先怀疑此项。
 
@@ -95,7 +123,7 @@ fedlet 的小红书接入协议(web 端 xhs.pc 协议 + xhshow 0.2.0 签名算�
 | 二维码创建 | `POST /api/sns/web/v1/login/qrcode/create {"qr_type":1}` | jackwener jw_qr_login.py + PeanutSplash pc_login_apis.py 双源 |
 | 二维码轮询 | `POST /api/qrcode/userinfo {"qrId","code"}` codeStatus 0/1/2/3 | 同上 |
 | 二维码完成 | `GET /api/sns/web/v1/login/qrcode/status {qr_id,code}` 取 session | jackwener + PeanutSplash(双源) |
-| 手机验证码 | `GET /api/sns/web/v2/login/send_code` / `v1/login/check_code`(→mobile_token) / `v2/login/code` | PeanutSplash 手机登录流;待实测回填 |
+| 手机验证码 | `GET /api/sns/web/v2/login/send_code` / `v1/login/check_code`(→mobile_token) / **v2/login/code**(body 全量参数、zone 字符串、mobile_token 透传);**XYW_ 签名** + 发码前需 `web_session`;GET 参数顺序须与签名一致(第四类 406 成因) | Spider_XHS 2026-09 PC 手机登录流 + PeanutSplash;**已实测全链路成功(2026-09-21)** |
 | 游客唤醒 | `POST /api/sns/web/v1/login/activate {}` | jackwener `login_activate` |
 | 风控状态 | 461/471/472;`verifytype`/`verifyuuid` 头;redcaptcha v2 register(DES-ECB) | ReaJason/xhs issue #93;二次验证 URL 由 urlscan 实测流量实证;rid 初始化 待实测 |
 | 签名基线 | xhshow 0.2.0(XYS_/XYW_/x-s-common/x-rap);CRC32/webId/shardingKey 黄金向量 | xhshow(chinekingb/xhshow)ts test + public_api.py;`xpos_test.go` 跨实现核对 |
@@ -123,5 +151,10 @@ golden_test.go/xpos_test.go/xrap_test.go/xhs_test.go  离线单测
 
 ## 已知限制与下一步
 - 通知需真实登录:无会话时自动拉起登录 UI,期间只发布热榜(游客)。
-- 二维码完成/手机登录/通知字段、redcaptcha rid 初始化端点:需在真实会话下联网验证后回填。
-- 签名若被 xhs 更新:以 xhshow / 新逆向为准更新常量表与 header 顺序。
+- 二维码完成/通知字段、redcaptcha rid 初始化端点:需在真实会话下联网验证后回填。
+- 手机登录 **全链路已实跑成功(2026-09-21)**:send_code→check_code(406 四类成因已修,
+  **GET 参数顺序**为第四类)→login/code(v2、body-only、zone 字符串、mobile_token 透传)收口,
+  会话正确写入 `xhs-auth.json`(login_method=phone)。历史失败线:v1 误用 → `-101 无登录信息`;
+  v2+query 混发 → `-1 "fail"`;裸游客会话 → `-104`。
+- 签名若被 xhs 更新:以 xhshow(含 PR #106)/ 新逆向为准更新常量表、header 顺序
+  与内嵌版本串(x-s envelope x0、x-s-common x1/x4 现网值)。

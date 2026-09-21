@@ -86,7 +86,7 @@ func newState() *xhsState {
 
 // Start launches the poll loop. hot/notify enable the two feeds; the intervals
 // are 0-for-default (600s / 60s). The collect feed (own favorites) requires a
-// real login and runs automatically alongside them (1800s).
+// real login and only runs alongside notify — a pure-hot run is fully anonymous.
 func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	if hotInterval <= 0 {
 		hotInterval = defaultHotInterval
@@ -97,7 +97,7 @@ func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	muClient.Lock()
 	hotOn = hot
 	notifyOn = notify
-	collectOn = hot || notify
+	collectOn = notify
 	hotInt = hotInterval
 	notifyInt = notifyInterval
 	collectInt = defaultCollectInterval
@@ -126,12 +126,6 @@ func pollLoop() {
 	if !hot && !notify {
 		logPrefix("both feeds disabled, nothing to poll")
 		return
-	}
-	// guest-first: the hot feed only needs an anonymous session, so mint one
-	// before deciding on the login gateway — the login UI only pops when a real
-	// session is actually required.
-	if hot && AuthStatus() == AuthStatusEmpty {
-		ensureGuestSession()
 	}
 	ensureSession(time.Now(), true)
 
@@ -326,17 +320,37 @@ func handleRoundErr(state *xhsState, err error) {
 var (
 	probeSession   = verifySession
 	startLoginUIFn = startLoginUI
+	ensureGuest    = ensureGuestSession
 )
+
+// realLoginNeeded reports whether any running feed requires a real logged-in
+// session (notifications / own collect); the hot board only needs a guest one,
+// so a pure-hot run is fully anonymous.
+func realLoginNeeded() bool {
+	muClient.Lock()
+	defer muClient.Unlock()
+	return notifyOn || collectOn
+}
 
 // ensureSession is the only entry point that may start the login UI. A ready
 // session is validated; a missing or expired one schedules a re-login under a
 // cooldown that resets once the session verifies OK again. Transient verify
 // failures (network / 5xx) are kept as-is: they never touch the cooldown or pop
-// the login window.
+// the login window. A guest session satisfies the anonymous hot board but is
+// NOT enough when a feed requires a real login: the UI is opened then.
 func ensureSession(now time.Time, force bool) {
-	status := AuthStatus()
-	if status == AuthStatusReady || status == authStatusGuest {
+	need := realLoginNeeded()
+	switch status := AuthStatus(); status {
+	case AuthStatusReady:
 		if err := probeSession(); err == nil {
+			if need && AuthStatus() == authStatusGuest {
+				// probe downgraded ready -> guest (the stored session is an
+				// anonymous one): notify/collect still need a real login, so
+				// open the login UI instead of returning silently.
+				logPrefix("session is guest, real login required, opening login UI")
+				scheduleLogin(now, force)
+				return
+			}
 			reLoginMu.Lock()
 			reLogin.nextAt = time.Time{}
 			reLoginMu.Unlock()
@@ -347,8 +361,32 @@ func ensureSession(now time.Time, force bool) {
 			return
 		}
 		logPrefix("session check failed, scheduling re-login")
+		scheduleLogin(now, force)
+	case authStatusGuest:
+		if !need {
+			if err := probeSession(); err == nil {
+				reLoginMu.Lock()
+				reLogin.nextAt = time.Time{}
+				reLoginMu.Unlock()
+				return
+			} else if !errors.Is(err, ErrNotLoggedIn) {
+				logPrefix("session check transient error, session kept: %v", err)
+				pushError(err)
+				return
+			}
+			ensureGuest() // dead guest: mint a fresh anonymous one, no login UI
+			return
+		}
+		// guest suffices for the hot board but not for notify/collect: open the
+		// login UI even though the guest session itself is valid.
+		scheduleLogin(now, force)
+	default: // AuthStatusEmpty / AuthStatusInvalid
+		if !need {
+			ensureGuest()
+			return
+		}
+		scheduleLogin(now, force)
 	}
-	scheduleLogin(now, force)
 }
 
 func scheduleLogin(now time.Time, force bool) {

@@ -159,6 +159,13 @@ func startLoginUI() (string, error) {
 	url := "http://" + addr + "/"
 	ui.mu.Unlock()
 
+	if !client().cookies.has("web_session") {
+		// Login API family (send_code etc.) needs a web_session cookie before
+		// sending codes (guest activation suffices; the browser carries one from
+		// the first page load). Mint a guest session so the UI doesn't 406.
+		ensureGuest()
+	}
+
 	mux := http.NewServeMux()
 	ls := ui.state
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

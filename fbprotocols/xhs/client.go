@@ -15,11 +15,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
+
+// xhsDebug turns on per-request request/response dumps (XHS_DEBUG=1) used to
+// compare our header bundle and the WAF response against live behavior.
+var xhsDebug = os.Getenv("XHS_DEBUG") == "1"
 
 const (
 	xhsBaseURL = "https://www.xiaohongshu.com"
@@ -48,27 +53,39 @@ func buildJSONBody(params []kvParam) string {
 	return sb.String()
 }
 
-// buildURL mirrors Python build_url(): adds query params and percent-encodes
-// only the parts that need it (values get %3D for '=', spaces %20).
+// buildURL mirrors Python build_url(): adds query params in kvParam order with
+// percentEncodeValue, so the wire URL is byte-identical to the signed content
+// (url.Values.Encode would re-sort keys alphabetically and break the signature
+// — HTTP 406 on every multi-param GET).
 func buildURL(baseURL string, params []kvParam) string {
 	if len(params) == 0 {
 		return baseURL
-	}
-	q := make(url.Values)
-	keys := make([]string, 0, len(params))
-	seen := map[string]bool{}
-	for _, p := range params {
-		if !seen[p.key] {
-			seen[p.key] = true
-			keys = append(keys, p.key)
-		}
-		q.Add(p.key, p.pValue())
 	}
 	sep := "?"
 	if strings.Contains(baseURL, "?") {
 		sep = "&"
 	}
-	return baseURL + sep + q.Encode()
+	var sb strings.Builder
+	sb.WriteString(baseURL)
+	sb.WriteString(sep)
+	sb.WriteString(buildQueryString(params))
+	return sb.String()
+}
+
+// buildQueryString renders k=v pairs in kvParam order with percentEncodeValue:
+// the exact bytes the signature hashes. Shared by buildURL and
+// buildContentString so request and signature can never drift.
+func buildQueryString(params []kvParam) string {
+	var sb strings.Builder
+	for i, p := range params {
+		if i > 0 {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(p.key)
+		sb.WriteByte('=')
+		sb.WriteString(percentEncodeValue(p.pValue()))
+	}
+	return sb.String()
 }
 
 func jsonEscape(s string) string {
@@ -224,13 +241,20 @@ type signHeadersOptions struct {
 	uri       string // path only ("/api/sns/web/...") or full URL
 	a1        string
 	cookieRaw string // full cookie string used for x-s-common + Cookie header
-	appID     string // defaults to "xhs-pc-web"
-	params    []kvParam
-	body      string // pre-serialized compact JSON for POST
-	ts        float64
-	format    string // "xys" (default) or "xyw"
-	userID    string
-	withXRap  bool
+	// omitSessions drops the session identity cookies (web_session /
+	// web_session_sec / WebSession) from the Cookie header and x-s-common input.
+	// The phone-login family must not carry a session: replaying the guest
+	// web_session makes login/code answer -104 "您当前登录的账号没有权限访问".
+	omitSessions bool
+	appID        string // defaults to "xhs-pc-web"
+	params       []kvParam
+	body         string // pre-serialized compact JSON for POST
+	ts           float64
+	format       string // "xys" (default) or "xyw"
+	sdkVer       string // x-s envelope x0 / x-s-common x1; 空=默认 "4.3.5"(xhshow 0.2.0 基线)
+	webBuild     string // x-s-common x4; 空=默认 "4.86.0"
+	userID       string
+	withXRap     bool
 }
 
 // buildSignedHeaders produces the full header set for one request.
@@ -244,6 +268,12 @@ func buildSignedHeaders(o signHeadersOptions) (*signedHeaders, error) {
 	if o.appID == "" {
 		o.appID = "xhs-pc-web"
 	}
+	if o.sdkVer == "" {
+		o.sdkVer = "4.3.5"
+	}
+	if o.webBuild == "" {
+		o.webBuild = "4.86.0"
+	}
 	uri := extractURI(o.uri)
 
 	s := newSigner()
@@ -252,12 +282,12 @@ func buildSignedHeaders(o signHeadersOptions) (*signedHeaders, error) {
 	if o.format == "xyw" {
 		xS, err = s.signXYW(o.method, uri, o.a1, o.appID, o.body, o.params, o.ts)
 	} else {
-		xS, err = s.signXS(o.method, uri, o.a1, o.appID, o.body, o.params, o.ts)
+		xS, err = s.signXS(o.method, uri, o.a1, o.appID, o.body, o.params, o.ts, o.sdkVer)
 	}
 	if err != nil {
 		return nil, err
 	}
-	xSC, err := s.signXSCommon(parseCookieMap(o.cookieRaw))
+	xSC, err := s.signXSCommon(parseCookieMap(o.cookieRaw), o.sdkVer, o.webBuild)
 	if err != nil {
 		return nil, err
 	}
@@ -361,12 +391,45 @@ func (c *xhsClient) cookieHeader() string {
 	return sb.String()
 }
 
+// cookieHeaderFor renders the Cookie header, optionally omitting the session
+// identity cookies. x-s-common only reads a1, so dropping sessions never
+// desyncs the signature (whether present or not).
+func (c *xhsClient) cookieHeaderFor(o signHeadersOptions) string {
+	if !o.omitSessions {
+		return c.cookieHeader()
+	}
+	exclude := map[string]bool{
+		xhsWebSessionName:   true,
+		webSessionSecCookie: true,
+		"web_session":       true,
+	}
+	c.cookies.mu.RLock()
+	defer c.cookies.mu.RUnlock()
+	keys := make([]string, 0, len(c.cookies.m))
+	for k := range c.cookies.m {
+		if !exclude[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteString("; ")
+		}
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(c.cookies.m[k])
+	}
+	return sb.String()
+}
+
 // doSigned runs one signed request with the fixed header order, then lets the
 // caller decide on retries. cookieRaw is always the live jar so x-s-common and
 // the Cookie header agree.
 func (c *xhsClient) doSigned(o signHeadersOptions) (*http.Response, []byte, *signedHeaders, error) {
 	o.a1 = c.cookies.get("a1")
-	o.cookieRaw = c.cookieHeader()
+	o.cookieRaw = c.cookieHeaderFor(o)
 	if o.appID == "" {
 		o.appID = "xhs-pc-web"
 	}
@@ -376,6 +439,9 @@ func (c *xhsClient) doSigned(o signHeadersOptions) (*http.Response, []byte, *sig
 	}
 
 	full := buildURL(xhsAPIHost+extractURI(o.uri), o.params)
+	if xhsDebug {
+		dumpSignedReq(o.method, full, h, c.cookies.all())
+	}
 	var body io.Reader
 	if o.method == "POST" {
 		body = strings.NewReader(o.body)
@@ -389,6 +455,7 @@ func (c *xhsClient) doSigned(o signHeadersOptions) (*http.Response, []byte, *sig
 
 	req.Header.Set("Cookie", o.cookieRaw)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Origin", xhsBaseURL)
 	req.Header.Set("Referer", xhsBaseURL+"/")
 	req.Header.Set("User-Agent", xhsUA)
@@ -411,8 +478,45 @@ func (c *xhsClient) doSigned(o signHeadersOptions) (*http.Response, []byte, *sig
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if xhsDebug {
+		dumpSignedResp(full, resp, data)
+	}
 	c.cookies.captureCookies(resp.Header)
 	return resp, data, h, nil
+}
+
+func dumpSignedReq(method, full string, h *signedHeaders, jar map[string]string) {
+	var sb strings.Builder
+	for _, k := range h.order {
+		v := h.vals[k]
+		switch k {
+		case "x-s", "x-s-common":
+			sb.WriteString(" " + k + "=" + strconvQuote(truncate(v, 80)))
+		case "x-t", "xy-direction", "x-mns", "x-rap-param":
+			sb.WriteString(" " + k + "=" + strconvQuote(v))
+		}
+	}
+	logPrefix("S2 req %s %s%s", method, full, sb.String())
+	logPrefix("S2 cookies a1=%v webId=%v WebSession=%v web_session=%v gid=%v websectiga=%v (n=%d)",
+		jar["a1"] != "", jar["webId"] != "", jar[xhsWebSessionName] != "",
+		jar["web_session"] != "", jar["gid"] != "", jar["websectiga"] != "", len(jar))
+}
+
+func dumpSignedResp(full string, resp *http.Response, data []byte) {
+	h := resp.Header
+	ch := func(k string) string { return truncate(h.Get(k), 40) }
+	body := data
+	if len(body) > 400 {
+		body = body[:400]
+	}
+	logPrefix("S2 resp %s code=%d ct=%s verify=%q type=%q uuid=%q body=%q",
+		full, resp.StatusCode, h.Get("Content-Type"),
+		ch("verify"), ch("verifytype"), ch("verifyuuid"), truncate(string(body), 400))
+}
+
+// strconvQuote wraps s for S2 debug output (backtick-safe).
+func strconvQuote(s string) string {
+	return fmt.Sprintf("%q", s)
 }
 
 // exec executes a signed request, auto-retrying once through the risk
@@ -474,7 +578,21 @@ func (c *xhsClient) syncFromJar() {
 }
 
 func (c *xhsClient) getJSON(uri string, params []kvParam) (map[string]any, int, error) {
-	data, status, err := c.exec(signHeadersOptions{method: "GET", uri: uri, params: params, ts: float64AtNow()})
+	return c.getJSONOpts(uri, params, signHeadersOptions{})
+}
+
+// getJSONOpts is getJSON with an explicit signing profile (format / embedded
+// SDK+web versions); used by the phone-login API family (XYW_ + 4.3.3/6.3.0).
+func (c *xhsClient) getJSONOpts(uri string, params []kvParam, o signHeadersOptions) (map[string]any, int, error) {
+	if o.method == "" {
+		o.method = "GET"
+	}
+	if o.ts == 0 {
+		o.ts = float64AtNow()
+	}
+	o.uri = uri
+	o.params = params
+	data, status, err := c.exec(o)
 	if err != nil {
 		return nil, status, err
 	}
@@ -486,8 +604,22 @@ func (c *xhsClient) getJSON(uri string, params []kvParam) (map[string]any, int, 
 }
 
 func (c *xhsClient) postJSON(uri string, params []kvParam) (map[string]any, int, error) {
-	body := buildJSONBody(params)
-	data, status, err := c.exec(signHeadersOptions{method: "POST", uri: uri, body: body, ts: float64AtNow()})
+	return c.postJSONOpts(uri, params, signHeadersOptions{})
+}
+
+// postJSONOpts mirrors postJSON with an explicit signing profile.
+func (c *xhsClient) postJSONOpts(uri string, params []kvParam, o signHeadersOptions) (map[string]any, int, error) {
+	if o.method == "" {
+		o.method = "POST"
+	}
+	if o.ts == 0 {
+		o.ts = float64AtNow()
+	}
+	if o.body == "" {
+		o.body = buildJSONBody(params)
+	}
+	o.uri = uri
+	data, status, err := c.exec(o)
 	if err != nil {
 		return nil, status, err
 	}

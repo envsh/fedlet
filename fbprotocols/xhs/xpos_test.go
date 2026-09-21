@@ -139,7 +139,7 @@ func TestCrossPythonSignXS(t *testing.T) {
 		{key: "zone", val: "86"},
 		{key: "type", val: "login"},
 	}
-	goSig, err := s.signXS("GET", pyURI, pyA1, "xhs-pc-web", "", params, pyTS)
+	goSig, err := s.signXS("GET", pyURI, pyA1, "xhs-pc-web", "", params, pyTS, "4.3.5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,4 +205,95 @@ func TestSignXYWShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = extractPayloadHex(t, s, sig) // asserts XYW_ prefix + signSvn==56
+}
+
+func TestXSVersionOverride(t *testing.T) {
+	s := newSigner()
+	common, err := s.signXSCommon(map[string]string{"a1": pyA1}, "4.3.3", "6.3.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := s.decodeXSCommon(common)
+	if err != nil {
+		t.Fatalf("decode x-s-common: %v", err)
+	}
+	if env["x1"] != "4.3.3" || env["x4"] != "6.3.0" {
+		t.Fatalf("x-s-common version override mismatch: %v", env)
+	}
+}
+
+func TestXSEnvelopeX0Override(t *testing.T) {
+	s := newSigner()
+	sig, err := s.signXS("GET", pyURI, pyA1, "xhs-pc-web", "", []kvParam{
+		{key: "phone", val: "13800138000"},
+		{key: "zone", val: "86"},
+		{key: "type", val: "login"},
+	}, pyTS, "4.3.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := s.decodeXS(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["x0"] != "4.3.3" {
+		t.Fatalf("x-s envelope x0 %v, want 4.3.3", env["x0"])
+	}
+}
+
+func TestDefaultVersionsUnchanged(t *testing.T) {
+	h, err := buildSignedHeaders(signHeadersOptions{
+		method:    "GET",
+		uri:       pyURI,
+		a1:        pyA1,
+		cookieRaw: "a1=" + pyA1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSigner()
+	env, err := s.decodeXS(h.vals["x-s"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["x0"] != "4.3.5" {
+		t.Fatalf("default envelope x0 %v, want 4.3.5", env["x0"])
+	}
+	cenv, err := s.decodeXSCommon(h.vals["x-s-common"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cenv["x1"] != "4.3.5" || cenv["x4"] != "4.86.0" {
+		t.Fatalf("default x-s-common versions %v", cenv)
+	}
+}
+
+func TestXSCommonStableFingerprint(t *testing.T) {
+	s := newSigner()
+	c := map[string]string{"a1": pyA1}
+	a, err := s.signXSCommon(c, "4.3.5", "4.86.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.signXSCommon(c, "4.3.5", "4.86.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf("x-s-common rotated between requests (WAF fingerprint anomaly)")
+	}
+	c2, err := s.signXSCommon(map[string]string{"a1": "other" + pyA1}, "4.3.5", "4.86.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2 == a {
+		t.Fatalf("x-s-common should differ for a different a1")
+	}
+}
+
+func TestPhoneSignOptsXYW(t *testing.T) {
+	o := phoneSignOpts()
+	if o.format != "xyw" || o.sdkVer != "4.3.3" || o.webBuild != "6.3.0" {
+		t.Fatalf("phoneSignOpts = %+v, want xyw/4.3.3/6.3.0", o)
+	}
 }
