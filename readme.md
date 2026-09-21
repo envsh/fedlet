@@ -21,6 +21,10 @@
 	并在每个条目顶级(0级)插入 proto_type(协议/来源类型)与 cycle_count(本轮条数),
 	见 fbshared.InsertFlatFields(fbprotocols/fbshared/listmsg.go)。
 	已生效协议:toutiao / zhihu / bilibili / xhs / weibo / bdtieba。
+	weibo 协议另有 Rust 版二次实现(fbprotocols/weibo/weibo_rs lib,
+	Cargo.toml+weibo.rs+hotlist.rs 平铺、无 src/ 子目录),行为与 Go 版一致
+	(条目原样转发 + 顶级 proto_type=weibo_hot/cycle_count),但 Go 与 Rust 两份
+	实现共用 ~/.config/fedlet/weibo-state.json 去重状态,不可同时运行。
 
 * fbtransports 不同fed协议传递层，libp2p/toxtcp/iroh-relay/freenet/hturnal
   客户端也要使用，必须轻量

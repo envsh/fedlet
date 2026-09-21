@@ -1,5 +1,6 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,toutiao,zhihu
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
+# noauth toutiao,weibo,bdtieba
 TAGS = $(PROTO_TAGS)
 
 BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
@@ -35,6 +36,10 @@ noproto: all
 # about 28M
 min: TAGS := nodht,nopubsub,nowatchdog
 min: all
+
+# about 28M, with noauth proto
+min2: TAGS := nodht,nopubsub,nowatchdog,toutiao,weibo
+min2: all
 
 NDK_DIR = /opt/android-ndk
 NDK_HOST = $(shell uname -s | tr A-Z a-z)-x86_64

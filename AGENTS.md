@@ -6,13 +6,16 @@ Federated messaging bridge: ingests messages from multiple chat/IM protocols and
 
 ```
 fedbridge/         — Main Go app (entrypoint: main.go). Build with:
-                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap
+                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo
 fbprotocols/       — Protocol backend Go packages
   emailimap/       IMAP email polling (most mature)
   irccloud/        IRCCloud integration
   outlookgraph/    Microsoft Graph API
   gomuks/          Matrix via gomuks websocket
   toxoverhttp/     Tox over HTTP REST
+  zhihu/ xhs/      CN hot boards/notify backends (xhs: signed, guest/login)
+  toutiao/         Hot board + real-time news feed (anonymous, no login/sign)
+  weibo/           Hot boards (realtime/hotgov/band; anonymous via ajax/side/hotSearch)
   nostr/ misskey/ mailchat/ discordpy/ toxoverclib/  — planned/stubs (mostly empty)
 fedpubhttp/        — HTTP-to-P2P publishing utility (Go package + shell script)
 curlrq/            — V language module: parallel HTTP via libcurl (c2v bindings)
@@ -24,7 +27,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 - **fedbridge** is the primary binary. Build from _within_ `fedbridge/`:
   ```
-  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap
+  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo
   ```
   Tags are how protocols are selected; omit tags to exclude backends.
   Pre-built binaries: `main.gz` (20MB), `main` (32MB), `main.full` (42MB).
@@ -47,6 +50,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 ## Language notes
 
 - Server-side code **must** be Go. V is only for small client-side modules (curlrq) — the readme explicitly forbids V for server code due to build/deploy complexity.
+- **One Rust exception**: `weibo_rs` (fbprotocols/weibo/, CLIENTS/OTHER-embed) is a Rust lib port of the Go weibo backend, flat in the weibo dir with `[lib] path` + `[[example]] weibo_demo` (no `src/`). It shares `~/.config/fedlet/weibo-state.json` with the Go backend — run only ONE of the two at a time.
 
 ## V code
 
