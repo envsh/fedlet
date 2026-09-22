@@ -6,15 +6,16 @@ Federated messaging bridge: ingests messages from multiple chat/IM protocols and
 
 ```
 fedbridge/         — Main Go app (entrypoint: main.go). Build with:
-                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo
+                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk
 fbprotocols/       — Protocol backend Go packages
   emailimap/       IMAP email polling (most mature)
   irccloud/        IRCCloud integration
   outlookgraph/    Microsoft Graph API
   gomuks/          Matrix via gomuks websocket
   toxoverhttp/     Tox over HTTP REST
-  zhihu/ xhs/      CN hot boards/notify backends (xhs: signed, guest/login)
+  zhihu/ xhs/      CN hot boards/notify backends (xhs: signed homefeed/notify; hot board via uapis.cn aggregator — no session needed, see hotlist.go)
   toutiao/         Hot board + real-time news feed (anonymous, no login/sign)
+  coolapk/         Coolapk 酷安 hot board + digest feed (anonymous, weak X-App-Token sign)
   weibo/           Hot boards (realtime/hotgov/band; anonymous via ajax/side/hotSearch)
   nostr/ misskey/ mailchat/ discordpy/ toxoverclib/  — planned/stubs (mostly empty)
 fedpubhttp/        — HTTP-to-P2P publishing utility (Go package + shell script)
@@ -27,7 +28,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 - **fedbridge** is the primary binary. Build from _within_ `fedbridge/`:
   ```
-  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo
+  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk
   ```
   Tags are how protocols are selected; omit tags to exclude backends.
   Pre-built binaries: `main.gz` (20MB), `main` (32MB), `main.full` (42MB).

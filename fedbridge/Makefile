@@ -1,6 +1,6 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
-# noauth toutiao,weibo,bdtieba
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,coolapk
+# noauth toutiao,weibo,coolapk,bdtieba(流量大),
 TAGS = $(PROTO_TAGS)
 
 BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
