@@ -32,7 +32,7 @@ func mustMap(t *testing.T, s string) map[string]any {
 	return m
 }
 
-func TestParseHotlistItems(t *testing.T) {
+func TestParseHomefeedItems(t *testing.T) {
 	out := mustMap(t, `{
 		"items": [
 			{
@@ -49,7 +49,7 @@ func TestParseHotlistItems(t *testing.T) {
 			{"id": "note-b", "type": "note"}
 		]
 	}`)
-	items := parseHotlistItems(out)
+	items := parseHomefeedItems(out)
 	if len(items) != 3 {
 		t.Fatalf("len = %d want 3", len(items))
 	}
@@ -57,17 +57,71 @@ func TestParseHotlistItems(t *testing.T) {
 	if first.NoteID != "64a1b2c3000000" {
 		t.Errorf("NoteID = %q (wants note_card.id override)", first.NoteID)
 	}
-	if got := HotlistTitle(first); got != "周末山野徒步" {
+	if got := HomefeedTitle(first); got != "周末山野徒步" {
 		t.Errorf("title = %q", got)
 	}
-	if got := HotlistLink(first); got != "https://www.xiaohongshu.com/explore/64a1b2c3000000" {
+	if got := HomefeedLink(first); got != "https://www.xiaohongshu.com/explore/64a1b2c3000000" {
 		t.Errorf("link = %q", got)
 	}
-	if got := HotlistDetail(first); got == "" || got == "👍 0 ⭐ 0 💬 0" {
+	if got := HomefeedDetail(first); got == "" || got == "👍 0 ⭐ 0 💬 0" {
 		t.Errorf("detail = %q", got)
 	}
 	if items[2].NoteID != "note-b" {
 		t.Errorf("items[2].NoteID = %q", items[2].NoteID)
+	}
+}
+
+func TestParseHotBoardItems(t *testing.T) {
+	out := mustMap(t, `{
+		"type": "xiaohongshu",
+		"update_time": "2026-09-20T08:46:52.587Z",
+		"list": [
+			{
+				"index": 1,
+				"title": "用万能旅行拍照姿势美美出片",
+				"url": "https://www.xiaohongshu.com/search_result?keyword=abc&type=51",
+				"cover": "https://picasso-static.xiaohongshu.com/fe-platform/cfd317ff14757c7ede6ef5176ec487589565e49e.png",
+				"hot_value": "947.5w",
+				"extra": {"cover": "https://picasso-static.xiaohongshu.com/fe-platform/x.png", "type": "热"}
+			},
+			{"index": 2, "title": "耗时三年拍下古诗词里的中国", "url": "https://www.xiaohongshu.com/search_result?keyword=def&type=51", "cover": "", "hot_value": "934.8w"},
+			{"index": 3, "title": "无热度条目", "url": "", "hot_value": ""}
+		]
+	}`)
+	resp, err := parseHotBoardItems(out)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.UpdateTime != "2026-09-20T08:46:52.587Z" {
+		t.Errorf("update_time = %q", resp.UpdateTime)
+	}
+	if len(resp.Items) != 3 {
+		t.Fatalf("len = %d want 3", len(resp.Items))
+	}
+	first := &resp.Items[0]
+	if first.Keyword != "用万能旅行拍照姿势美美出片" {
+		t.Errorf("keyword = %q", first.Keyword)
+	}
+	if first.Rank != 1 || first.HotValue != "947.5w" || first.Type != "热" {
+		t.Errorf("first = rank %d hot %q type %q", first.Rank, first.HotValue, first.Type)
+	}
+	if got := HotBoardTitle(first); got != first.Keyword {
+		t.Errorf("title = %q", got)
+	}
+	if got := HotBoardLink(first); got != "https://www.xiaohongshu.com/search_result?keyword=abc&type=51" {
+		t.Errorf("link = %q", got)
+	}
+	if got := HotBoardDetail(first); got == "" {
+		t.Error("detail empty")
+	}
+	second := &resp.Items[1]
+	if second.Rank != 2 || second.Type != "" {
+		t.Errorf("second = rank %d type %q", second.Rank, second.Type)
+	}
+	for i := range resp.Items {
+		if len(resp.Items[i].Raw) == 0 {
+			t.Errorf("item %d raw field not preserved", resp.Items[i].Rank)
+		}
 	}
 }
 
@@ -110,6 +164,68 @@ func TestParseNotifications(t *testing.T) {
 	}
 	if second.ID != "n2" || second.Kind != KindMentions {
 		t.Errorf("kind/id = %s/%s", second.Kind, second.ID)
+	}
+}
+
+func TestParseYouMessageList(t *testing.T) {
+	// Live /you stream shape (2026-09): data.message_list with id/score/time/
+	// title + item_info + comment_info + top-level user_info. Fixture mirrors
+	// a captured "赞了你的评论" likes event.
+	out := mustMap(t, `{
+		"cursor": 123, "has_more": true,
+		"message_list": [
+			{
+				"comment_info": {"content": "这话说的，以后再也不会增加新的00后了[笑哭R]", "id": "687f3a2200000000190248cf", "like_count": 6385, "liked": false, "status": 0},
+				"id": "7685193251355099166",
+				"item_info": {
+					"content": "我感觉全国的00后正在逐渐地减少了",
+					"id": "687d8d690000000022031cf6",
+					"type": "note_info",
+					"user_info": {"nickname": "小红薯_", "userid": "5f66e3340000000001000513"}
+				},
+				"liked": false,
+				"score": 7685193251355099000,
+				"time": 1789348491,
+				"title": "赞了你的评论",
+				"type": "liked/comment",
+				"user_info": {"nickname": "略略略", "userid": "626573ef000000001000ed94"}
+			},
+			{
+				"id": "7523043924149161491",
+				"time": 1751595159,
+				"title": "开始关注你了",
+				"type": "follow/you",
+				"user": {"nickname": "小红薯68D01CEF", "userid": "66e02599000000001d03021c"}
+			},
+			{"id": "", "title": "", "type": "broken"}
+		]
+	}`)
+	items := parseYouKind(out, KindLikes)
+	if len(items) != 2 {
+		t.Fatalf("len = %d want 2 (broken empty item skipped)", len(items))
+	}
+	first := items[0]
+	if first.Kind != KindLikes || first.ID != "7685193251355099166" {
+		t.Errorf("kind/id = %s/%s", first.Kind, first.ID)
+	}
+	if first.ActorName != "略略略" || first.ActorID != "626573ef000000001000ed94" {
+		t.Errorf("actor = %+v", first)
+	}
+	if first.Text != "这话说的，以后再也不会增加新的00后了[笑哭R]" {
+		t.Errorf("text = %q (wants the liked comment content)", first.Text)
+	}
+	if first.NoteID != "687d8d690000000022031cf6" {
+		t.Errorf("note_id = %q (wants item_info.id)", first.NoteID)
+	}
+	if first.NoteTitle != "我感觉全国的00后正在逐渐地减少了" {
+		t.Errorf("note_title = %q (wants item_info.content)", first.NoteTitle)
+	}
+	if first.CreateTime != 1789348491 {
+		t.Errorf("create_time = %d (wants item time)", first.CreateTime)
+	}
+	second := items[1]
+	if second.ActorName != "小红薯68D01CEF" || second.Text != "开始关注你了" {
+		t.Errorf("second = %+v (connection shape)", second)
 	}
 }
 
@@ -482,11 +598,11 @@ func TestFeedAllowed(t *testing.T) {
 	if !feedAllowed(authStatusGuest, false) {
 		t.Error("hot must run on a guest session")
 	}
-	if feedAllowed(AuthStatusInvalid, false) {
-		t.Error("hot must not run on an invalid session")
+	if !feedAllowed(AuthStatusInvalid, false) {
+		t.Error("hot must run on an invalid session (anonymous aggregator)")
 	}
-	if feedAllowed(AuthStatusEmpty, false) {
-		t.Error("hot must not run without a session")
+	if !feedAllowed(AuthStatusEmpty, false) {
+		t.Error("hot must run without a session (anonymous aggregator)")
 	}
 }
 

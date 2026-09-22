@@ -1,156 +1,164 @@
 package xhs
 
-// Hot feed ("热榜"), read from the homefeed endpoint with the hot category.
+// Hot board (热搜榜), the real xhs trending keyword list.
 //
-// POST /api/sns/web/v1/homefeed with category "homefeed.fashion_v3" returns
-// the trending board. Works with a guest session (login/activate), so the hot
-// feed does not require real login. Payload shape mirrors the jackwener
-// client (verified 2026-09); items are tracked by note id and only new ones
-// are published.
+// xhs exposes no signed hot-board API on its web endpoints: probing 2026-09
+// showed edith has no hsearch/trending route (HTTP 404 for every variant) and
+// the www API gateway rejects all request shapes with "create invoker failed"
+// even with a verified logged-in session, while the /hotsearch page is dead
+// (302 -> /404). The board is therefore pulled from the uapis.cn aggregator,
+// which is free and keyless and returns the actual xhs 热搜排行榜 (rank,
+// hot_value like "947.5w", trend tag, and a search_result jump URL) refreshed
+// every 5 minutes.
 //
-// Note: the body must keep this exact key order — the signature is computed
-// over the raw body string.
+// Publish semantics follow the protocol rule: each list item is forwarded
+// verbatim plus flat proto_type/cycle_count; only the keyword is parsed, as the
+// dedupe key.
 
-import "fmt"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
 
-// hotlistURL is the homefeed endpoint; the hot board is selected by payload.
-const hotlistURL = "/api/sns/web/v1/homefeed"
+const (
+	// hotBoardSource identifies the anonymous aggregator backing the board.
+	hotBoardSource = "uapis"
 
-// hotfeedBody is the exact POST body for the hot feed, mirroring the web
-// client (image_scenes as a JSON array).
-const hotfeedBody = `{"cursor_score":"","num":40,"refresh_type":1,"note_index":0,` +
-	`"unread_begin_note_id":"","unread_end_note_id":"","unread_note_count":0,` +
-	`"category":"homefeed.fashion_v3","search_key":"","need_num":40,` +
-	`"image_scenes":["FD_PRV_WEBP","FD_WM_WEBP"]}`
+	// uapisHotboardURL is the uapis.cn hot-board aggregate for xiaohongshu.
+	uapisHotboardURL = "https://uapis.cn/api/v1/misc/hotboard?type=xiaohongshu"
+)
 
-// HotlistItem is one entry of the hot board. The web payload wraps notes in a
-// "note_card"; the raw shape is kept as-is and only lightly inspected.
-type HotlistItem struct {
-	ID     string         `json:"id"`
-	Type   string         `json:"type"`
-	Card   map[string]any `json:"note_card"`
-	User   map[string]any `json:"user"`
-	Raw    map[string]any `json:"-"`
-	Rank   int            `json:"rank"`
-	NoteID string         `json:"note_id"`
+// HotBoardItem is one keyword entry of the hot search board as published by
+// the aggregator. Raw keeps the exact list item so the published body is the
+// source verbatim.
+type HotBoardItem struct {
+	Keyword  string         `json:"keyword"`
+	Rank     int            `json:"rank"`
+	HotValue string         `json:"hot_value"`
+	Type     string         `json:"type"`
+	URL      string         `json:"url"`
+	Cover    string         `json:"cover"`
+	Raw      map[string]any `json:"-"`
 }
 
-// HotlistResp is the response envelope of the hot board.
-type HotlistResp struct {
-	Data []HotlistItem `json:"data"`
+// HotBoardResp is the response envelope of the hot board.
+type HotBoardResp struct {
+	UpdateTime string         `json:"update_time"`
+	Items      []HotBoardItem `json:"list"`
 }
 
-// FetchHotlist fetches the current hot board via the shared signed client. It
-// answers with a guest session too (login/activate).
-func FetchHotlist() (*HotlistResp, error) {
-	c := client()
-	data, status, err := c.exec(signHeadersOptions{
-		method:   "POST",
-		uri:      hotlistURL,
-		body:     hotfeedBody,
-		ts:       float64AtNow(),
-		withXRap: true,
-	})
+// FetchHotBoard pulls the current xhs hot search board from the anonymous
+// aggregator (plain HTTP; no session, no signature).
+func FetchHotBoard() (*HotBoardResp, error) {
+	out, err := fetchRawJSON(uapisHotboardURL)
 	if err != nil {
-		return nil, fmt.Errorf("xhs: hotlist: %w", err)
+		return nil, err
 	}
-	out, status, err := decodeXHSPayload(data, status)
-	if err != nil {
-		return nil, fmt.Errorf("xhs: hotlist: %w", err)
-	}
-	return &HotlistResp{Data: parseHotlistItems(out)}, nil
+	return parseHotBoardItems(out)
 }
 
-// parseHotlistItems flattens the homefeed "items" array into HotlistItems,
-// tolerantly reading note_card/user blocks with whatever fields exist.
-func parseHotlistItems(out map[string]any) []HotlistItem {
-	itemsRaw, _ := out["items"].([]any)
-	items := make([]HotlistItem, 0, len(itemsRaw))
+// parseHotBoardItems decodes the aggregator envelope into HotBoardItems.
+func parseHotBoardItems(out map[string]any) (*HotBoardResp, error) {
+	itemsRaw, _ := out["list"].([]any)
+	resp := &HotBoardResp{Items: make([]HotBoardItem, 0, len(itemsRaw))}
+	if s, ok := out["update_time"].(string); ok {
+		resp.UpdateTime = s
+	}
 	for i, it := range itemsRaw {
 		m, ok := it.(map[string]any)
 		if !ok {
 			continue
 		}
-		id, _ := m["id"].(string)
-		noteID := id
-		typ, _ := m["type"].(string)
-		var card map[string]any
-		if c, ok := m["note_card"].(map[string]any); ok {
-			card = c
-			if nid, ok := c["id"].(string); ok && nid != "" {
-				noteID = nid
+		item := HotBoardItem{
+			Keyword:  strField(m, "title"),
+			HotValue: strField(m, "hot_value"),
+			URL:      strField(m, "url"),
+			Cover:    strField(m, "cover"),
+			Rank:     i + 1,
+			Raw:      m,
+		}
+		if idx, ok := m["index"]; ok {
+			if n, ok := numAsInt(idx); ok {
+				item.Rank = int(n)
 			}
 		}
-		var user map[string]any
-		if u, ok := m["user"].(map[string]any); ok {
-			user = u
+		if ex, ok := m["extra"].(map[string]any); ok {
+			item.Type = strField(ex, "type")
 		}
-		items = append(items, HotlistItem{
-			ID:     id,
-			Type:   typ,
-			Card:   card,
-			User:   user,
-			Raw:    m,
-			Rank:   i,
-			NoteID: noteID,
-		})
+		if item.Type == "" {
+			item.Type = strField(m, "type")
+		}
+		resp.Items = append(resp.Items, item)
 	}
-	return items
+	if len(resp.Items) == 0 {
+		return nil, errors.New("xhs: hot board returned no items")
+	}
+	return resp, nil
 }
 
-// HotlistTitle extracts the note title from the note_card block.
-func HotlistTitle(it *HotlistItem) string {
+// fetchRawJSON GETs a JSON endpoint with the shared plain client and decodes
+// it into a map. Used for the anonymous aggregator (no signing).
+func fetchRawJSON(url string) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", xhsUA)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("xhs: hot board get: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("xhs: hot board http %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("xhs: hot board read: %w", err)
+	}
+	var out map[string]any
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("xhs: hot board decode: %w", err)
+	}
+	return out, nil
+}
+
+// HotBoardTitle is the keyword itself (the search term, not a note title).
+func HotBoardTitle(it *HotBoardItem) string {
 	if it == nil {
 		return ""
 	}
-	if it.Card != nil {
-		for _, k := range []string{"display_title", "title"} {
-			if s, ok := it.Card[k].(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	if s, ok := it.Raw["title"].(string); ok {
-		return s
-	}
-	return ""
+	return it.Keyword
 }
 
-// HotlistDetail extracts engagement counts (likes/collects/comments) from the
-// interact_info block, if present.
-func HotlistDetail(it *HotlistItem) string {
+// HotBoardDetail summarizes the heat value and trend tag.
+func HotBoardDetail(it *HotBoardItem) string {
 	if it == nil {
 		return ""
 	}
-	info, ok := it.Card["interact_info"].(map[string]any)
-	if !ok {
-		return ""
+	s := "🔥 " + it.HotValue
+	if it.Type != "" {
+		s += " · " + it.Type
 	}
-	format := func(key string) string {
-		v, _ := info[key].(float64)
-		return formatCount(v)
-	}
-	return "👍 " + format("liked_count") +
-		" ⭐ " + format("collected_count") +
-		" 💬 " + format("comment_count")
+	return s
 }
 
-// HotlistLink returns the web explore URL for the note.
-func HotlistLink(it *HotlistItem) string {
-	if it == nil || it.NoteID == "" {
+// HotBoardLink is the xhs search page for the keyword (type=51 hot search).
+func HotBoardLink(it *HotBoardItem) string {
+	if it == nil {
 		return ""
 	}
-	return "https://www.xiaohongshu.com/explore/" + it.NoteID
+	return it.URL
 }
 
-// formatCount renders big engagement numbers compactly (1234 -> 1234).
-func formatCount(v float64) string {
-	if v == 0 {
-		return "0"
-	}
-	n := int64(v)
-	if n >= 10000 {
-		return fmt.Sprintf("%.1fw", float64(n)/10000)
-	}
-	return fmt.Sprintf("%d", n)
+// strField is a tolerant string reader for generic JSON values.
+func strField(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
 }

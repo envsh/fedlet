@@ -142,7 +142,12 @@ func warmupVisitor(c *xhsClient) {
 			jar[ck.Name] = ck.Value
 		}
 		if len(jar) > 0 {
-			c.cookies.load(jar)
+			// Merge, never replace: load() would wipe the persisted jar (a1,
+			// webId, and the logged-in WebSession) with just the visitor-cookie
+			// set, which silently kills the real session and the signature.
+			for k, v := range jar {
+				c.cookies.set(k, v)
+			}
 			c.syncFromJar()
 		}
 		logPrefix("warmup absorbed %d cookies", len(jar))

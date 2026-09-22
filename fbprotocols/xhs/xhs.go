@@ -3,8 +3,9 @@ package xhs
 // Protocol orchestrator: Start / poll loop / dedupe state / throttle / status.
 //
 // Behaviour:
-//   - hot board: guest session is fine (login/activate), ~600s, publishes only
-//     newly-appeared entries
+//   - hot board: anonymous (via the uapis.cn aggregator; xhs serves no signed
+//     hot-board API on edith/www — see hotlist.go), ~600s, publishes only
+//     newly-appeared keywords
 //   - notifications: require a real login, ~60s, new events only
 //   - session healing: periodic verify + passive auth-error detection; on a
 //     lost session the feeds pause and the single ensureSession gateway
@@ -85,8 +86,9 @@ func newState() *xhsState {
 }
 
 // Start launches the poll loop. hot/notify enable the two feeds; the intervals
-// are 0-for-default (600s / 60s). The collect feed (own favorites) requires a
-// real login and only runs alongside notify — a pure-hot run is fully anonymous.
+// are 0-for-default (600s / 60s). The hot board runs fully anonymously (no
+// session required); the collect feed (own favorites) requires a real login
+// and only runs alongside notify.
 func Start(hot, notify bool, hotInterval, notifyInterval time.Duration) {
 	if hotInterval <= 0 {
 		hotInterval = defaultHotInterval
@@ -181,12 +183,12 @@ func pollLoop() {
 }
 
 // feedAllowed gates a feed on the auth status: notifications require a real
-// login; the hot board also runs with a guest (anonymous) session.
+// login; the hot board runs anonymously (the aggregator needs no session).
 func feedAllowed(status string, needLogin bool) bool {
 	if needLogin {
 		return status == AuthStatusReady
 	}
-	return status == AuthStatusReady || status == authStatusGuest
+	return true
 }
 
 // reloginDue reports whether a scheduled re-login attempt is due (zero cooldown
@@ -200,7 +202,7 @@ func reloginDue(now time.Time) bool {
 
 func hotRound(state *xhsState) {
 	waitRateGate()
-	resp, err := FetchHotlist()
+	resp, err := FetchHotBoard()
 	if err != nil {
 		logPrefix("hotlist error: %v", err)
 		handleRoundErr(state, err)
@@ -208,9 +210,9 @@ func hotRound(state *xhsState) {
 	}
 	now := time.Now()
 	published := 0
-	for i := range resp.Data {
-		it := &resp.Data[i]
-		key := it.NoteID
+	for i := range resp.Items {
+		it := &resp.Items[i]
+		key := it.Keyword
 		if key == "" {
 			continue
 		}
@@ -218,25 +220,25 @@ func hotRound(state *xhsState) {
 			continue
 		}
 		state.Hotlist[key] = now.Unix()
-		title := HotlistTitle(it)
-		detail := HotlistDetail(it)
+		title := HotBoardTitle(it)
+		detail := HotBoardDetail(it)
 		logPrefix("hotlist #%d %s %s", i+1, key, truncate(title, 80))
 		payload := map[string]any{
 			"kind":         "hotlist",
 			"rank":         it.Rank,
-			"feed_id":      it.ID,
-			"type":         it.Type,
 			"title":        title,
 			"detail":       detail,
-			"url":          HotlistLink(it),
-			"note_id":      it.NoteID,
-			"count":        len(resp.Data),
+			"url":          HotBoardLink(it),
+			"hot_value":    it.HotValue,
+			"trend":        it.Type,
+			"source":       hotBoardSource,
+			"count":        len(resp.Items),
 			"published_at": now.Unix(),
 		}
 		itemB, _ := json.Marshal(it.Raw)
 		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
 			"proto_type":  payload["kind"],
-			"cycle_count": len(resp.Data),
+			"cycle_count": len(resp.Items),
 		})
 		if aerr != nil {
 			logPrefix("publish hotlist %s error: %v", key, aerr)

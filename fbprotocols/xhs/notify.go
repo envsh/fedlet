@@ -87,8 +87,9 @@ func fetchYouKind(c *xhsClient, kind NotificationKind) ([]NotificationItem, erro
 
 func parseYouKind(out map[string]any, kind NotificationKind) []NotificationItem {
 	var list []any
-	// The web payload stores the list under data.xhs_item; accept any array.
-	for _, k := range []string{"xhs_item", "items", "list", "comments"} {
+	// Live /you streams (2026-09) store the list under data.message_list; older
+	// builds and the jackwener client used data.xhs_item. Accept any array.
+	for _, k := range []string{"message_list", "xhs_item", "items", "list", "comments"} {
 		if l, ok := out[k].([]any); ok {
 			list = l
 			break
@@ -101,25 +102,45 @@ func parseYouKind(out map[string]any, kind NotificationKind) []NotificationItem 
 			continue
 		}
 		it := NotificationItem{Kind: kind, Raw: m}
-		if s, ok := m["id"].(string); ok {
+		if s, ok := m["id"].(string); ok && s != "" {
 			it.ID = s
+		} else if v, ok := numAsInt(m["score"]); ok {
+			it.ID = fmt.Sprintf("%d", v)
 		} else if v, ok := numAsInt(m["id"]); ok {
 			it.ID = fmt.Sprintf("%d", v)
 		}
-		if u, ok := m["user"].(map[string]any); ok {
-			it.ActorID, _ = u["user_id"].(string)
-			it.ActorName, _ = u["nickname"].(string)
+		// Actor: live payloads use top-level user_info (likes/mentions) or
+		// user/from_user (connections and the legacy shape).
+		for _, k := range []string{"user_info", "from_user", "user"} {
+			if u, ok := m[k].(map[string]any); ok {
+				it.ActorID = firstString(u, "user_id", "userid")
+				it.ActorName = firstString(u, "nickname")
+				if it.ActorID != "" || it.ActorName != "" {
+					break
+				}
+			}
 		}
-		if u, ok := m["from_user"].(map[string]any); ok {
-			it.ActorID, _ = u["user_id"].(string)
-			it.ActorName, _ = u["nickname"].(string)
-		}
+		// Event summary: live payloads put it in "title" (e.g. "赞了你的评论"),
+		// the legacy shape in "text"; the engaging comment itself sits in
+		// comment_info.content and wins when present.
 		it.Text, _ = m["text"].(string)
-		if at, ok := numAsInt(m["create_time"]); ok {
-			it.CreateTime = at
+		if ci, ok := m["comment_info"].(map[string]any); ok {
+			it.Text = firstString(ci, "content")
+			if it.ID == "" && ci["id"] != nil {
+				it.ID = xstr2(ci, "id")
+			}
 		}
-		if at, ok := numAsInt(m["created_at"]); ok {
-			it.CreateTime = at
+		if it.Text == "" {
+			it.Text, _ = m["title"].(string)
+		}
+		// The related note lives in item_info (live) or note/target (legacy).
+		if n, ok := m["item_info"].(map[string]any); ok {
+			it.NoteID = firstString(n, "id", "note_id")
+			it.NoteTitle = firstString(n, "title", "display_title", "content")
+			if ui, ok := n["user_info"].(map[string]any); ok && it.ActorID == "" {
+				it.ActorID = firstString(ui, "user_id", "userid")
+				it.ActorName = firstString(ui, "nickname")
+			}
 		}
 		if n, ok := m["note"].(map[string]any); ok {
 			it.NoteID, _ = n["id"].(string)
@@ -128,6 +149,15 @@ func parseYouKind(out map[string]any, kind NotificationKind) []NotificationItem 
 		if n, ok := m["target"].(map[string]any); ok {
 			it.NoteID = firstString(n, "id", "note_id")
 			it.NoteTitle = firstString(n, "title", "display_title")
+		}
+		if at, ok := numAsInt(m["time"]); ok {
+			it.CreateTime = at
+		}
+		if at, ok := numAsInt(m["create_time"]); ok {
+			it.CreateTime = at
+		}
+		if at, ok := numAsInt(m["created_at"]); ok {
+			it.CreateTime = at
 		}
 		if v, ok := numAsInt(m["unread"]); ok {
 			it.Unread = v == 1
@@ -141,6 +171,16 @@ func parseYouKind(out map[string]any, kind NotificationKind) []NotificationItem 
 		items = append(items, it)
 	}
 	return items
+}
+
+func xstr2(m map[string]any, key string) string {
+	if s, ok := m[key].(string); ok && s != "" {
+		return s
+	}
+	if v, ok := numAsInt(m[key]); ok {
+		return fmt.Sprintf("%d", v)
+	}
+	return ""
 }
 
 func firstString(m map[string]any, keys ...string) string {
