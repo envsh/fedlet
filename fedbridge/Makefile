@@ -1,6 +1,6 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,coolapk
-# noauth toutiao,weibo,coolapk,bdtieba(流量大),
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,coolapk,hongguo
+# noauth toutiao,weibo,coolapk,bdtieba(流量大),hongguo,
 TAGS = $(PROTO_TAGS)
 
 BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
@@ -76,12 +76,13 @@ ARMV7_SYSROOT_LDFLAGS = --target=$(ARMV7_TRIPLE)$(ANDROID_API) \
 	-L $(ARMV7_PLATFORM_LIB) \
 	-lc -llog -landroid
 
+# full with append ,$(TAGS)
 a64:
 	CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(AARCH64_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(AARCH64_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog,$(TAGS) -o $(BINARY).arm64
+	go build -v -tags nodht,nopubsub,nowatchdog -o $(BINARY).arm64
 
 a32:
 	CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
