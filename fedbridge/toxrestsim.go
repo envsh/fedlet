@@ -24,9 +24,10 @@ const mediaDownloadUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chro
 
 type selfInfo struct {
 	Address          string `json:"address"`
+	PeerID           string `json:"peer_id"`
 	Name             string `json:"name"`
 	StatusMessage    string `json:"status_message"`
-	ConnectionStatus int    `json:"connection_status"`
+	ConnectionStatus string    `json:"connection_status"` // offline, tcp, udp
 }
 
 type simEvent struct {
@@ -39,10 +40,11 @@ type simEvent struct {
 
 var (
 	simSelf = selfInfo{
-		Address:          "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6",
-		Name:             "fedbridge",
+		Address:          "???.A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6",
+		PeerID:           "123???",
+		Name:             "fbip.10.0.0.???",
 		StatusMessage:    "Online",
-		ConnectionStatus: 1,
+		ConnectionStatus: "offline",
 	}
 	simPeer   string
 	simMu     sync.Mutex
@@ -417,6 +419,9 @@ func handleSelf(w http.ResponseWriter, r *http.Request) {
 		simSelf.Name = r.FormValue("name")
 		simSelf.StatusMessage = r.FormValue("status_message")
 		log.Printf("toxrestsim: POST /api/self name=%q status=%q", simSelf.Name, simSelf.StatusMessage)
+	} else {
+		// calc real key and ip
+
 	}
 
 	writeJSON(w, simSelf)

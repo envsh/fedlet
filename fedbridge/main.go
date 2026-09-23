@@ -12,7 +12,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"strconv"
 	"time"
+	"unsafe"
+	"encoding/hex"
 
 	"github.com/envsh/toxera/fedkey"
 
@@ -133,6 +136,30 @@ func main() {
 	flag.StringVar(&ntfyshServer, "ntfysh-server", "https://ntfy.sh", "ntfy.sh server URL")
 	flag.Parse()
 
+	mypeerid := ""
+	if true {
+		// self read key file
+		self, seed := localPeerIDFromKeyFile(cfg.KeyFile)
+		mypeerid = self
+		// self convert to ip
+		var selfAddr string
+		if mypeerid != "" {
+			selfAddr = vlanpfx + strconv.Itoa(fbvirtun.StringToHostPart(mypeerid))
+		}
+		// 检测不满足则无效不改值
+		if selfAddr != "" {
+			simSelf.Name = fmt.Sprintf("fbip.%v", selfAddr)
+			simSelf.Address = seed
+			simSelf.PeerID = mypeerid
+			currentPeerID = mypeerid
+			simSelf.StatusMessage = peerID7()
+			simSelf.StatusMessage = fmt.Sprintf("%v . . . %v", mypeerid[:7], peerID7())
+		}
+		log.Printf("self: keyfile=%s peerid7=%s virtip=%s", cfg.KeyFile, peerID7(), selfAddr)
+		// log.Println(seed)
+		// return
+	}
+
 	// ntfy.sh 参数校验
 	if ntfyshTopic != "" {
 		if len(ntfyshTopic) > 64 {
@@ -162,7 +189,7 @@ func main() {
 
 	fbvirtun.InitVirTun(cfg.KeyFile)
 	defer fbvirtun.CleanupDarwinRoutes()
-	go runSoftunMain(localPeerIDFromKeyFile(cfg.KeyFile))
+	go runSoftunMain(mypeerid)
 	go runSoftunPhyport(9559) // 9339+2
 
 	// 注册节点初始化事件回调(检测循环启动前)
@@ -248,19 +275,31 @@ func logUnknownRoute(next http.Handler) http.Handler {
 	})
 }
 
+type emuKeyRing struct {
+	seed [fedkey.SeedBytes]byte
+}
+
+func getKeyRingSeedHex(kr *fedkey.KeyRing) string {
+	if kr == nil {
+		return ""
+	}
+	enc := (*emuKeyRing)(unsafe.Pointer(kr))
+	return strings.ToUpper(hex.EncodeToString(enc.seed[:]))
+}
+
 // localPeerIDFromKeyFile 从 fedkey keyfile(如 key.txt)提取本地 libp2p peer ID。
 // 与 p2put 的 host ID(h.ID())同源:同一 ed25519 种子 → 相同 protobuf 编码 → 相同 base58。
-func localPeerIDFromKeyFile(keyFile string) string {
+func localPeerIDFromKeyFile(keyFile string) (string,string) {
 	kr, err := fedkey.LoadKeyRing(keyFile, true)
 	if err != nil {
 		log.Printf("localpeerid: load keyring %s: %v", keyFile, err)
-		return ""
+		return "",""
 	}
 	pid := kr.Libp2pPeerID(fedkey.Libp2pEd25519)
 	if pid == "" {
 		log.Printf("localpeerid: empty peer id from %s", keyFile)
 	}
-	return pid
+	return pid, getKeyRingSeedHex(kr)
 }
 
 /*

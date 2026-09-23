@@ -1,5 +1,5 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,coolapk,hongguo
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
 # noauth toutiao,weibo,coolapk,bdtieba(流量大),hongguo,
 TAGS = $(PROTO_TAGS)
 
@@ -38,7 +38,7 @@ min: TAGS := nodht,nopubsub,nowatchdog
 min: all
 
 # about 28M, with noauth proto
-min2: TAGS := nodht,nopubsub,nowatchdog,toutiao,weibo
+min2: TAGS := nodht,nopubsub,nowatchdog,toutiao,weibo,coolapk,hongguo
 min2: all
 
 NDK_DIR = /opt/android-ndk
