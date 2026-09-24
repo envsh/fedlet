@@ -23,6 +23,10 @@ var (
 	_tempfileOrgURL   = "https://tempfile.org/api/upload/local"
 	_storageToInitURL = "https://storage.to/api/upload/init"
 	_storageToConfURL = "https://storage.to/api/upload/confirm"
+	_catboxURL        = "https://catbox.moe/user/api.php"
+	_litterboxURL     = "https://litterbox.catbox.moe/resources/internals/api.php"
+	_mhimgURL         = "https://mhimg.cn/api/v1/upload"
+	_scdnIoURL        = "https://img.scdn.io/api/v1.php"
 )
 
 type tmpfileResponse struct {
@@ -65,6 +69,10 @@ func handleTmpFile(w http.ResponseWriter, r *http.Request) {
 		{"tmpfile.link", uploadTmpfileLink},
 		{"tempfile.org", uploadTempfileOrg},
 		{"storage.to", uploadStorageTo},
+		{"catbox", uploadCatbox},
+		{"litterbox", uploadLitterbox},
+		{"mhimg.cn", uploadMhimg},
+		{"img.scdn.io", uploadScdnIo},
 	}
 
 	perm := rand.Perm(len(uploaders))
@@ -275,4 +283,212 @@ func uploadStorageTo(filename string, data []byte) (string, error) {
 		return "", fmt.Errorf("storage.to: confirm failed: %+v", confResult)
 	}
 	return confResult.File.RawURL, nil
+}
+
+func uploadCatbox(filename string, data []byte) (string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("reqtype", "fileupload"); err != nil {
+		return "", fmt.Errorf("catbox: write field: %w", err)
+	}
+	fw, err := w.CreateFormFile("fileToUpload", filename)
+	if err != nil {
+		return "", fmt.Errorf("catbox: create form: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return "", fmt.Errorf("catbox: write data: %w", err)
+	}
+	w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 590*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _catboxURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("catbox: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Close = true
+
+	resp, err := newTmpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("catbox: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("catbox: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("catbox: bad status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	url := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(url, "http") {
+		return "", fmt.Errorf("catbox: unexpected response: %s", url)
+	}
+	return url, nil
+}
+
+func uploadLitterbox(filename string, data []byte) (string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("reqtype", "fileupload"); err != nil {
+		return "", fmt.Errorf("litterbox: write field: %w", err)
+	}
+	if err := w.WriteField("time", "1h"); err != nil {
+		return "", fmt.Errorf("litterbox: write time: %w", err)
+	}
+	fw, err := w.CreateFormFile("fileToUpload", filename)
+	if err != nil {
+		return "", fmt.Errorf("litterbox: create form: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return "", fmt.Errorf("litterbox: write data: %w", err)
+	}
+	w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 590*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _litterboxURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("litterbox: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Close = true
+
+	resp, err := newTmpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("litterbox: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("litterbox: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("litterbox: bad status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	url := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(url, "http") {
+		return "", fmt.Errorf("litterbox: unexpected response: %s", url)
+	}
+	return url, nil
+}
+
+func uploadMhimg(filename string, data []byte) (string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	expired := time.Now().Add(time.Hour).Format("2006-01-02 15:04:05")
+	if err := w.WriteField("expired_at", expired); err != nil {
+		return "", fmt.Errorf("mhimg: write field: %w", err)
+	}
+	fw, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("mhimg: create form: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return "", fmt.Errorf("mhimg: write data: %w", err)
+	}
+	w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 590*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _mhimgURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("mhimg: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Close = true
+
+	resp, err := newTmpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("mhimg: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("mhimg: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("mhimg: bad status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result struct {
+		Data struct {
+			Links struct {
+				URL string `json:"url"`
+			} `json:"links"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("mhimg: parse json: %w", err)
+	}
+	if result.Data.Links.URL == "" {
+		return "", fmt.Errorf("mhimg: empty url: %s", strings.TrimSpace(string(body)))
+	}
+	return result.Data.Links.URL, nil
+}
+
+func uploadScdnIo(filename string, data []byte) (string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("outputFormat", "auto"); err != nil {
+		return "", fmt.Errorf("img.scdn.io: write field: %w", err)
+	}
+	fw, err := w.CreateFormFile("image", filename)
+	if err != nil {
+		return "", fmt.Errorf("img.scdn.io: create form: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return "", fmt.Errorf("img.scdn.io: write data: %w", err)
+	}
+	w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 590*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, _scdnIoURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("img.scdn.io: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Close = true
+
+	resp, err := newTmpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("img.scdn.io: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("img.scdn.io: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("img.scdn.io: bad status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result struct {
+		URL  string `json:"url"`
+		Data struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("img.scdn.io: parse json: %w", err)
+	}
+	if result.URL != "" {
+		return result.URL, nil
+	}
+	if result.Data.URL != "" {
+		return result.Data.URL, nil
+	}
+	return "", fmt.Errorf("img.scdn.io: empty url: %s", strings.TrimSpace(string(body)))
 }
