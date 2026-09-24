@@ -223,6 +223,7 @@ func main() {
 
 	// go poll_toxrest()
 	go poll_demopub()
+	go poll_service_discovery()
 	// go poll_gomuks()
 	// go echoLoop()
 	go tunloop()
