@@ -124,10 +124,13 @@ func pollLoop() {
 	}
 }
 
-func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
+func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
 	_ = extra
 	if msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: empty message")
+	}
+	if len(filedata) > 0 && fileinfo == nil {
+		return fbshared.SendResult{}, fmt.Errorf("misskey: filedata present but fileinfo is nil")
 	}
 	visibility := "home"
 	switch to {
@@ -140,8 +143,20 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, e
 	if host == "" || token == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: not configured")
 	}
+	var fileIds []string
+	if len(filedata) > 0 {
+		filename := fileinfo.Filename
+		if filename == "" {
+			filename = "untitled"
+		}
+		fileID, err := uploadDriveFile(host, token, filedata, filename)
+		if err != nil {
+			return fbshared.SendResult{}, fmt.Errorf("misskey: upload: %w", err)
+		}
+		fileIds = []string{fileID}
+	}
 	log.Printf("misskey: sending [%s]: %s", visibility, truncate(msg, 80))
-	noteID, err := SendNote(host, token, msg, visibility)
+	noteID, err := SendNote(host, token, msg, visibility, fileIds)
 	if err == nil {
 		log.Printf("misskey: sent note_id=%s", noteID)
 	}

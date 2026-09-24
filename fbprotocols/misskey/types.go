@@ -21,9 +21,14 @@ type Note struct {
 }
 
 type noteCreateReq struct {
-	I          string `json:"i"`
-	Text       string `json:"text"`
-	Visibility string `json:"visibility"`
+	I          string   `json:"i"`
+	Text       string   `json:"text"`
+	Visibility string   `json:"visibility"`
+	FileIds    []string `json:"fileIds,omitempty"`
+}
+
+type DriveFile struct {
+	ID string `json:"id"`
 }
 
 type timelineReq struct {
