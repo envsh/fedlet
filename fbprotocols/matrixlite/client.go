@@ -43,6 +43,7 @@ func LoginWithDeviceID(server, user, password, deviceID string) (*Client, error)
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
+			Timeout: 67 * time.Second,
 		},
 	}
 
@@ -62,6 +63,7 @@ func ClientFromToken(baseURL, accessToken string) (*Client, error) {
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
+			Timeout: 67 * time.Second,
 		},
 	}
 	c.detectSlidingSync()
