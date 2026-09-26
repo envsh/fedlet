@@ -30,7 +30,7 @@ const (
 
 	// uapisHotboardBase is the uapis.cn hot-board aggregate endpoint; the board
 	// type is appended per round ("?type=<t>"), since FetchHotBoard rotates
-	// through hotTypes (xhs.go).
+	// through hotBoards (xhs.go).
 	uapisHotboardBase = "https://uapis.cn/api/v1/misc/hotboard"
 )
 

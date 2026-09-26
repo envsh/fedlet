@@ -5,8 +5,9 @@ package xhs
 // Behaviour:
 //   - hot board: anonymous (via the uapis.cn aggregator; xhs serves no signed
 //     hot-board API on edith/www — see hotlist.go), ~300s per round with ONE
-//     board per round, rotating through hotTypes (xiaohongshu / douban-group /
-//     douban-movie / hupu / csdn / weread / ithome / douyin / tieba / jianshu);
+//     board per round, rotating through the On entries of the hotBoards
+//     registry (9 enabled: xiaohongshu / douban-group / douban-movie / hupu /
+//     csdn / weread / ithome / douyin / jianshu);
 //     publishes only newly-appeared keywords
 //   - notifications: require a real login, ~60s, new events only
 //   - session healing: periodic verify + passive auth-error detection; on a
@@ -43,13 +44,40 @@ const (
 	reLoginCooldown        = 5 * time.Minute
 )
 
-// hotTypes is the uapis hot-board rotation. Each poll round issues exactly one
-// request for the next type in order; a full cycle (10 boards) takes
-// ~10 × 300s ≈ 50min per board.
-var hotTypes = []string{
-	"xiaohongshu", "douban-group", "douban-movie",
-	"hupu", "csdn", "weread", "ithome",
-	"douyin", "tieba", "jianshu",
+// hotBoard describes one uapis board in the rotation: Type is the aggregator's
+// "?type=" value, On toggles whether pollLoop fetches it. Disable a board by
+// flipping On to false — keep the entry, no code deletion needed.
+type hotBoard struct {
+	Type string
+	On   bool
+}
+
+// hotBoards is the ordered uapis hot-board registry; rotation follows this
+// slice and only touches entries with On:true. A full cycle takes
+// 300s × (#enabled) ≈ 45min per board (9 enabled).
+var hotBoards = []hotBoard{
+	{Type: "xiaohongshu", On: true},
+	{Type: "douban-group", On: true},
+	{Type: "douban-movie", On: true},
+	{Type: "hupu", On: true},
+	{Type: "csdn", On: true},
+	{Type: "weread", On: true},
+	{Type: "ithome", On: true},
+	{Type: "douyin", On: true},
+	{Type: "tieba", On: false}, // disabled: aggregator still serves it
+	{Type: "jianshu", On: true},
+}
+
+// hotBoardsOn returns the enabled board types in registry order; pollLoop
+// rotates over this list.
+func hotBoardsOn() []string {
+	enabled := make([]string, 0, len(hotBoards))
+	for _, b := range hotBoards {
+		if b.On {
+			enabled = append(enabled, b.Type)
+		}
+	}
+	return enabled
 }
 
 // fetchHotBoardFn is an indirection point so hotRound can be tested offline.
@@ -160,6 +188,7 @@ func pollLoop() {
 	}
 
 	var hotSeq uint64
+	boards := hotBoardsOn()
 
 	for {
 		now = time.Now()
@@ -171,8 +200,8 @@ func pollLoop() {
 		}
 		if hot && now.After(nextHot) {
 			nextHot = now.Add(hi)
-			if feedAllowed(AuthStatus(), false) {
-				board := hotTypes[int(hotSeq)%len(hotTypes)]
+			if len(boards) > 0 && feedAllowed(AuthStatus(), false) {
+				board := boards[int(hotSeq)%len(boards)]
 				hotSeq++
 				hotRound(state, board)
 			}
