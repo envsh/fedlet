@@ -4,8 +4,10 @@ package xhs
 //
 // Behaviour:
 //   - hot board: anonymous (via the uapis.cn aggregator; xhs serves no signed
-//     hot-board API on edith/www — see hotlist.go), ~600s, publishes only
-//     newly-appeared keywords
+//     hot-board API on edith/www — see hotlist.go), ~300s per round with ONE
+//     board per round, rotating through hotTypes (xiaohongshu / douban-group /
+//     douban-movie / hupu / csdn / weread / ithome / douyin / tieba / jianshu);
+//     publishes only newly-appeared keywords
 //   - notifications: require a real login, ~60s, new events only
 //   - session healing: periodic verify + passive auth-error detection; on a
 //     lost session the feeds pause and the single ensureSession gateway
@@ -33,13 +35,25 @@ import (
 )
 
 const (
-	defaultHotInterval     = 600 * time.Second
+	defaultHotInterval     = 300 * time.Second
 	defaultNotifyInterval  = 60 * time.Second
 	defaultCollectInterval = 1800 * time.Second
 	authCheckInterval      = 30 * time.Minute
 	dedupeExpiry           = 72 * time.Hour
 	reLoginCooldown        = 5 * time.Minute
 )
+
+// hotTypes is the uapis hot-board rotation. Each poll round issues exactly one
+// request for the next type in order; a full cycle (10 boards) takes
+// ~10 × 300s ≈ 50min per board.
+var hotTypes = []string{
+	"xiaohongshu", "douban-group", "douban-movie",
+	"hupu", "csdn", "weread", "ithome",
+	"douyin", "tieba", "jianshu",
+}
+
+// fetchHotBoardFn is an indirection point so hotRound can be tested offline.
+var fetchHotBoardFn = FetchHotBoard
 
 var (
 	pubfn_     func(any) error
@@ -145,6 +159,8 @@ func pollLoop() {
 		tick = time.Minute
 	}
 
+	var hotSeq uint64
+
 	for {
 		now = time.Now()
 
@@ -156,7 +172,9 @@ func pollLoop() {
 		if hot && now.After(nextHot) {
 			nextHot = now.Add(hi)
 			if feedAllowed(AuthStatus(), false) {
-				hotRound(state)
+				board := hotTypes[int(hotSeq)%len(hotTypes)]
+				hotSeq++
+				hotRound(state, board)
 			}
 		}
 		if notify && now.After(nextNotify) {
@@ -200,11 +218,11 @@ func reloginDue(now time.Time) bool {
 	return reLogin.nextAt.IsZero() || !now.Before(reLogin.nextAt)
 }
 
-func hotRound(state *xhsState) {
+func hotRound(state *xhsState, board string) {
 	waitRateGate()
-	resp, err := FetchHotBoard()
+	resp, err := fetchHotBoardFn(board)
 	if err != nil {
-		logPrefix("hotlist error: %v", err)
+		logPrefix("hotlist[%s] error: %v", board, err)
 		handleRoundErr(state, err)
 		return
 	}
@@ -212,8 +230,8 @@ func hotRound(state *xhsState) {
 	published := 0
 	for i := range resp.Items {
 		it := &resp.Items[i]
-		key := it.Keyword
-		if key == "" {
+		key := board + ":" + it.Keyword
+		if it.Keyword == "" {
 			continue
 		}
 		if _, seen := state.Hotlist[key]; seen {
@@ -222,7 +240,7 @@ func hotRound(state *xhsState) {
 		state.Hotlist[key] = now.Unix()
 		title := HotBoardTitle(it)
 		detail := HotBoardDetail(it)
-		logPrefix("hotlist #%d %s %s", i+1, key, truncate(title, 80))
+		logPrefix("hotlist[%s] #%d %s %s", board, i+1, key, truncate(title, 80))
 		payload := map[string]any{
 			"kind":         "hotlist",
 			"rank":         it.Rank,
@@ -239,18 +257,19 @@ func hotRound(state *xhsState) {
 		raw, aerr := fbshared.InsertFlatFields(itemB, map[string]any{
 			"proto_type":  payload["kind"],
 			"cycle_count": len(resp.Items),
+			"board":       board,
 		})
 		if aerr != nil {
-			logPrefix("publish hotlist %s error: %v", key, aerr)
+			logPrefix("publish hotlist[%s] %s error: %v", board, key, aerr)
 		} else if err := publish(raw); err != nil {
-			logPrefix("publish hotlist %s error: %v", key, err)
+			logPrefix("publish hotlist[%s] %s error: %v", board, key, err)
 		}
 		published++
 	}
 	if published > 0 {
-		logPrefix("hotlist round published %d new entries", published)
+		logPrefix("hotlist[%s] round published %d new entries", board, published)
 	} else {
-		logPrefix("hotlist round no change")
+		logPrefix("hotlist[%s] round no change", board)
 	}
 }
 

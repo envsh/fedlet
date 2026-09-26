@@ -322,7 +322,9 @@ func (c *Client) slidingSync(timeout time.Duration) ([]map[string]any, error) {
 			if json.Unmarshal(evRaw, &m) != nil {
 				continue
 			}
-			if t, _ := m["type"].(string); t != "m.room.message" {
+			if t, _ := m["type"].(string); t != "m.room.message" && t != "m.room.name" && t != "m.room.topic" {
+				b, _ := json.Marshal(m)
+				log.Printf("matrixlite: skip non-message event in room %s, type %s, event=%s", rid, t, b)
 				continue
 			}
 			m["room_id"] = rid
@@ -392,7 +394,9 @@ func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 			if json.Unmarshal(evRaw, &m) != nil {
 				continue
 			}
-			if t, _ := m["type"].(string); t != "m.room.message" {
+			if t, _ := m["type"].(string); t != "m.room.message" && t != "m.room.name" && t != "m.room.topic" {
+				b, _ := json.Marshal(m)
+				log.Printf("matrixlite: skip non-message event in room %s, type %s, event=%s", rid, t, b)
 				continue
 			}
 			m["room_id"] = rid

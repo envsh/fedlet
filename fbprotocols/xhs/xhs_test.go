@@ -125,6 +125,102 @@ func TestParseHotBoardItems(t *testing.T) {
 	}
 }
 
+// TestParseHotBoardItemsTolerant covers the boards added to the uapis rotation
+// that exercise the parser's tolerance paths: null extra (hupu), empty url
+// (weread) and empty hot_value (jianshu/ithome).
+func TestParseHotBoardItemsTolerant(t *testing.T) {
+	out := mustMap(t, `{
+		"type": "hupu",
+		"update_time": "2026-09-26T05:40:01.000Z",
+		"list": [
+			{"index": 1, "title": "冠军之心：足球生涯", "url": "https://bbs.hupu.com/search?q=test", "hot_value": "13427229", "extra": null},
+			{"index": 2, "title": "偏跟山过不去", "url": "", "hot_value": "1391人在读", "extra": {"author": "[英]比尔·布莱森"}},
+			{"index": 3, "title": "无热度条目", "url": "https://www.jianshu.com/p/abc", "hot_value": "", "extra": {}}
+		]
+	}`)
+	resp, err := parseHotBoardItems(out)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp.Items) != 3 {
+		t.Fatalf("len = %d want 3", len(resp.Items))
+	}
+	if got := resp.Items[0].Type; got != "" {
+		t.Errorf("hupu extra=null should yield empty trend, got %q", got)
+	}
+	if got := resp.Items[1].URL; got != "" {
+		t.Errorf("weread empty url not preserved as empty: %q", got)
+	}
+	if got := resp.Items[2].HotValue; got != "" {
+		t.Errorf("empty hot_value expected, got %q", got)
+	}
+	for i := range resp.Items {
+		if len(resp.Items[i].Raw) == 0 {
+			t.Errorf("item %d raw field not preserved", i+1)
+		}
+	}
+}
+
+// TestHotRoundBoardDedupeAndFlag drives hotRound with an injected fetcher: dedupe
+// keys carry the board prefix, the flat "board" field marks the source, and a
+// repeated round for the same board publishes nothing.
+func TestHotRoundBoardDedupeAndFlag(t *testing.T) {
+	var published []map[string]any
+	prevPub, prevFn := pubfn_, fetchHotBoardFn
+	t.Cleanup(func() {
+		pubfn_ = prevPub
+		fetchHotBoardFn = prevFn
+	})
+	SetPublishInfo(func(v any) error {
+		b, _ := json.Marshal(v)
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("published payload not a flat object: %v", err)
+		}
+		published = append(published, m)
+		return nil
+	})
+	fetchHotBoardFn = func(board string) (*HotBoardResp, error) {
+		return &HotBoardResp{
+			Type:       board,
+			UpdateTime: "2026-09-26T05:40:01.000Z",
+			Items: []HotBoardItem{
+				{Keyword: board + "-word", Rank: 1, HotValue: "100w",
+					Raw: map[string]any{"title": "w", "hot_value": "100w"}},
+			},
+		}, nil
+	}
+
+	state := newState()
+	hotRound(state, "hupu")
+	if len(published) != 1 {
+		t.Fatalf("first round published %d want 1", len(published))
+	}
+	if _, ok := state.Hotlist["hupu:hupu-word"]; !ok {
+		t.Errorf("dedupe key missing board prefix; keys = %v", state.Hotlist)
+	}
+	if b, ok := published[0]["board"].(string); !ok || b != "hupu" {
+		t.Errorf("flat board flag = %#v", published[0]["board"])
+	}
+
+	published = nil
+	hotRound(state, "hupu")
+	if len(published) != 0 {
+		t.Errorf("second round on same board published %d want 0 (dedupe)", len(published))
+	}
+
+	hotRound(state, "csdn")
+	if len(published) != 1 {
+		t.Errorf("other board published %d want 1", len(published))
+	}
+	if _, ok := state.Hotlist["csdn:csdn-word"]; !ok {
+		t.Errorf("csdn board key missing")
+	}
+	if _, ok := state.Hotlist["hupu:hupu-word"]; !ok {
+		t.Errorf("hupu board key evicted unexpectedly")
+	}
+}
+
 func TestParseNotifications(t *testing.T) {
 	out := mustMap(t, `{
 		"xhs_item": [

@@ -28,8 +28,10 @@ const (
 	// hotBoardSource identifies the anonymous aggregator backing the board.
 	hotBoardSource = "uapis"
 
-	// uapisHotboardURL is the uapis.cn hot-board aggregate for xiaohongshu.
-	uapisHotboardURL = "https://uapis.cn/api/v1/misc/hotboard?type=xiaohongshu"
+	// uapisHotboardBase is the uapis.cn hot-board aggregate endpoint; the board
+	// type is appended per round ("?type=<t>"), since FetchHotBoard rotates
+	// through hotTypes (xhs.go).
+	uapisHotboardBase = "https://uapis.cn/api/v1/misc/hotboard"
 )
 
 // HotBoardItem is one keyword entry of the hot search board as published by
@@ -47,18 +49,26 @@ type HotBoardItem struct {
 
 // HotBoardResp is the response envelope of the hot board.
 type HotBoardResp struct {
+	Type       string         `json:"type"`
 	UpdateTime string         `json:"update_time"`
 	Items      []HotBoardItem `json:"list"`
 }
 
-// FetchHotBoard pulls the current xhs hot search board from the anonymous
-// aggregator (plain HTTP; no session, no signature).
-func FetchHotBoard() (*HotBoardResp, error) {
-	out, err := fetchRawJSON(uapisHotboardURL)
+// FetchHotBoard pulls the named uapis hot board (e.g. "xiaohongshu",
+// "douban-group", "douban-movie", "hupu", "csdn", "weread", "ithome",
+// "douyin", "tieba", "jianshu") from the anonymous aggregator (plain HTTP; no
+// session, no signature). The board type is captured in the returned envelope.
+func FetchHotBoard(boardType string) (*HotBoardResp, error) {
+	out, err := fetchRawJSON(uapisHotboardBase + "?type=" + boardType)
 	if err != nil {
 		return nil, err
 	}
-	return parseHotBoardItems(out)
+	resp, err := parseHotBoardItems(out)
+	if err != nil {
+		return nil, err
+	}
+	resp.Type = boardType
+	return resp, nil
 }
 
 // parseHotBoardItems decodes the aggregator envelope into HotBoardItems.
