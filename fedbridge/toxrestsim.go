@@ -343,8 +343,25 @@ req.Header.Set("User-Agent", mediaDownloadUA)
 		return
 	}
 
+	ct := resp.Header.Get("Content-Type")
+	upstream := fmt.Sprintf("upstream=%d", resp.StatusCode)
+	if strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/plain") {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body = io.NopCloser(bytes.NewReader(b))
+		msg := strings.TrimSpace(string(b))
+		if strings.HasPrefix(ct, "application/json") {
+			var e struct{ Err string `json:"error"` }
+			if json.Unmarshal(b, &e) == nil && e.Err != "" {
+				msg = strings.TrimSpace(e.Err)
+			}
+		}
+		if msg != "" {
+			upstream = fmt.Sprintf("upstream=%d %s", resp.StatusCode, msg)
+		}
+	}
+
 	if !needsAuthForMedia(resp, as) {
-		writeErr(w, "media not accessible", http.StatusNotFound)
+		writeErr(w, "media not accessible: "+upstream, http.StatusNotFound)
 		return
 	}
 
@@ -374,7 +391,7 @@ req.Header.Set("User-Agent", mediaDownloadUA)
 		io.Copy(w, rc)
 		return
 	}
-	writeErr(w, "media not accessible", http.StatusNotFound)
+	writeErr(w, "media not accessible: "+upstream, http.StatusNotFound)
 }
 
 func needsAuthForMedia(resp *http.Response, as AuthSupport) bool {
