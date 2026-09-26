@@ -137,21 +137,30 @@ func timelineEndpoint(timeline string) string {
 	return "notes/" + timeline + "-timeline"
 }
 
-func FetchTimeline(host, token, timeline, sinceID string) ([]Note, error) {
+func FetchTimeline(host, token, timeline, sinceID string) ([]Note, [][]byte, error) {
 	ep := timelineEndpoint(timeline)
-	var notes []Note
+	var msgs []json.RawMessage
 	if err := apiPost(host, ep, timelineReq{
 		I:       token,
 		Limit:   20,
 		SinceID: sinceID,
-	}, &notes); err != nil {
-		return nil, err
+	}, &msgs); err != nil {
+		return nil, nil, err
 	}
-	for i := range notes {
-		notes[i].AccountID = accountId
-		notes[i].AccountName = accountName
+	notes := make([]Note, 0, len(msgs))
+	raws := make([][]byte, 0, len(msgs))
+	for _, rm := range msgs {
+		var n Note
+		if err := json.Unmarshal(rm, &n); err != nil {
+			log.Printf("misskey: note decode: %v", err)
+			continue
+		}
+		n.AccountID = accountId
+		n.AccountName = accountName
+		notes = append(notes, n)
+		raws = append(raws, rm)
 	}
-	return notes, nil
+	return notes, raws, nil
 }
 
 func VerifyToken(host, token string) (*iResp, error) {

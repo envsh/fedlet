@@ -6,11 +6,15 @@ type Config struct {
 	Timeline string
 }
 
+// Note 字段不全,仅为按需声明的子集。
+// 拉取到的完整原始结构已通过 raw 事件(map[string]any)原样发布,
+// 本结构仅用于构建统一消息(um)与日志,废弃留作大概参考,非权威 schema。
 type Note struct {
 	ID          string `json:"id"`
 	Text        string `json:"text"`
 	UserID      string `json:"userId"`
 	User        struct {
+		// User 与 Note 同理:仅 username/name,完整作者信息(avatarUrl/host 等)以 raw 事件为准。
 		Username string `json:"username"`
 		Name     string `json:"name"`
 	} `json:"user"`

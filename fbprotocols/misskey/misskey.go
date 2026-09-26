@@ -86,7 +86,7 @@ func pollLoop() {
 		host, token, tl := curHost, curToken, curTL
 		muClient.Unlock()
 
-		notes, err := FetchTimeline(host, token, tl, state.SinceID)
+		notes, raws, err := FetchTimeline(host, token, tl, state.SinceID)
 		if err != nil {
 			log.Printf("misskey: poll error: %v", err)
 			pushError(err)
@@ -111,10 +111,15 @@ func pollLoop() {
 				continue
 			}
 			log.Printf("misskey: @%s: %s", n.User.Username, truncate(n.Text, 80))
-			if err := publish(n); err != nil {
-				log.Printf("misskey: publish error: %v", err)
+			ev, err := toRawEvent(n, raws[i])
+			if err != nil {
+				log.Printf("misskey: raw event: %v", err)
+				continue
 			}
-			um, ok := n.toUnified(nil)
+			if err := publish(ev); err != nil {
+				log.Printf("misskey: publish raw error: %v", err)
+			}
+			um, ok := n.toUnified(raws[i])
 			if ok {
 				if err := publish(um); err != nil {
 					log.Printf("misskey: publish um error: %v", err)
@@ -241,6 +246,17 @@ func LastErrs() []error {
 	return out
 }
 
+// toRawEvent 由 API 原始字节构建原结构事件并注入 account_* 补丁字段。
+func toRawEvent(n Note, raw []byte) (map[string]any, error) {
+	var ev map[string]any
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		return nil, err
+	}
+	ev["account_id"] = n.AccountID
+	ev["account_name"] = n.AccountName
+	return ev, nil
+}
+
 func truncate(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
@@ -260,8 +276,9 @@ func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		MsgID:     n.ID,
 		MsgType:   fbshared.MsgTypeCreate,
 		AccountID: n.AccountID,
+		AccountName: n.AccountName,
 	}
-	um.AccountName = n.AccountName
+
 	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
 		um.Timestamp = t.UnixNano()
 	}
