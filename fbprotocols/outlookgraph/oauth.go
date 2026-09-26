@@ -40,6 +40,7 @@ type tokenJSON struct {
 	Status       string    `json:"status"`
 	AuthURL      string    `json:"auth_url,omitempty"`
 	Error        string    `json:"error,omitempty"`
+	AccountID    string    `json:"account_id"`
 }
 
 var (
@@ -111,11 +112,13 @@ func getToken(ctx context.Context, clientID string) (string, error) {
 	}
 
 	if tok != nil && tok.Status == AuthReady && time.Now().Add(5*time.Minute).Before(tok.Expiry) {
+		ensureAccountID(ctx)
 		return tok.AccessToken, nil
 	}
 
 	if tok != nil && tok.RefreshToken != "" {
 		if err := refreshToken(clientID); err == nil {
+			ensureAccountID(ctx)
 			return tok.AccessToken, nil
 		}
 		log.Printf("outlook: refresh failed, re-authenticating")
@@ -126,7 +129,32 @@ func getToken(ctx context.Context, clientID string) (string, error) {
 	if err := authCodeFlow(ctx, clientID); err != nil {
 		return "", err
 	}
+	ensureAccountID(ctx)
 	return tok.AccessToken, nil
+}
+
+// ensureAccountID 每次启动/刷新后,若 account_id 为空则从 /me 补齐并持久化。
+func ensureAccountID(ctx context.Context) {
+	if tok == nil || tok.AccountID != "" || tok.AccessToken == "" {
+		return
+	}
+	id, err := fetchAccountID(ctx, tok.AccessToken)
+	if err != nil {
+		log.Printf("outlook: account_id fetch error: %v", err)
+		return
+	}
+	tok.AccountID = id
+	saveToken()
+	log.Printf("outlook: account_id = %s", id)
+}
+
+func accountID() string {
+	tokMu.Lock()
+	defer tokMu.Unlock()
+	if tok == nil {
+		return ""
+	}
+	return tok.AccountID
 }
 
 func refreshToken(clientID string) error {

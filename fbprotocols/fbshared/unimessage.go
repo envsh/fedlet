@@ -50,7 +50,8 @@ type UnifiedMessage struct {
 	MsgFormat string   `json:"msgformat,omitempty"`
 
 	Protocol string `json:"protocol"`
-	Account  string `json:"account,omitempty"`
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
 	ChatID   string `json:"chat_id,omitempty"`
 	ChatName string `json:"chat_name,omitempty"`
 	Gateway  string `json:"gateway,omitempty"`

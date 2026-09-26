@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,8 @@ var (
 	curHost  string
 	curToken string
 	curTL    string
+	accountId   string
+	accountName string
 )
 
 func SetPublishInfo(pubfn func(any) error) {
@@ -52,6 +55,10 @@ func Start(host, token, timeline string) {
 		return
 	}
 	log.Printf("misskey: verified as @%s (%s)", info.Username, info.Name)
+	accountHost := strings.TrimRight(host, "/")
+	accountHost = strings.TrimPrefix(accountHost, "https://")
+	accountHost = strings.TrimPrefix(accountHost, "http://")
+	accountId = "@" + info.Username + "@" + accountHost
 
 	meta, err := FetchMeta(host)
 	if err != nil {
@@ -252,7 +259,9 @@ func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		Usernick:  n.User.Name,
 		MsgID:     n.ID,
 		MsgType:   fbshared.MsgTypeCreate,
+		AccountID: n.AccountID,
 	}
+	um.AccountName = n.AccountName
 	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
 		um.Timestamp = t.UnixNano()
 	}

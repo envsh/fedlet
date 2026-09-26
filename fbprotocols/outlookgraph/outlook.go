@@ -133,12 +133,46 @@ type messageData struct {
 	FolderName       string   `json:"folderName"`
 	HasAttachments   bool     `json:"hasAttachments"`
 	Size             int64    `json:"size,omitempty"`
+	AccountID        string   `json:"account_id"`
+	AccountName      string   `json:"account_name"`
 }
 
 const graphAPI = "https://graph.microsoft.com/v1.0"
 
 // graphClient 统一 HTTP 客户端;http.DefaultClient 无超时,网络挂死会阻塞 poll 循环。
 var graphClient = &http.Client{Timeout: 15 * time.Second}
+
+// fetchAccountID 通过 /me 获取当前账号身份(UPN → mail → displayName)。
+func fetchAccountID(ctx context.Context, token string) (string, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", graphAPI+"/me?$select=userPrincipalName,mail,displayName", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := graphClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	var me struct {
+		UserPrincipalName string `json:"userPrincipalName"`
+		Mail              string `json:"mail"`
+		DisplayName       string `json:"displayName"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		return "", err
+	}
+	switch {
+	case me.UserPrincipalName != "":
+		return me.UserPrincipalName, nil
+	case me.Mail != "":
+		return me.Mail, nil
+	case me.DisplayName != "":
+		return me.DisplayName, nil
+	}
+	return "", fmt.Errorf("no identity fields in /me")
+}
 
 type deltaPage struct {
 	Context   string            `json:"@odata.context"`
@@ -317,6 +351,7 @@ func pollDelta(ctx context.Context, token, deltaLink string) ([]messageData, str
 				continue
 			}
 			msg := messageData{ID: m.ID}
+			msg.AccountID = accountID()
 			if m.Subject != nil {
 				msg.Subject = *m.Subject
 			}
@@ -598,7 +633,9 @@ func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		MsgType:   fbshared.MsgTypeCreate,
 		MsgID:     m.ID,
 		Timestamp: time.Now().UnixNano(),
+		AccountID: m.AccountID,
 	}
+	um.AccountName = m.AccountName
 	if t, err := time.Parse(time.RFC3339, m.ReceivedDateTime); err == nil {
 		um.Timestamp = t.UnixNano()
 	}

@@ -59,6 +59,8 @@ type messageData struct {
 	FolderID         string   `json:"folderId"`
 	FolderName       string   `json:"folderName"`
 	Charset          string   `json:"charset"`
+	AccountID        string   `json:"account_id"`
+	AccountName      string   `json:"account_name"`
 }
 
 type stateData struct {
@@ -72,6 +74,8 @@ var (
 	smtpUser  string
 	smtpPass  string
 	mailFrom  string
+	accountId   string
+	accountName string
 )
 
 func SetPublishInfo(fn func(any) error) {
@@ -98,6 +102,7 @@ func Start(info string) {
 		return
 	}
 	username, password := parts[0], parts[1]
+	accountId = username
 
 	dirs := strings.Split(cfg.Dir, ",")
 	for i := range dirs {
@@ -572,9 +577,11 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 		}
 
 		m := messageData{
-			ID:         fmt.Sprintf("%d", msg.Uid),
-			FolderID:   folder,
-			FolderName: folder,
+			ID:          fmt.Sprintf("%d", msg.Uid),
+			FolderID:    folder,
+			FolderName:  folder,
+			AccountID:   accountId,
+			AccountName: accountName,
 		}
 		if msg.Envelope.Subject != "" {
 			m.Subject = decodeWord(msg.Envelope.Subject)
@@ -857,7 +864,9 @@ func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		MsgType:   fbshared.MsgTypeCreate,
 		MsgID:     m.ID,
 		Timestamp: time.Now().UnixNano(),
+		AccountID: m.AccountID,
 	}
+	um.AccountName = m.AccountName
 	if t, err := time.Parse(time.RFC3339, m.ReceivedDateTime); err == nil {
 		um.Timestamp = t.UnixNano()
 	}

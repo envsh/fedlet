@@ -140,12 +140,18 @@ func timelineEndpoint(timeline string) string {
 func FetchTimeline(host, token, timeline, sinceID string) ([]Note, error) {
 	ep := timelineEndpoint(timeline)
 	var notes []Note
-	err := apiPost(host, ep, timelineReq{
+	if err := apiPost(host, ep, timelineReq{
 		I:       token,
 		Limit:   20,
 		SinceID: sinceID,
-	}, &notes)
-	return notes, err
+	}, &notes); err != nil {
+		return nil, err
+	}
+	for i := range notes {
+		notes[i].AccountID = accountId
+		notes[i].AccountName = accountName
+	}
+	return notes, nil
 }
 
 func VerifyToken(host, token string) (*iResp, error) {

@@ -18,6 +18,8 @@ type Note struct {
 	CreatedAt   string `json:"createdAt"`
 	CW          string `json:"cw"`
 	FileIDs     []string `json:"fileIds"`
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
 }
 
 type noteCreateReq struct {
