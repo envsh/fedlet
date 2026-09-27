@@ -4,10 +4,10 @@ package xhs
 //
 // Behaviour:
 //   - hot board: anonymous (via the uapis.cn aggregator; xhs serves no signed
-//     hot-board API on edith/www — see hotlist.go), ~300s per round with ONE
+//     hot-board API on edith/www — see hotlist.go), ~61s per round with ONE
 //     board per round, rotating through the On entries of the hotBoards
-//     registry (9 enabled: xiaohongshu / douban-group / douban-movie / hupu /
-//     csdn / weread / ithome / douyin / jianshu);
+//     registry (10 enabled: xiaohongshu / douban-group / douban-movie / hupu /
+//     csdn / weread / ithome / douyin / jianshu / zhihu-daily);
 //     publishes only newly-appeared keywords
 //   - notifications: require a real login, ~60s, new events only
 //   - session healing: periodic verify + passive auth-error detection; on a
@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	defaultHotInterval     = 300 * time.Second
+	defaultHotInterval     = 61 * time.Second
 	defaultNotifyInterval  = 60 * time.Second
 	defaultCollectInterval = 1800 * time.Second
 	authCheckInterval      = 30 * time.Minute
@@ -54,7 +54,7 @@ type hotBoard struct {
 
 // hotBoards is the ordered uapis hot-board registry; rotation follows this
 // slice and only touches entries with On:true. A full cycle takes
-// 300s × (#enabled) ≈ 45min per board (9 enabled).
+// 61s × (#enabled) ≈ 10m10s per board (10 enabled).
 var hotBoards = []hotBoard{
 	{Type: "xiaohongshu", On: true},
 	{Type: "douban-group", On: true},
@@ -66,6 +66,7 @@ var hotBoards = []hotBoard{
 	{Type: "douyin", On: true},
 	{Type: "tieba", On: false}, // disabled: aggregator still serves it
 	{Type: "jianshu", On: true},
+	{Type: "zhihu-daily", On: true}, // 知乎日报
 }
 
 // hotBoardsOn returns the enabled board types in registry order; pollLoop

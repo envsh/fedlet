@@ -12,10 +12,10 @@ var (
 	xhsHot          = true
 	xhsNotify       = true
 	// xhsInterval is the hot-board round cadence: exactly ONE uapis type is
-	// fetched per round, rotating through the boards listed in
-	// fbprotocols/xhs hotBoards (9 enabled → ~45min cycle each). Half of the
-	// previous single-board 600s cadence.
-	xhsInterval     = 300 * time.Second
+	// fetched per round, rotating through the On entries of hotBoards
+	// (10 enabled × 61s ≈ 10m10s per board; uapis refreshes data every ~5min,
+	// request rate 1/min, well under their 40/min fair-use guidance).
+	xhsInterval     = 61 * time.Second
 	xhsNotifyIntval = 60 * time.Second
 )
 
