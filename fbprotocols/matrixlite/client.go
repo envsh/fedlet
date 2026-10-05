@@ -30,6 +30,10 @@ type Client struct {
 	useSliding   bool
 	txnID        int64
 	hc           *http.Client
+	// summaryClient is separate from hc on purpose: hc keeps a 67s timeout so
+	// the 30s /sync long poll is never aborted, but a room summary should fail
+	// fast instead of hanging the worker for a minute.
+	summaryClient *http.Client
 }
 
 func Login(server, user, password string) (*Client, error) {
@@ -45,6 +49,7 @@ func LoginWithDeviceID(server, user, password, deviceID string) (*Client, error)
 			},
 			Timeout: 67 * time.Second,
 		},
+		summaryClient: &http.Client{Timeout: summaryTimeout},
 	}
 
 	if err := c.doLogin(user, password, deviceID); err != nil {
@@ -65,6 +70,7 @@ func ClientFromToken(baseURL, accessToken string) (*Client, error) {
 			},
 			Timeout: 67 * time.Second,
 		},
+		summaryClient: &http.Client{Timeout: summaryTimeout},
 	}
 	c.detectSlidingSync()
 	if _, err := c.whoami(); err != nil {
@@ -142,6 +148,10 @@ func (c *Client) RestoreFromState(s *State) {
 	c.nextBatch = s.NextBatch
 	c.slidingPos = s.SlidingPos
 	c.useSliding = s.UseSliding
+	bindProfiles(c.baseURL)
+	restoreProfiles(s.Rooms)
+	bindMembers(c.baseURL)
+	restoreMembers(s.Members)
 }
 
 func (c *Client) SaveSyncState(s *State) {
@@ -155,6 +165,8 @@ func (c *Client) SaveSyncState(s *State) {
 	} else {
 		s.NextBatch = c.nextBatch
 	}
+	s.Rooms = profileSnapshot()
+	s.Members = memberSnapshot()
 }
 
 type refreshReq struct {
@@ -258,6 +270,22 @@ type slidingList struct {
 
 type slidingRoom struct {
 	Timeline []json.RawMessage `json:"timeline"`
+	// Sticky state. required_state only carries the event types we explicitly
+	// asked for, so m.room.member lives here instead.
+	State []json.RawMessage `json:"state,omitempty"`
+	// Room-level metadata. MSC4186 has the server resolve name, falling back to
+	// the canonical alias, so we trust it rather than re-deriving it.
+	Name         *string `json:"name,omitempty"`
+	Avatar       *string `json:"avatar,omitempty"`
+	Topic        *string `json:"topic,omitempty"`
+	JoinedCount  *int    `json:"joined_count,omitempty"`
+	InvitedCount *int    `json:"invited_count,omitempty"`
+	// Note the asymmetry: required_state is an array of state *events* in the
+	// response, but an array of [type, state_key] pairs in the request.
+	RequiredState []json.RawMessage `json:"required_state,omitempty"`
+	// MSC4186 places presence per room. Servers that omit it simply yield no
+	// events, which the harvester skips.
+	Presence []json.RawMessage `json:"presence,omitempty"`
 }
 
 type slidingResp struct {
@@ -283,6 +311,13 @@ func (c *Client) slidingSync(timeout time.Duration) ([]map[string]any, error) {
 			"all": {
 				Ranges:        [][]int{{0, 99}},
 				TimelineLimit: 10,
+				RequiredState: [][]string{
+					{"m.room.name", ""},
+					{"m.room.topic", ""},
+					{"m.room.avatar", ""},
+					{"m.room.create", ""},
+					{"m.room.canonical_alias", ""},
+				},
 			},
 		},
 	})
@@ -317,12 +352,23 @@ func (c *Client) slidingSync(timeout time.Duration) ([]map[string]any, error) {
 
 	var ms []map[string]any
 	for rid, room := range sr.Rooms {
+		// Fold room metadata in before extracting the timeline so every message
+		// published from this batch carries the values current at sync time.
+		if prof := profileFromSlidingRoom(room); prof != nil {
+			noteProfiles(map[string]*roomProfile{rid: prof})
+		}
+		// Harvest members and presence before the message-type filter below
+		// discards these events.
+		harvestMemberEvents(room.State)
+		harvestMemberEvents(room.RequiredState)
+		harvestPresenceEvents(room.Presence)
 		for _, evRaw := range room.Timeline {
 			var m map[string]any
 			if json.Unmarshal(evRaw, &m) != nil {
 				continue
 			}
-			if t, _ := m["type"].(string); t != "m.room.message" && t != "m.room.name" && t != "m.room.topic" {
+			harvestMemberEvent(evRaw)
+			if t, _ := m["type"].(string); t != "m.room.message" {
 				b, _ := json.Marshal(m)
 				log.Printf("matrixlite: skip non-message event in room %s, type %s, event=%s", rid, t, b)
 				continue
@@ -338,17 +384,30 @@ type normalRoomTimeline struct {
 	Events []json.RawMessage `json:"events"`
 }
 
+type normalRoomState struct {
+	Events []json.RawMessage `json:"events"`
+}
+
 type normalRoom struct {
 	Timeline normalRoomTimeline `json:"timeline"`
+	// State was previously discarded entirely, which is why room names,
+	// avatars and topics never reached the publisher.
+	State normalRoomState `json:"state,omitempty"`
 }
 
 type normalRooms struct {
 	Join map[string]normalRoom `json:"join,omitempty"`
 }
 
+type normalRespPresence struct {
+	Events []json.RawMessage `json:"events"`
+}
+
 type normalResp struct {
 	NextBatch string      `json:"next_batch"`
 	Rooms     normalRooms `json:"rooms,omitempty"`
+	// Presence is top-level in the v2 sync, not under rooms.*.ephemeral.
+	Presence normalRespPresence `json:"presence,omitempty"`
 }
 
 func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
@@ -360,7 +419,7 @@ func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 	if timeout > 0 {
 		q.Set("timeout", strconv.Itoa(int(timeout.Milliseconds())))
 	}
-	q.Set("filter", `{"room":{"timeline":{"limit":10},"state":{"lazy_load_members":true}},"event_fields":["type","content","sender","event_id","origin_server_ts"]}`)
+	q.Set("filter", `{"room":{"timeline":{"limit":10},"state":{"lazy_load_members":true,"event_fields":["type","content","sender","state_key","event_id","origin_server_ts"]}},"presence":{"types":["m.presence"]},"event_fields":["type","content","sender","event_id","origin_server_ts"]}`)
 	u += "?" + q.Encode()
 
 	resp, err := c.doRequest(http.MethodGet, u, nil)
@@ -388,13 +447,20 @@ func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 	log.Printf("matrixlite: sync diff: %s", diff)
 
 	var ms []map[string]any
+	harvestPresenceEvents(nr.Presence.Events)
 	for rid, room := range nr.Rooms.Join {
+		if prof := profileFromStateEvents(room.State.Events); prof != nil {
+			noteProfiles(map[string]*roomProfile{rid: prof})
+		}
+		// Harvest members before the message-type filter below discards them.
+		harvestMemberEvents(room.State.Events)
 		for _, evRaw := range room.Timeline.Events {
 			var m map[string]any
 			if json.Unmarshal(evRaw, &m) != nil {
 				continue
 			}
-			if t, _ := m["type"].(string); t != "m.room.message" && t != "m.room.name" && t != "m.room.topic" {
+			harvestMemberEvent(evRaw)
+			if t, _ := m["type"].(string); t != "m.room.message" {
 				b, _ := json.Marshal(m)
 				log.Printf("matrixlite: skip non-message event in room %s, type %s, event=%s", rid, t, b)
 				continue
@@ -406,6 +472,23 @@ func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 	return ms, nil
 }
 
+// profileFromSlidingRoom combines required_state with the room-level summary.
+// required_state is folded first so an explicit m.room.name still outranks a
+// server-resolved alias name, matching gomuks' precedence.
+func profileFromSlidingRoom(room slidingRoom) *roomProfile {
+	p := profileFromStateEvents(room.RequiredState)
+	if p == nil {
+		p = &roomProfile{}
+	}
+	if p.Name == nil && p.Avatar == nil && p.Topic == nil && p.Alias == nil &&
+		p.RoomType == "" && p.RoomVersion == "" && p.Federated == nil &&
+		p.MemberCount == 0 &&
+		room.Name == nil && room.Avatar == nil && room.Topic == nil && room.JoinedCount == nil {
+		return nil
+	}
+	p.applySlidingSummary(room.Name, room.Avatar, room.Topic, room.JoinedCount)
+	return p
+}
 
 var (
 	ErrWellKnownNotFound  = errors.New("well-known: not found")

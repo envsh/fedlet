@@ -16,6 +16,13 @@ type State struct {
 	SlidingPos   string `json:"sliding_pos,omitempty"`
 	UseSliding   bool   `json:"use_sliding"`
 	LoginToken   string `json:"login_token,omitempty"`
+	// Rooms caches per-room metadata so a restart does not lose room names and
+	// so we can tell "already known to be nameless" apart from "never seen".
+	Rooms map[string]*roomProfile `json:"rooms,omitempty"`
+	// Members caches per-user attributes keyed by MXID, shared across rooms
+	// the way gomuks' usrCache is. Drafts carrying no visible attribute are
+	// never stored, so every persisted entry is publishable.
+	Members map[string]*memberProfile `json:"members,omitempty"`
 }
 
 func (s *State) Valid() bool {

@@ -69,6 +69,10 @@ func pollLoop(baseURL, token, user, password string) {
 
 	log.Printf("matrixlite: server=%s user=%s", baseURL, user)
 
+	// One worker for the whole process; room summary lookups must never run on
+	// the publish path.
+	StartBackfillWorker()
+
 	var state State
 	state.Load()
 
@@ -107,8 +111,27 @@ func pollLoop(baseURL, token, user, password string) {
 				client.SaveSyncState(&state)
 				state.Save()
 				for _, m := range ms {
-					if rid, _ := m["room_id"].(string); rid != "" {
+					rid, _ := m["room_id"].(string)
+					if rid != "" {
 						log.Printf("matrixlite: event in room %s, msgtype %s", rid, rawEventMsgtype(m))
+					}
+					prof := roomProfileForPublish(rid)
+					if prof != nil {
+						// Injected into the raw map so the P2P payload carries it.
+						m["room_profile"] = prof.wire()
+					} else {
+						EnqueueBackfill(rid)
+					}
+					// The member name is the attribute that matters, so it takes
+					// priority: presence rides along only when the server sends
+					// it. The key is omitted entirely when we know nothing,
+					// rather than written as an empty object.
+					if sender, _ := m["sender"].(string); sender != "" {
+						if sp, ok := MemberProfileForPublish(sender); ok {
+							m["sender_profile"] = sp
+						} else {
+							EnqueueMember(sender, rid)
+						}
 					}
 					data, _ := json.Marshal(m)
 					if err := publish(m); err != nil {
@@ -200,6 +223,7 @@ func loginOrRestore(baseURL, token, user, password string, state *State) (*Clien
 				DisableKeepAlives: true,
 			},
 		},
+		summaryClient: &http.Client{Timeout: summaryTimeout},
 	}
 
 	if token == "" && state.LoginToken != "" {
@@ -354,6 +378,14 @@ func Redact(roomID, eventID, reason string) (fbshared.SendResult, error) {
 	return c.RedactMessage(roomID, eventID, reason)
 }
 
+// roomProfileForPublish returns the cached profile as a private snapshot, so
+// the publish path cannot observe a concurrent update from the backfill worker.
+// RoomProfile already copies; this wrapper exists to name the intent at the
+// call site and to keep the nil case obvious.
+func roomProfileForPublish(roomID string) *roomProfile {
+	return RoomProfile(roomID)
+}
+
 func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoMatrixLite,
@@ -372,6 +404,16 @@ func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage
 	}
 	if s, _ := m["room_id"].(string); s != "" {
 		um.ChatID = s
+	}
+	// Reuse the exact snapshot already attached to the raw event, so both
+	// publish paths report identical metadata.
+	if w, ok := m["room_profile"].(fbshared.RoomProfileWire); ok {
+		um.ApplyRoomProfile(w)
+	}
+	// Reuse the exact snapshot already attached to the raw event, so both
+	// publish paths report identical member attributes.
+	if w, ok := m["sender_profile"].(fbshared.MemberProfileWire); ok {
+		um.ApplySenderProfile(w)
 	}
 	if f, ok := m["origin_server_ts"].(float64); ok && f > 0 {
 		um.Timestamp = int64(f) * 1000000
