@@ -180,6 +180,27 @@ func TestHotlistImageAuthorLink(t *testing.T) {
 	}
 }
 
+func TestAPI2BrURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://api.zhihu.com/questions/609686334", "https://www.zhihu.com/question/609686334"},
+		{"https://api.zhihu.com/articles/2", "https://zhuanlan.zhihu.com/p/2"},
+		{"https://api.zhihu.com/pins/1802686122138144770", "https://www.zhihu.com/pin/1802686122138144770"},
+		{"https://api.zhihu.com/zvideos/1401218993156419584", "https://www.zhihu.com/zvideo/1401218993156419584"},
+		{"https://api.zhihu.com/topics/19552832", "https://www.zhihu.com/topic/19552832"},
+		{"https://www.zhihu.com/question/460666810/answer/1906844914", "https://www.zhihu.com/question/460666810/answer/1906844914"},
+		{"https://zhuanlan.zhihu.com/p/405042094", "https://zhuanlan.zhihu.com/p/405042094"},
+		{"https://api.zhihu.com/answers/5555", ""},       // no question id in the URL
+		{"https://www.zhihu.com/api/v4/questions/1", ""}, // api path on a page host
+		{"zhihu://questions/1", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := api2brurl(tc.in); got != tc.want {
+			t.Errorf("api2brurl(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestHotlistKey(t *testing.T) {
 	cases := []struct {
 		name string
@@ -319,6 +340,38 @@ func TestHotlistRoundSkipsWithoutStableID(t *testing.T) {
 	}
 	if _, seen := state.Hotlist["3"]; !seen {
 		t.Fatal("target-id key 3 missing from state")
+	}
+}
+
+func TestHotlistRoundFixesTargetURL(t *testing.T) {
+	resetSessionCreds()
+	setupGatewaySession()
+	defer resetSessionCreds()
+
+	js := `{"data":[{"id":"0_1.1","card_id":"Q_1","type":"hot_list_feed",
+	 "target":{"id":1,"type":"question","title":"甲","url":"https://api.zhihu.com/questions/1"}}]}`
+	oldHC := hc
+	hc = stubClient("", []byte(js), http.StatusOK, []byte(js))
+	defer func() { hc = oldHC }()
+
+	var got []map[string]any
+	oldPub := pubfn_
+	pubfn_ = func(v any) error {
+		var m map[string]any
+		if err := json.Unmarshal(v.(json.RawMessage), &m); err != nil {
+			return err
+		}
+		got = append(got, m)
+		return nil
+	}
+	defer func() { pubfn_ = oldPub }()
+
+	hotRound(newState())
+	if len(got) != 1 {
+		t.Fatalf("published %d, want 1", len(got))
+	}
+	if p := got[0]; p["api_url"] != "https://api.zhihu.com/questions/1" || p["url"] != "https://www.zhihu.com/question/1" {
+		t.Fatalf("api_url/url = %v / %v", p["api_url"], p["url"])
 	}
 }
 

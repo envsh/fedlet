@@ -14,6 +14,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 )
 
 // hotlistURL mirrors the zhihu-plus-plus client's query (mobile=true), the
@@ -243,6 +245,51 @@ func HotlistLink(raw json.RawMessage) string {
 	}
 	u, _ := m["url"].(string)
 	return u
+}
+
+// api2brurl rewrites a zhihu api URL into the page URL a browser can open. The
+// hot board hands back https://api.zhihu.com/questions/123 — the JSON host,
+// which answers 101 AuthenticationError to an anonymous browser instead of a
+// page. An already-openable link passes through untouched; a resource whose
+// page path is not derivable from its URL alone (answers need their question
+// id, members their url_token) returns "" rather than an unopenable link.
+func api2brurl(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.Host == "" {
+		return ""
+	}
+	if isPageHost(p.Host) && !strings.HasPrefix(p.Path, "/api/") {
+		return u
+	}
+	if p.Host != "api.zhihu.com" {
+		return ""
+	}
+	segs := strings.Split(strings.Trim(p.Path, "/"), "/")
+	if len(segs) != 2 || segs[1] == "" {
+		return ""
+	}
+	switch segs[0] {
+	case "questions":
+		return "https://www.zhihu.com/question/" + segs[1]
+	case "articles":
+		return "https://zhuanlan.zhihu.com/p/" + segs[1]
+	case "pins":
+		return "https://www.zhihu.com/pin/" + segs[1]
+	case "zvideos":
+		return "https://www.zhihu.com/zvideo/" + segs[1]
+	case "topics":
+		return "https://www.zhihu.com/topic/" + segs[1]
+	}
+	return ""
+}
+
+// isPageHost reports whether h serves HTML pages rather than JSON.
+func isPageHost(h string) bool {
+	switch h {
+	case "www.zhihu.com", "zhihu.com", "zhuanlan.zhihu.com", "daily.zhihu.com":
+		return true
+	}
+	return false
 }
 
 func targetMap(raw json.RawMessage) map[string]any {
