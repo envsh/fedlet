@@ -88,7 +88,7 @@ cd fedbridge && go build -v -tags sysinfo
 | --- | --- | --- |
 | Linux | gopsutil + `/sys/class/power_supply` | 全字段（含 `cycle_count`） |
 | Android | 同上；sysfs 被 SELinux 拦时回退 `/system/bin/dumpsys battery` | dumpsys **无** design capacity / cycle count → 那两项 `-1` |
-| macOS | `ioreg -n AppleSmartBattery -r -a`（XML plist） | 含 `CycleCount`、`DesignCapacity` |
+| macOS | `ioreg -n AppleSmartBattery -r -a`（XML plist；解析在无 tag 的 `batt_ioreg.go`） | 数值键一律 `<integer>`；容量/循环优先顶层 `AppleRaw*`，缺失时回落嵌套 `BatteryData`（macOS 26+ 只在 blob 里），`MaxCapacity` 在 Apple Silicon 上是 100 服务标志而非容量 |
 | Windows | SetupAPI 枚举 + `IOCTL_BATTERY_QUERY_*` | 含 `BATTERY_INFORMATION.CycleCount`；接口复用自 `distatus/battery`（MIT，文件头带版权） |
 | 其他（FreeBSD 等） | 无电池实现（`batt_stub.go`） | 电池小节走规则 E，其余小节照常 |
 
@@ -106,7 +106,7 @@ go test -race ./fbprotocols/sysinfo/
 | --- | --- |
 | `sysinfo_test.go` | 规则 B/C、三态、错误去重与上限、首轮形状、发布平铺字段、state 读写、Start/Stop 时序（含"首轮必须等满一个 interval"）、错误环形 3 条 |
 | `batt_linux_test.go` | sysfs fixture（能量型/电荷型换算、无电压时的 `-1`、空电池仓跳过、AC 源合并）、dumpsys 解析、status 映射 |
-| `batt_darwin_test.go` | plist 数组/dict 两种形态解码、ioreg 字段换算（mV→V、0.1K→°C、mA×V→mW）、非法字段回落 `-1` |
+| `batt_ioreg_test.go` | plist 数组/dict/`<real>` 三种形态解码、整数键回归、嵌套 `BatteryData` 回落、ioreg 换算（mV→V、0.1K→°C、mA×V→mW）、非法字段回落 `-1`（**无 build tag，Linux 也跑**） |
 | `batt_windows_test.go` | 绝对/相对容量、`0xFFFFFFFF` 与 `rate=0x80000000` 哨兵、`PowerState` 标志位→三态 |
 
 ## 依赖与约束

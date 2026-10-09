@@ -1,5 +1,3 @@
-//go:build darwin
-
 package sysinfo
 
 import (
@@ -7,8 +5,10 @@ import (
 )
 
 // ioregArraySample is the shape `ioreg -a` emits on Apple Silicon: an array of
-// one dict. Field names must match the registry keys exactly, so this doubles
-// as a regression test for the missing-plist-tag mapping.
+// one dict with integer values only. Field names must match the registry keys
+// exactly, so this doubles as a regression test for the missing-plist-tag
+// mapping and for integer-number decoding (a plain float64 field used to abort
+// with "type mismatch" here).
 const ioregArraySample = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -45,6 +45,20 @@ const ioregDictSample = `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>`
 
+// ioregRealSample covers a driver/OS that publishes a value as <real> instead
+// of <integer>: ioregNum must accept both.
+const ioregRealSample = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<array>
+	<dict>
+		<key>AppleRawCurrentCapacity</key><integer>1000</integer>
+		<key>AppleRawMaxCapacity</key><integer>2000</integer>
+		<key>Voltage</key><real>12000.0</real>
+		<key>Temperature</key><real>2956.5</real>
+	</dict>
+</array>
+</plist>`
+
 func TestDecodeIoregPlistArrayShape(t *testing.T) {
 	raws, err := decodeIoregPlist([]byte(ioregArraySample))
 	if err != nil {
@@ -75,6 +89,73 @@ func TestDecodeIoregPlistDictShape(t *testing.T) {
 	}
 	if !raws[0].IsCharging {
 		t.Error("IsCharging lost in dict shape")
+	}
+}
+
+func TestDecodeIoregPlistRealNumbers(t *testing.T) {
+	raws, err := decodeIoregPlist([]byte(ioregRealSample))
+	if err != nil {
+		t.Fatalf("decode real shape: %v", err)
+	}
+	if len(raws) != 1 {
+		t.Fatalf("got %d entries, want 1", len(raws))
+	}
+	if float64(raws[0].Temperature) != 2956.5 {
+		t.Errorf("Temperature = %v, want 2956.5", raws[0].Temperature)
+	}
+	if float64(raws[0].Voltage) != 12000 {
+		t.Errorf("Voltage = %v, want 12000", raws[0].Voltage)
+	}
+}
+
+// ioregModernSample reproduces newer macOS, where the top-level
+// AppleRaw*Capacity keys are gone, MaxCapacity is the 100 service flag and the
+// real figures only exist inside the nested BatteryData blob (stats #3392).
+const ioregModernSample = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<array>
+	<dict>
+		<key>MaxCapacity</key><integer>100</integer>
+		<key>CurrentCapacity</key><integer>84</integer>
+		<key>DesignCapacity</key><integer>6075</integer>
+		<key>Voltage</key><integer>11500</integer>
+		<key>Amperage</key><integer>-900</integer>
+		<key>IsCharging</key><false/>
+		<key>ExternalConnected</key><false/>
+		<key>BatteryData</key>
+		<dict>
+			<key>CycleCount</key><integer>312</integer>
+			<key>DesignCapacity</key><integer>6075</integer>
+			<key>RemainingCapacity</key><integer>4918</integer>
+			<key>NominalChargeCapacity</key><integer>5118</integer>
+			<key>FullChargeCapacity</key><integer>5090</integer>
+		</dict>
+	</dict>
+</array>
+</plist>`
+
+func TestConvertIoregNestedBatteryDataFallback(t *testing.T) {
+	raws, err := decodeIoregPlist([]byte(ioregModernSample))
+	if err != nil {
+		t.Fatalf("decode modern shape: %v", err)
+	}
+	b := convertIoreg(raws[0])
+	// MaxCapacity=100 is the Apple silicon service flag, never a capacity: the
+	// nested blob must win.
+	if b.Full != 5118 {
+		t.Errorf("Full = %v, want 5118 from BatteryData.NominalChargeCapacity", b.Full)
+	}
+	if b.Current != 4918 {
+		t.Errorf("Current = %v, want 4918 from BatteryData.RemainingCapacity", b.Current)
+	}
+	if b.Design != 6075 {
+		t.Errorf("Design = %v, want 6075", b.Design)
+	}
+	if b.Cycles != 312 {
+		t.Errorf("Cycles = %v, want 312 from BatteryData.CycleCount", b.Cycles)
+	}
+	if b.HealthPercent < 84.2 || b.HealthPercent > 84.3 {
+		t.Errorf("HealthPercent = %v, want ~84.24", b.HealthPercent)
 	}
 }
 
@@ -181,7 +262,7 @@ func TestConvertIoregUnsupportedFieldsAreSentinel(t *testing.T) {
 
 func TestConvertIoregImplausibleTemperatureRejected(t *testing.T) {
 	// 0 K and absurd readings are the driver saying "unknown".
-	for _, raw := range []float64{0, 500000} {
+	for _, raw := range []ioregNum{0, 500000} {
 		b := convertIoreg(ioregBattery{Temperature: raw})
 		if b.Temperature != InvalidNum {
 			t.Errorf("Temperature(%v) = %v, want -1", raw, b.Temperature)

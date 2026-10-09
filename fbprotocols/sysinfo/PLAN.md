@@ -90,7 +90,8 @@
 | `collect_temp.go` | 温度传感器 |
 | `collect_batt.go` | 电池编排 + 注入点 `readBatteriesFn` |
 | `batt_linux.go` | sysfs + Android `dumpsys` 回退 |
-| `batt_darwin.go` | `ioreg` plist |
+| `batt_darwin.go` | `ioreg` plist（只留 `readBatteries` 取数） |
+| `batt_ioreg.go` | ioreg plist 解码 + 单位换算（**无 build tag**，逻辑可跨平台单测；`ioregNum` 兼容 `<integer>`/`<real>`；含嵌套 `BatteryData` 回落） |
 | `batt_windows.go` | SetupAPI + Battery IOCTL（带 MIT 版权头） |
 | `batt_stub.go` | 其他平台 |
 | `sysinfo.go` | 轮询 / state / 状态面 / 发布 |
@@ -114,7 +115,7 @@
 | 格式 | `gofmt -l fbprotocols/sysinfo/` | ✅ 无输出 |
 | 静态检查 | `go vet ./fbprotocols/sysinfo/` | ✅ 通过 |
 | 单测 + race | `go test -race -count=1 ./fbprotocols/sysinfo/` | ✅ 通过 |
-| 覆盖率 | `go test -cover` | ✅ 74.0% |
+| 覆盖率 | `go test -cover` | ✅ 82.1% |
 | Linux 交叉 | 同上（native） | ✅ |
 | Windows | `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...` | ✅（含测试文件） |
 | macOS | `GOOS=darwin GOARCH=arm64/amd64 CGO_ENABLED=0 go vet ./...` | ✅（含测试文件） |
@@ -133,6 +134,15 @@
 4. `Stop()` 原本不等待 goroutine 退出 → `-race` 报数据竞争（测试 cleanup 恢复
    `pubfn_` 时旧 loop 仍在 `round()` 里读）。改为 `close(stop) → <-done` 同步等待，
    顺带保证重启时不会有两个 loop 并发发布。
+5. **macOS 电池崩溃**（`cannot decode ioreg plist: ... array into ioregBattery`）：
+   `ioreg` 的数值键是 `<integer>`，而 `howett.net/plist` 拒绝把 `*cfNumber` 写入
+   `float64`（该 panic 被 `Decode` recover 成 error），首次数组解码即失败，报出的
+   却是第二次 dict 解码的误导性错误。测试文件因 `//go:build darwin` 及
+   `*_darwin_test.go` 的**隐含 GOOS 约束**从未运行，故一直未暴露。修复：`ioregNum`
+   自定义 `UnmarshalPlist` 同时接受 integer/real；把解码/换算移入无 tag 的
+   `batt_ioreg.go`、测试改名 `batt_ioreg_test.go`，从此在 Linux/CI 可跑；并补
+   macOS 26+ 嵌套 `BatteryData` 容量回落（Apple Silicon 的 `MaxCapacity` 是 100
+   服务标志，不能当容量）。
 
 ## 5. 未做 / 后续可选
 
