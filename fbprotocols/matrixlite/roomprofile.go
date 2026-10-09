@@ -2,6 +2,7 @@ package matrixlite
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -55,6 +56,10 @@ const (
 	roomProfileTTL      = 7 * 24 * time.Hour
 	backfillQueueSize   = 64
 	summaryTimeout      = 15 * time.Second
+	// roomStateBodyCap bounds the /state fallback read. State arrays stay small
+	// for the rooms we care about; a giant list is a signal to fail, not to
+	// hold tens of megabytes in memory.
+	roomStateBodyCap = 4 << 20
 )
 
 // The cache is keyed by room ID and belongs to the account/homeserver rather
@@ -65,6 +70,25 @@ var (
 	profileMu   sync.Mutex
 	profiles    = map[string]*roomProfile{}
 	profileHost string
+
+	// roomAttempts throttles retries for rooms whose summary came back empty or
+	// errored, mirroring memberAttempts for members. A failed or empty fetch
+	// must never be recorded in profiles itself: that would fix the room in
+	// place and stop the publish path from ever re-queueing it. Keeping the
+	// negative result separate means a restart retries those rooms.
+	roomAttempts = map[string]time.Time{}
+
+	// pendingRooms are rooms already queued for (or being) backfilled. The
+	// publish path must not re-enqueue a room on every message; dedupe keeps
+	// the channel from churning on unprofiled rooms and dropping later ones.
+	pendingRooms = map[string]struct{}{}
+
+	// summarySupportBy memoizes, per homeserver, whether the MSC3266 /summary
+	// endpoint exists. Some servers (conduwuit, some synapse builds) answer 404
+	// M_UNRECOGNIZED; without this we would starve every room of its profile
+	// and wait out cooldowns forever.
+	summarySupportMu sync.Mutex
+	summarySupportBy = map[string]bool{}
 
 	backfillOnce sync.Once
 	backfillCh   = make(chan backfillTask, backfillQueueSize)
@@ -94,7 +118,26 @@ func bindProfiles(baseURL string) {
 	if profileHost != baseURL {
 		profileHost = baseURL
 		profiles = map[string]*roomProfile{}
+		roomAttempts = map[string]time.Time{}
 	}
+}
+
+// setSummarySupport records the /summary capability for one homeserver. The
+// probe runs once per connection; memoizing by baseURL beats probing per room.
+func setSummarySupport(baseURL string, ok bool) {
+	summarySupportMu.Lock()
+	summarySupportBy[baseURL] = ok
+	summarySupportMu.Unlock()
+}
+
+// summarySupported reports whether /summary is believed available. Unknown
+// baseURLs default to true, so a first attempt still tries it and only drops
+// to the /state fallback when the route is genuinely unrecognized.
+func summarySupported(baseURL string) bool {
+	summarySupportMu.Lock()
+	defer summarySupportMu.Unlock()
+	s, ok := summarySupportBy[baseURL]
+	return !ok || s
 }
 
 // RoomProfile returns a copy of the cached profile for a room, or nil when
@@ -160,6 +203,13 @@ func restoreProfiles(in map[string]*roomProfile) {
 	profileMu.Lock()
 	defer profileMu.Unlock()
 	for id, p := range in {
+		if !p.hasVisibleData() {
+			// A restored room we know nothing about must not shadow what a
+			// fresh backfill could learn; drop it rather than fix an empty
+			// wire in place. This also discards legacy FetchFailed-only
+			// records written by older builds.
+			continue
+		}
 		profiles[id] = p.clone()
 	}
 }
@@ -175,6 +225,9 @@ func noteProfiles(src map[string]*roomProfile) {
 	profileMu.Lock()
 	defer profileMu.Unlock()
 	for id, sp := range src {
+		if sp == nil || !sp.hasVisibleData() {
+			continue
+		}
 		if dp := profiles[id]; dp != nil {
 			if dp.mergeFrom(sp) {
 				dp.FetchFailed = false
@@ -189,6 +242,11 @@ func noteProfiles(src map[string]*roomProfile) {
 	for id, p := range profiles {
 		if now.Sub(p.LastSeen) > roomProfileTTL {
 			delete(profiles, id)
+		}
+	}
+	for id, at := range roomAttempts {
+		if now.Sub(at) > roomProfileTTL {
+			delete(roomAttempts, id)
 		}
 	}
 }
@@ -268,15 +326,21 @@ func (p *roomProfile) wire() fbshared.RoomProfileWire {
 	return w
 }
 
-// hasVisibleMeta reports whether the profile carries anything worth
-// publishing, so we do not backfill rooms that are legitimately nameless.
-func (p *roomProfile) hasVisibleMeta() bool {
+// hasVisibleData reports whether the profile carries anything worth publishing.
+// Mirror of memberProfile.hasVisibleData, and kept in lockstep with wire(): a
+// room with only an alias or a room_type still publishes, so it must be visible
+// here too. Nothing visible means we know nothing, and the publish path omits
+// the key rather than writing an empty object.
+func (p *roomProfile) hasVisibleData() bool {
 	if p == nil {
 		return false
 	}
 	return (p.Name != nil && *p.Name != "") ||
 		(p.Avatar != nil && *p.Avatar != "") ||
-		(p.Topic != nil && *p.Topic != "")
+		(p.Topic != nil && *p.Topic != "") ||
+		(p.Alias != nil && *p.Alias != "") ||
+		p.RoomType != "" || p.RoomVersion != "" ||
+		p.MemberCount > 0 || p.Federated != nil
 }
 
 // applyStateEvent folds one state event into p. Ported from gomuks
@@ -456,12 +520,21 @@ func StartBackfillWorker() {
 
 func backfillWorker() {
 	for t := range backfillCh {
-		switch t.kind {
-		case taskRoomSummary:
-			backfillOne(t.id)
-		case taskMember:
-			resolveMember(t.id, t.roomID)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// A malformed state event must never kill the only worker,
+					// or every room stays empty indefinitely.
+					log.Printf("matrixlite: backfill worker panic recovered: %v", r)
+				}
+			}()
+			switch t.kind {
+			case taskRoomSummary:
+				backfillOne(t.id)
+			case taskMember:
+				resolveMember(t.id, t.roomID)
+			}
+		}()
 	}
 }
 
@@ -472,11 +545,27 @@ func EnqueueBackfill(roomID string) {
 	if roomID == "" {
 		return
 	}
+	profileMu.Lock()
+	if _, ok := pendingRooms[roomID]; ok {
+		profileMu.Unlock()
+		return
+	}
+	pendingRooms[roomID] = struct{}{}
+	profileMu.Unlock()
 	select {
 	case backfillCh <- backfillTask{kind: taskRoomSummary, id: roomID}:
 	default:
+		profileMu.Lock()
+		delete(pendingRooms, roomID)
+		profileMu.Unlock()
 		log.Printf("matrixlite: backfill queue full, dropping %s", roomID)
 	}
+}
+
+func clearRoomPending(roomID string) {
+	profileMu.Lock()
+	delete(pendingRooms, roomID)
+	profileMu.Unlock()
 }
 
 // EnqueueMember schedules a fetch for a sender we hold no profile for. Like
@@ -494,20 +583,21 @@ func EnqueueMember(userID, roomID string) {
 }
 
 func backfillOne(roomID string) {
+	defer clearRoomPending(roomID)
 	profileMu.Lock()
 	p := profiles[roomID]
+	at := roomAttempts[roomID]
 	profileMu.Unlock()
 
-	if p != nil {
-		// A previous attempt inside the cooldown window means we already know
-		// the room has nothing worth showing; retrying per message would hammer
-		// the homeserver.
-		if !p.FetchedAt.IsZero() && time.Since(p.FetchedAt) < roomProfileCooldown {
-			return
-		}
-		if p.hasVisibleMeta() {
-			return
-		}
+	// A negative attempt inside the cooldown window, whether it errored or came
+	// back empty, suppresses re-fetching per message. The negative result lives
+	// in roomAttempts, never in profiles, so the room stays eligible for a
+	// retry once we know nothing yet.
+	if !at.IsZero() && time.Since(at) < roomProfileCooldown {
+		return
+	}
+	if p != nil && p.hasVisibleData() {
+		return
 	}
 
 	muClient.Lock()
@@ -521,26 +611,57 @@ func backfillOne(roomID string) {
 	now := time.Now()
 	if err != nil {
 		log.Printf("matrixlite: summary fetch failed for %s: %v", roomID, err)
-		profileMu.Lock()
-		cp := profiles[roomID]
-		if cp == nil {
-			cp = &roomProfile{}
-			profiles[roomID] = cp
-		}
-		cp.FetchFailed, cp.FetchedAt = true, now
-		profileMu.Unlock()
+		noteRoomAttempt(roomID, now)
 		return
 	}
+	// Only materialize a profile once it has something publishable. A 200 that
+	// carries no visible fields (e.g. a bridged room with no name/topic/alias)
+	// is still a real answer, so it throttles like an error instead of being
+	// cached as an empty record that would publish as {} forever.
 	src.FetchedAt, src.LastSeen = now, now
+	if !src.hasVisibleData() {
+		log.Printf("matrixlite: summary for %s has no publishable metadata", roomID)
+		noteRoomAttempt(roomID, now)
+		return
+	}
 	noteProfiles(map[string]*roomProfile{roomID: src})
+}
+
+// noteRoomAttempt records a negative summary result for throttling, without
+// touching profiles: the publish path keys off "do we have a visible profile",
+// so a room whose fetch failed or came back empty remains eligible for a later
+// backfill after the cooldown.
+func noteRoomAttempt(roomID string, at time.Time) {
+	profileMu.Lock()
+	roomAttempts[roomID] = at
+	profileMu.Unlock()
 }
 
 // fetchRoomSummary pulls room metadata for rooms joined before this cache
 // existed, or whose state we never saw: the persisted next_batch/sliding_pos
 // means a restarted client is never sent state for unchanged rooms again. It
-// uses its own timeout-bearing client because Client.hc deliberately has none,
-// since a shared timeout would abort the 30s /sync long poll.
+// prefers the MSC3266 /summary endpoint when the homeserver implements it and
+// falls back to the standard /state endpoint otherwise — otherwise a server
+// without /summary (conduwuit, old synapse) leaves every room profile empty
+// forever. /state reuses applyStateEvent, so parsing matches the sync path.
 func (c *Client) fetchRoomSummary(roomID string) (*roomProfile, error) {
+	if summarySupported(c.baseURL) {
+		p, err := c.summaryOf(roomID)
+		if err == nil {
+			return p, nil
+		}
+		if c.isAuthErr(err) {
+			// A real auth failure would just repeat on /state; surface it.
+			return nil, err
+		}
+		log.Printf("matrixlite: /summary for %s unavailable (%v); falling back to /state", roomID, err)
+	}
+	return c.roomStateOf(roomID)
+}
+
+// summaryOf is the MSC3266 path. It uses summaryClient because Client.hc has
+// deliberately no timeout (a shared one would abort the 30s /sync long poll).
+func (c *Client) summaryOf(roomID string) (*roomProfile, error) {
 	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/summary"
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
@@ -572,4 +693,129 @@ func (c *Client) fetchRoomSummary(roomID string) (*roomProfile, error) {
 		return nil, fmt.Errorf("summary decode: %w: %s", err, string(raw))
 	}
 	return sr.toProfile(), nil
+}
+
+// roomStateOf rebuilds a profile from the standard /state endpoint, folding
+// each room-level event through applyStateEvent exactly like the sync path and
+// topping up the member count from /joined_members when that route works.
+func (c *Client) roomStateOf(roomID string) (*roomProfile, error) {
+	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/state"
+	resp, err := c.doRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, roomStateBodyCap))
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("state: %v %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var events []struct {
+		Type     string         `json:"type"`
+		StateKey string         `json:"state_key"`
+		Content  map[string]any `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &events); err != nil {
+		return nil, fmt.Errorf("state decode: %w: %s", err, string(raw))
+	}
+	p := &roomProfile{}
+	for _, ev := range events {
+		p.applyStateEvent(ev.Type, ev.StateKey, ev.Content)
+	}
+	if n, err := c.joinedCountOf(roomID); err == nil && n > 0 {
+		p.MemberCount = n
+	}
+	return p, nil
+}
+
+// joinedCountOf counts joined members. Rooms above memberBodyCap cannot decode,
+// and returning an error just leaves MemberCount at 0 rather than failing the
+// whole profile.
+func (c *Client) joinedCountOf(roomID string) (int, error) {
+	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/joined_members"
+	resp, err := c.doRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, memberBodyCap))
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("joined_members: %v", resp.StatusCode)
+	}
+	var jm struct {
+		Joined map[string]json.RawMessage `json:"joined"`
+	}
+	if err := json.Unmarshal(raw, &jm); err != nil {
+		return 0, fmt.Errorf("joined_members decode: %w", err)
+	}
+	return len(jm.Joined), nil
+}
+
+// isAuthErr reports whether err came out of authErrorFromResponse; only then is
+// a failing summary a signal to stop, since /state would hit the same wall.
+func (c *Client) isAuthErr(err error) bool {
+	return errors.Is(err, ErrTokenExpired) ||
+		errors.Is(err, ErrSessionInvalidated) ||
+		errors.Is(err, ErrUserDeactivated)
+}
+
+// joinedRooms lists every room the account currently belongs to. The response
+// is a bare list of room IDs, cheap enough to call on every connection and on
+// the retry ticker; it is what lets backfill reach rooms that never message
+// again after a restart.
+func (c *Client) joinedRooms() ([]string, error) {
+	u := c.baseURL + "/_matrix/client/v3/joined_rooms"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if err := authErrorFromResponse(resp, raw); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("joined_rooms: %v %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var jr struct {
+		JoinedRooms []string `json:"joined_rooms"`
+	}
+	if err := json.Unmarshal(raw, &jr); err != nil {
+		return nil, fmt.Errorf("joined_rooms decode: %w", err)
+	}
+	return jr.JoinedRooms, nil
+}
+
+// sweepJoinedRooms lists the full membership and backfills every room we still
+// have nothing publishable for. Event-triggered backfill alone leaves quiet
+// rooms (and rooms whose first attempt failed before any further message)
+// empty forever; sweeps close that gap. Runs once per connection and on a
+// retry ticker, so failures converge after their cooldown lapses.
+func sweepJoinedRooms(c *Client) {
+	ids, err := c.joinedRooms()
+	if err != nil {
+		log.Printf("matrixlite: joined-room sweep: %v", err)
+		return
+	}
+	n := 0
+	for _, rid := range ids {
+		if p := RoomProfile(rid); p != nil && p.hasVisibleData() {
+			continue
+		}
+		EnqueueBackfill(rid)
+		n++
+	}
+	if n > 0 {
+		log.Printf("matrixlite: joined-room sweep: %d rooms, %d need profile", len(ids), n)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,17 +17,89 @@ import (
 func withCleanProfiles(t *testing.T, baseURL string) {
 	t.Helper()
 	profileMu.Lock()
-	prevHost, prevProfiles := profileHost, profiles
-	profileHost, profiles = baseURL, map[string]*roomProfile{}
+	prevHost, prevProfiles, prevAttempts, prevPending := profileHost, profiles, roomAttempts, pendingRooms
+	profileHost, profiles, roomAttempts, pendingRooms = baseURL, map[string]*roomProfile{}, map[string]time.Time{}, map[string]struct{}{}
 	profileMu.Unlock()
 	t.Cleanup(func() {
 		profileMu.Lock()
-		profileHost, profiles = prevHost, prevProfiles
+		profileHost, profiles, roomAttempts, pendingRooms = prevHost, prevProfiles, prevAttempts, prevPending
 		profileMu.Unlock()
 	})
 }
 
 var strp = strptr
+
+func forgetSummarySupport(baseURL string) {
+	summarySupportMu.Lock()
+	defer summarySupportMu.Unlock()
+	delete(summarySupportBy, baseURL)
+}
+
+func TestJoinedRoomsSweep(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+	noteProfiles(map[string]*roomProfile{"!known:hs": {Name: strp("Known"), NameQuality: nameQualityExplicit}})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/joined_rooms") {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"joined_rooms":["!known:hs","!fresh:hs","!stale:hs"]}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()}
+	sweepJoinedRooms(c)
+
+	profileMu.Lock()
+	defer profileMu.Unlock()
+	if _, ok := pendingRooms["!known:hs"]; ok {
+		t.Error("known room must not be re-queued")
+	}
+	for _, rid := range []string{"!fresh:hs", "!stale:hs"} {
+		if _, ok := pendingRooms[rid]; !ok {
+			t.Errorf("%s should have been queued", rid)
+		}
+	}
+}
+
+func TestJoinedRoomsErrorNoPanic(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	sweepJoinedRooms(&Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()})
+}
+
+func TestEnqueueBackfillDeduplicatesPending(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+	for {
+		select {
+		case <-backfillCh:
+		default:
+			goto drained
+		}
+	}
+drained:
+	EnqueueBackfill("!r:example.com")
+	EnqueueBackfill("!r:example.com")
+	cnt := 0
+	for {
+		select {
+		case <-backfillCh:
+			cnt++
+		default:
+			if cnt != 1 {
+				t.Errorf("expected exactly 1 queued task, got %d", cnt)
+			}
+			profileMu.Lock()
+			delete(pendingRooms, "!r:example.com")
+			profileMu.Unlock()
+			return
+		}
+	}
+}
 
 func TestProfileFromStateEvents(t *testing.T) {
 	withCleanProfiles(t, "http://hs")
@@ -444,6 +517,107 @@ func TestFetchRoomSummaryError(t *testing.T) {
 	}
 }
 
+// tchncs.de answers 404 M_UNRECOGNIZED for /summary; the probe must mark the
+// server unsupported so backfills use the /state fallback.
+func TestDetectSummarySupportUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+	}))
+	defer srv.Close()
+	defer forgetSummarySupport(srv.URL)
+
+	c := &Client{baseURL: srv.URL, summaryClient: srv.Client()}
+	c.detectSummarySupport()
+	if summarySupported(srv.URL) {
+		t.Error("expected /summary to be marked unsupported")
+	}
+}
+
+// A server that implements the route answers 401 before any room lookup; the
+// probe must treat that as supported.
+func TestDetectSummarySupportSupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"errcode":"M_MISSING_TOKEN","error":"Missing access token"}`))
+	}))
+	defer srv.Close()
+	defer forgetSummarySupport(srv.URL)
+
+	c := &Client{baseURL: srv.URL, summaryClient: srv.Client()}
+	c.detectSummarySupport()
+	if !summarySupported(srv.URL) {
+		t.Error("expected /summary to be marked supported")
+	}
+}
+
+// The real fix: without /summary, room_profile still gets values, rebuilt from
+// the standard /state endpoint plus a joined_members count.
+func TestFetchRoomSummaryFallsBackToState(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/summary"):
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+		case strings.HasSuffix(r.URL.Path, "/joined_members"):
+			w.Write([]byte(`{"joined":{"@a:hs":{},"@b:hs":{},"@c:hs":{}}}`))
+		default: // /state
+			w.Write([]byte(`[
+				{"type":"m.room.create","state_key":"","sender":"@a:hs","content":{"room_version":"11","type":"m.space","m.federate":false}},
+				{"type":"m.room.name","state_key":"","sender":"@a:hs","content":{"name":"Project"}},
+				{"type":"m.room.topic","state_key":"","sender":"@a:hs","content":{"topic":"dev"}}
+			]`))
+		}
+	}))
+	defer srv.Close()
+	setSummarySupport(srv.URL, false)
+	defer forgetSummarySupport(srv.URL)
+
+	curClient = &Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()}
+	defer func() { curClient = nil }()
+
+	backfillOne("!r:example.com")
+
+	p := RoomProfile("!r:example.com")
+	if p == nil {
+		t.Fatal("no profile after /state fallback")
+	}
+	if p.Name == nil || *p.Name != "Project" {
+		t.Errorf("name: %+v", p.Name)
+	}
+	if p.RoomType != "m.space" || p.RoomVersion != "11" {
+		t.Errorf("create fields: type=%q version=%q", p.RoomType, p.RoomVersion)
+	}
+	if p.MemberCount != 3 {
+		t.Errorf("members: %d", p.MemberCount)
+	}
+	if p.Federated == nil || *p.Federated {
+		t.Errorf("federated: %+v", p.Federated)
+	}
+}
+
+func TestFetchRoomSummaryPrefersSummaryWhenSupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/state") {
+			t.Error("state must not be fetched when /summary works")
+		}
+		w.Write([]byte(`{"room_id":"!r:example.com","name":"Project","num_joined_members":4}`))
+	}))
+	defer srv.Close()
+	setSummarySupport(srv.URL, true)
+	defer forgetSummarySupport(srv.URL)
+
+	c := &Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()}
+	p, err := c.fetchRoomSummary("!r:example.com")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if p.Name == nil || *p.Name != "Project" || p.MemberCount != 4 {
+		t.Errorf("profile: %+v", p)
+	}
+}
+
 // EnqueueBackfill runs on the publish path, so it must never block when the
 // queue is full.
 func TestEnqueueBackfillNeverBlocks(t *testing.T) {
@@ -463,13 +637,16 @@ func TestEnqueueBackfillNeverBlocks(t *testing.T) {
 	}
 }
 
-// Once a summary attempt has failed we should not re-hammer the homeserver for
-// every subsequent message in that room.
-func TestBackfillCooldownAfterFailure(t *testing.T) {
+// A failed summary attempt must not be cached as an empty record: that would
+// fix the room in place and block every later backfill, leaving room_profile
+// permanently empty. The negative result only throttles, so the room is fetched
+// again after the cooldown.
+func TestBackfillFailureIsNotStuck(t *testing.T) {
 	withCleanProfiles(t, "http://hs")
 
 	var hits int32
 	var mu sync.Mutex
+	countHits := func() int32 { mu.Lock(); defer mu.Unlock(); return hits }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		hits++
@@ -482,17 +659,76 @@ func TestBackfillCooldownAfterFailure(t *testing.T) {
 	defer func() { curClient = nil }()
 
 	backfillOne("!r:example.com")
+	firstHits := countHits()
 
 	p := RoomProfile("!r:example.com")
-	if p == nil || !p.FetchFailed {
-		t.Fatalf("expected a failed profile, got %+v", p)
+	if p != nil {
+		t.Fatalf("failed fetch must not leave a record, got %+v", p)
 	}
 	backfillOne("!r:example.com")
 
-	mu.Lock()
-	defer mu.Unlock()
-	if hits != 1 {
-		t.Errorf("expected the retry to be suppressed, got %d requests", hits)
+	if h := countHits(); h != firstHits {
+		t.Errorf("expected the immediate retry to be throttled, got %d -> %d requests", firstHits, h)
+	}
+
+	// Past the cooldown the room is fetched again, so a false-empty state heals.
+	profileMu.Lock()
+	roomAttempts["!r:example.com"] = time.Now().Add(-roomProfileCooldown - time.Millisecond)
+	profileMu.Unlock()
+	backfillOne("!r:example.com")
+
+	if h := countHits(); h <= firstHits {
+		t.Errorf("expected a retry after the cooldown, got %d -> %d requests", firstHits, h)
+	}
+}
+
+// A 200 summary that carries nothing publishable is treated like a failure: it
+// must not be cached as an empty record, or the publish path would emit {} for
+// the room indefinitely.
+func TestBackfillEmptySummaryIsNotCached(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"room_id":"!r:example.com"}`))
+	}))
+	defer srv.Close()
+
+	curClient = &Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()}
+	defer func() { curClient = nil }()
+
+	backfillOne("!r:example.com")
+
+	if p := RoomProfile("!r:example.com"); p != nil {
+		t.Fatalf("empty summary must not be cached, got %+v", p)
+	}
+}
+
+// RoomProfileForPublish mirrors MemberProfileForPublish's "no key at all"
+// contract: unknown, empty and legacy-failed rooms publish nothing, while a
+// room with only an alias or a federated flag still does.
+func TestRoomProfileForPublishOmitsEmpty(t *testing.T) {
+	withCleanProfiles(t, "http://hs")
+
+	if _, ok := RoomProfileForPublish("!r:example.com"); ok {
+		t.Error("unknown room must not publish")
+	}
+
+	noteProfiles(map[string]*roomProfile{"!r:example.com": {}})
+	if p := RoomProfile("!r:example.com"); p != nil {
+		t.Fatalf("empty profile must not be cached: %+v", p)
+	}
+	if _, ok := RoomProfileForPublish("!r:example.com"); ok {
+		t.Error("empty cached record must not publish")
+	}
+
+	fed := false
+	noteProfiles(map[string]*roomProfile{"!r:example.com": {Alias: strp("#dev:hs"), Federated: &fed}})
+	w, ok := RoomProfileForPublish("!r:example.com")
+	if !ok {
+		t.Fatal("alias alone should publish")
+	}
+	if w.Alias != "#dev:hs" || w.Federated == nil || *w.Federated {
+		t.Errorf("wire: %+v", w)
 	}
 }
 
@@ -567,6 +803,10 @@ func TestPublishPathsShareProfileSnapshot(t *testing.T) {
 		MemberCount: 9,
 	}})
 
+	w, ok := RoomProfileForPublish("!r:example.com")
+	if !ok {
+		t.Fatal("expected a publishable profile")
+	}
 	// This mirrors what pollLoop does per event.
 	m := map[string]any{
 		"type":         "m.room.message",
@@ -574,7 +814,7 @@ func TestPublishPathsShareProfileSnapshot(t *testing.T) {
 		"event_id":     "$e1",
 		"sender":       "@alice:example.com",
 		"content":      map[string]any{"body": "hi", "msgtype": "m.text"},
-		"room_profile": roomProfileForPublish("!r:example.com").wire(),
+		"room_profile": w,
 	}
 
 	raw, err := json.Marshal(m)
@@ -613,21 +853,30 @@ func TestPublishPathsShareProfileSnapshot(t *testing.T) {
 	}
 }
 
-// An event from a room we know nothing about must carry no profile at all,
-// rather than a pending placeholder.
-func TestPublishWithoutProfileOmitsKey(t *testing.T) {
+// room_profile is always present on the wire, even for a room we know nothing
+// about: subscribers must be able to rely on the key existing. It ships as an
+// empty object until a backfill provides something, and no pending placeholder
+// may leak.
+func TestPublishAlwaysIncludesRoomProfile(t *testing.T) {
 	withCleanProfiles(t, "http://hs")
 
 	m := map[string]any{"type": "m.room.message", "room_id": "!unknown:example.com"}
-	if roomProfileForPublish("!unknown:example.com") != nil {
-		t.Fatal("expected no profile for an unknown room")
+	w, ok := RoomProfileForPublish("!unknown:example.com")
+	if ok {
+		t.Fatal("expected no publishable profile for an unknown room")
 	}
+	m["room_profile"] = w // mirrors pollLoop: the zero wire is still published
 	raw, _ := json.Marshal(m)
 
 	var top map[string]json.RawMessage
 	json.Unmarshal(raw, &top)
-	if _, ok := top["room_profile"]; ok {
-		t.Errorf("unexpected room_profile on an unprofiled event: %s", raw)
+	v, ok := top["room_profile"]
+	if !ok {
+		t.Errorf("room_profile must always be present: %s", raw)
+	}
+	var wire fbshared.RoomProfileWire
+	if err := json.Unmarshal(v, &wire); err != nil {
+		t.Errorf("room_profile must parse as a wire: %s", raw)
 	}
 	if _, ok := top["pending"]; ok {
 		t.Errorf("pending marker must not be published: %s", raw)

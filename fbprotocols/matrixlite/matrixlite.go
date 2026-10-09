@@ -73,6 +73,21 @@ func pollLoop(baseURL, token, user, password string) {
 	// the publish path.
 	StartBackfillWorker()
 
+	// Retry sweep: rooms whose first backfill failed get re-queued once their
+	// cooldown lapses, without needing a fresh message to trigger them.
+	go func() {
+		t := time.NewTicker(roomProfileCooldown / 2)
+		defer t.Stop()
+		for range t.C {
+			muClient.Lock()
+			c := curClient
+			muClient.Unlock()
+			if c != nil {
+				sweepJoinedRooms(c)
+			}
+		}
+	}()
+
 	var state State
 	state.Load()
 
@@ -93,6 +108,13 @@ func pollLoop(baseURL, token, user, password string) {
 			time.Sleep(10 * time.Second)
 			continue
 		}
+
+		// One probe per (re)connection covers restore, token-refresh and
+		// password-login paths alike, and re-detects after server upgrades.
+		client.detectSummarySupport()
+		// Sweep once per connection so every joined room gets its profile even
+		// if it never carries a message after restart.
+		go sweepJoinedRooms(client)
 
 		muClient.Lock()
 		curClient = client
@@ -115,13 +137,15 @@ func pollLoop(baseURL, token, user, password string) {
 					if rid != "" {
 						log.Printf("matrixlite: event in room %s, msgtype %s", rid, rawEventMsgtype(m))
 					}
-					prof := roomProfileForPublish(rid)
-					if prof != nil {
-						// Injected into the raw map so the P2P payload carries it.
-						m["room_profile"] = prof.wire()
-					} else {
+					w, ok := RoomProfileForPublish(rid)
+					if !ok {
+						// room_profile is always published so subscribers can rely
+						// on the key existing; when we know nothing yet it ships as
+						// an empty object and the backfill path stays re-queued
+						// until the room has something publishable.
 						EnqueueBackfill(rid)
 					}
+					m["room_profile"] = w
 					// The member name is the attribute that matters, so it takes
 					// priority: presence rides along only when the server sends
 					// it. The key is omitted entirely when we know nothing,
@@ -378,12 +402,17 @@ func Redact(roomID, eventID, reason string) (fbshared.SendResult, error) {
 	return c.RedactMessage(roomID, eventID, reason)
 }
 
-// roomProfileForPublish returns the cached profile as a private snapshot, so
-// the publish path cannot observe a concurrent update from the backfill worker.
-// RoomProfile already copies; this wrapper exists to name the intent at the
-// call site and to keep the nil case obvious.
-func roomProfileForPublish(roomID string) *roomProfile {
-	return RoomProfile(roomID)
+// RoomProfileForPublish returns the publishable wire form of a room, mirroring
+// MemberProfileForPublish. The false return is what keeps room_profile from
+// ever being written as an empty object: a room we know nothing about — or one
+// whose last backfill came back empty or errored — gets no key at all and
+// stays eligible for another backfill.
+func RoomProfileForPublish(roomID string) (fbshared.RoomProfileWire, bool) {
+	p := RoomProfile(roomID)
+	if p == nil || !p.hasVisibleData() {
+		return fbshared.RoomProfileWire{}, false
+	}
+	return p.wire(), true
 }
 
 func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage, bool) {

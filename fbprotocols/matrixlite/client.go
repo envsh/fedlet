@@ -245,6 +245,42 @@ func (c *Client) detectSlidingSync() {
 	}
 }
 
+// detectSummarySupport probes whether the homeserver implements the MSC3266
+// /summary endpoint, memoizing the result per baseURL. The request is sent
+// without an access token on purpose: an empty "Bearer " header answers 401
+// from servers that auth first (which would misreport the route as supported),
+// while tchncs.de and other servers without the route answer 404
+// M_UNRECOGNIZED regardless. Anything other than an unrecognized route counts
+// as supported; the /state fallback in fetchRoomSummary is the safety net.
+func (c *Client) detectSummarySupport() {
+	const probePath = "/_matrix/client/v3/rooms/!probe:invalid/summary"
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+probePath, nil)
+	if err != nil {
+		setSummarySupport(c.baseURL, false)
+		return
+	}
+	hc := c.summaryClient
+	if hc == nil {
+		hc = c.hc
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		log.Printf("matrixlite: /summary probe: %v (using /state fallback)", err)
+		setSummarySupport(c.baseURL, false)
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var errResp struct {
+		ErrCode string `json:"errcode"`
+	}
+	json.Unmarshal(raw, &errResp)
+	supported := !(resp.StatusCode == http.StatusNotFound && errResp.ErrCode == "M_UNRECOGNIZED")
+	setSummarySupport(c.baseURL, supported)
+	log.Printf("matrixlite: /summary probe: status=%s errcode=%q supported=%v",
+		resp.Status, errResp.ErrCode, supported)
+}
+
 func (c *Client) Sync(timeout time.Duration) ([]map[string]any, error) {
 	if c.useSliding {
 		raws, err := c.slidingSync(timeout)
