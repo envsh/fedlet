@@ -56,10 +56,11 @@ const (
 	roomProfileTTL      = 7 * 24 * time.Hour
 	backfillQueueSize   = 64
 	summaryTimeout      = 35 * time.Second
-	// roomStateBodyCap bounds the /state fallback read. State arrays stay small
-	// for the rooms we care about; a giant list is a signal to fail, not to
-	// hold tens of megabytes in memory.
-	roomStateBodyCap = 4 << 20
+	// roomStateBodyCap bounds the /state fallback read. Giant rooms (bridged
+	// Telegram channels with tens of thousands of ghost members) still decode
+	// up to this cap; beyond it the whole array fails, so the cap is generous
+	// while the 35s summaryClient timeout still bounds memory and latency.
+	roomStateBodyCap = 8 << 20
 )
 
 // The cache is keyed by room ID and belongs to the account/homeserver rather
@@ -83,10 +84,10 @@ var (
 	// the channel from churning on unprofiled rooms and dropping later ones.
 	pendingRooms = map[string]struct{}{}
 
-	// summarySupportBy memoizes, per homeserver, whether the MSC3266 /summary
-	// endpoint exists. Some servers (conduwuit, some synapse builds) answer 404
-	// M_UNRECOGNIZED; without this we would starve every room of its profile
-	// and wait out cooldowns forever.
+	// summarySupportBy memoizes, per homeserver, whether the MSC3266
+	// /room_summary endpoint exists. Some servers (conduwuit, some synapse
+	// builds) answer 404 M_UNRECOGNIZED; without this we would starve every
+	// room of its profile and wait out cooldowns forever.
 	summarySupportMu sync.Mutex
 	summarySupportBy = map[string]bool{}
 
@@ -472,8 +473,8 @@ func profileFromStateEvents(raws []json.RawMessage) *roomProfile {
 	return p
 }
 
-// roomSummaryResp mirrors GET /_matrix/client/v3/rooms/{roomIdOrAlias}/summary
-// (MSC3266, stable since Matrix v1.5). Note the field names differ from the
+// roomSummaryResp mirrors GET /_matrix/client/v1/room_summary/{roomIdOrAlias}
+// (MSC3266, stable since Matrix v1.15). Note the field names differ from the
 // sliding-sync room object: avatar_url / num_joined_members rather than
 // avatar / joined_count.
 type roomSummaryResp struct {
@@ -697,7 +698,7 @@ func (c *Client) doSummaryRequest(method, fullURL string) (*http.Response, error
 // summaryOf is the MSC3266 path. It uses summaryClient because Client.hc has
 // deliberately no timeout (a shared one would abort the 30s /sync long poll).
 func (c *Client) summaryOf(roomID string) (*roomProfile, error) {
-	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/summary"
+	u := c.baseURL + "/_matrix/client/v1/room_summary/" + url.PathEscape(roomID)
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

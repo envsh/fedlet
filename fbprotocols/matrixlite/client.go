@@ -246,17 +246,20 @@ func (c *Client) detectSlidingSync() {
 }
 
 // detectSummarySupport probes whether the homeserver implements the MSC3266
-// /summary endpoint, memoizing the result per baseURL. The request is sent
-// without an access token on purpose: an empty "Bearer " header answers 401
-// from servers that auth first (which would misreport the route as supported),
-// while tchncs.de and other servers without the route answer 404
-// M_UNRECOGNIZED regardless. Anything other than an unrecognized route counts
-// as supported; the /state fallback in fetchRoomSummary is the safety net.
+// /room_summary endpoint (stable since Matrix v1.15), memoizing the result per
+// baseURL. The request is sent without an access token on purpose: an empty
+// "Bearer " header answers 401 from servers that auth first (which would
+// misreport the route as supported), while tchncs.de and other servers without
+// the route answer 404 M_UNRECOGNIZED regardless. Anything other than an
+// unrecognized route counts as supported; the /state fallback in
+// fetchRoomSummary is the safety net. A transport error (dial timeout, proxy,
+// DNS) is transient, never a verdict: it leaves the memo untouched so the next
+// connection re-probes instead of pinning the server as unsupported.
 func (c *Client) detectSummarySupport() {
-	const probePath = "/_matrix/client/v3/rooms/!probe:invalid/summary"
+	const probePath = "/_matrix/client/v1/room_summary/!probe:invalid"
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+probePath, nil)
 	if err != nil {
-		setSummarySupport(c.baseURL, false)
+		log.Printf("matrixlite: /summary probe: %v (keeping previous verdict)", err)
 		return
 	}
 	hc := c.summaryClient
@@ -265,8 +268,7 @@ func (c *Client) detectSummarySupport() {
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		log.Printf("matrixlite: /summary probe: %v (using /state fallback)", err)
-		setSummarySupport(c.baseURL, false)
+		log.Printf("matrixlite: /summary probe: %v (keeping previous verdict)", err)
 		return
 	}
 	defer resp.Body.Close()

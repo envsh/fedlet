@@ -23,7 +23,7 @@ const (
 	seedMemberLimit = 512
 	// memberBodyCap bounds the roster read. A room larger than this cannot
 	// decode, and resolveMember then falls back to the single-user path.
-	memberBodyCap = 8 << 20
+	memberBodyCap = 16 << 20
 	// memberProfileBodyCap bounds the per-user profile read, which is tiny.
 	memberProfileBodyCap = 64 << 10
 )

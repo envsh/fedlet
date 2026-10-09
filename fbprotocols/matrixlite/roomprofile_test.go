@@ -496,7 +496,7 @@ func TestProfilesPersistAcrossRestart(t *testing.T) {
 
 func TestFetchRoomSummaryMapsFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if want := "/_matrix/client/v3/rooms/" + "!r:example.com/summary"; r.URL.Path != want {
+		if want := "/_matrix/client/v1/room_summary/" + "!r:example.com"; r.URL.Path != want {
 			t.Errorf("path: got %q want %q", r.URL.Path, want)
 		}
 		w.Write([]byte(`{"room_id":"!r:example.com","name":"Project","topic":"dev",` +
@@ -580,13 +580,29 @@ func TestDetectSummarySupportSupported(t *testing.T) {
 	}
 }
 
+// A transport error is transient, never a verdict: the memo must keep whatever
+// it held before (unknown defaults to supported) so the next connect re-probes.
+func TestDetectSummarySupportTransportErrorKeepsVerdict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // subsequent requests fail at the transport layer
+	base := srv.URL
+	defer forgetSummarySupport(base)
+
+	prev := summarySupported(base)
+	c := &Client{baseURL: base, summaryClient: srv.Client()}
+	c.detectSummarySupport()
+	if got := summarySupported(base); got != prev {
+		t.Errorf("transport error changed verdict: before=%v after=%v", prev, got)
+	}
+}
+
 // The real fix: without /summary, room_profile still gets values, rebuilt from
 // the standard /state endpoint plus a joined_members count.
 func TestFetchRoomSummaryFallsBackToState(t *testing.T) {
 	withCleanProfiles(t, "http://hs")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/summary"):
+		case strings.HasSuffix(r.URL.Path, "/room_summary"):
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
 		case strings.HasSuffix(r.URL.Path, "/joined_members"):
