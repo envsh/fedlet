@@ -552,6 +552,15 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// C1: 本机未注册该 ctype，且集群无 peer 可转发 → 明确 400，
+	// 避免被下方 writeErr(..., 500) 压成难以定位的内部错误。
+	// 若仍有 peer，则保留既有的"转发给对端"路径(见下方 ForeachSend)。
+	if _, ok := ctypeRegistry[chatType]; !ok && len(getPeerList()) == 0 {
+		log.Printf("toxrestsim: unknown ctype=%q id=%q (no peers to forward)", chatType, idStr)
+		writeErrCode(w, fmt.Sprintf("unknown contact type %q", chatType), "unknown_ctype", http.StatusBadRequest)
+		return
+	}
+
 	simMu.Lock()
 	if len(simEvents) >= 512 {
 		simEvents = simEvents[len(simEvents)-511:]
@@ -645,4 +654,16 @@ func writeErr(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// writeErrCode 在 writeErr 基础上追加机器可读的 code 字段，
+// 让调用端无需解析 error 文本即可区分错误类别(如 unknown_ctype)。
+func writeErrCode(w http.ResponseWriter, msg, code string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	m := map[string]string{"error": msg}
+	if code != "" {
+		m["code"] = code
+	}
+	json.NewEncoder(w).Encode(m)
 }

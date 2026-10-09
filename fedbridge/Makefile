@@ -1,5 +1,5 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,sysinfo
+PROTO_TAGS = nowatchdog,sysinfo,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
 # noauth toutiao,weibo,coolapk,bdtieba(流量大),hongguo,
 TAGS = $(PROTO_TAGS)
 
