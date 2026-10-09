@@ -101,6 +101,35 @@ drained:
 	}
 }
 
+func TestEnqueueMemberDeduplicatesPending(t *testing.T) {
+	withCleanMembers(t, "http://hs")
+	for {
+		select {
+		case <-backfillCh:
+		default:
+			goto drained
+		}
+	}
+drained:
+	EnqueueMember("@u:example.com", "!r:example.com")
+	EnqueueMember("@u:example.com", "!r:example.com")
+	cnt := 0
+	for {
+		select {
+		case <-backfillCh:
+			cnt++
+		default:
+			if cnt != 1 {
+				t.Errorf("expected exactly 1 queued task, got %d", cnt)
+			}
+			memberMu.Lock()
+			delete(pendingMembers, "@u:example.com")
+			memberMu.Unlock()
+			return
+		}
+	}
+}
+
 func TestProfileFromStateEvents(t *testing.T) {
 	withCleanProfiles(t, "http://hs")
 

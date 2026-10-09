@@ -18,13 +18,16 @@ func withCleanMembers(t *testing.T, baseURL string) {
 	memberMu.Lock()
 	prevHost, prevMembers := memberHost, members
 	prevAttempts, prevSeeded := memberAttempts, seededRooms
+	prevPending := pendingMembers
 	memberHost, members = baseURL, map[string]*memberProfile{}
 	memberAttempts, seededRooms = map[string]time.Time{}, map[string]time.Time{}
+	pendingMembers = map[string]struct{}{}
 	memberMu.Unlock()
 	t.Cleanup(func() {
 		memberMu.Lock()
 		memberHost, members = prevHost, prevMembers
 		memberAttempts, seededRooms = prevAttempts, prevSeeded
+		pendingMembers = prevPending
 		memberMu.Unlock()
 	})
 }

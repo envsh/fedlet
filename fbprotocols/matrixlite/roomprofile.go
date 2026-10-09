@@ -55,7 +55,7 @@ const (
 	roomProfileCooldown = 10 * time.Minute
 	roomProfileTTL      = 7 * 24 * time.Hour
 	backfillQueueSize   = 64
-	summaryTimeout      = 15 * time.Second
+	summaryTimeout      = 35 * time.Second
 	// roomStateBodyCap bounds the /state fallback read. State arrays stay small
 	// for the rooms we care about; a giant list is a signal to fail, not to
 	// hold tens of megabytes in memory.
@@ -575,9 +575,19 @@ func EnqueueMember(userID, roomID string) {
 	if userID == "" {
 		return
 	}
+	memberMu.Lock()
+	if _, ok := pendingMembers[userID]; ok {
+		memberMu.Unlock()
+		return
+	}
+	pendingMembers[userID] = struct{}{}
+	memberMu.Unlock()
 	select {
 	case backfillCh <- backfillTask{kind: taskMember, id: userID, roomID: roomID}:
 	default:
+		memberMu.Lock()
+		delete(pendingMembers, userID)
+		memberMu.Unlock()
 		log.Printf("matrixlite: backfill queue full, dropping member %s", userID)
 	}
 }
@@ -659,6 +669,31 @@ func (c *Client) fetchRoomSummary(roomID string) (*roomProfile, error) {
 	return c.roomStateOf(roomID)
 }
 
+// doSummaryRequest is doRequest against the short-timeout summaryClient. Every
+// backfill read goes through it: a stalled homeserver must time out on a room
+// /state or /joined_members call rather than hang the single worker behind the
+// untimed hc forever.
+func (c *Client) doSummaryRequest(method, fullURL string) (*http.Response, error) {
+	hc := c.summaryClient
+	if hc == nil {
+		hc = c.hc
+	}
+	u := fullURL
+	if len(u) > 0 && u[0] == '/' {
+		u = c.baseURL + u
+	}
+	req, err := http.NewRequest(method, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, u, err)
+	}
+	c.setAuth(req)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, req.URL.String(), err)
+	}
+	return resp, nil
+}
+
 // summaryOf is the MSC3266 path. It uses summaryClient because Client.hc has
 // deliberately no timeout (a shared one would abort the 30s /sync long poll).
 func (c *Client) summaryOf(roomID string) (*roomProfile, error) {
@@ -700,7 +735,7 @@ func (c *Client) summaryOf(roomID string) (*roomProfile, error) {
 // topping up the member count from /joined_members when that route works.
 func (c *Client) roomStateOf(roomID string) (*roomProfile, error) {
 	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/state"
-	resp, err := c.doRequest(http.MethodGet, u, nil)
+	resp, err := c.doSummaryRequest(http.MethodGet, u)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +770,7 @@ func (c *Client) roomStateOf(roomID string) (*roomProfile, error) {
 // whole profile.
 func (c *Client) joinedCountOf(roomID string) (int, error) {
 	u := c.baseURL + "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/joined_members"
-	resp, err := c.doRequest(http.MethodGet, u, nil)
+	resp, err := c.doSummaryRequest(http.MethodGet, u)
 	if err != nil {
 		return 0, err
 	}
@@ -770,12 +805,7 @@ func (c *Client) isAuthErr(err error) bool {
 // again after a restart.
 func (c *Client) joinedRooms() ([]string, error) {
 	u := c.baseURL + "/_matrix/client/v3/joined_rooms"
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setAuth(req)
-	resp, err := c.hc.Do(req)
+	resp, err := c.doSummaryRequest(http.MethodGet, u)
 	if err != nil {
 		return nil, err
 	}

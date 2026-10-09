@@ -45,6 +45,11 @@ var (
 	// seededRooms records rooms we already pulled a roster for, so the first
 	// unknown sender in a known room costs nothing.
 	seededRooms = map[string]time.Time{}
+
+	// pendingMembers are users already queued for (or being) resolved. The
+	// publish path must not re-enqueue the same unknown sender on every
+	// message; dedupe keeps the channel from churning on unprofiled users.
+	pendingMembers = map[string]struct{}{}
 )
 
 // memberProfile is one user's attributes, shared across every room. Matrix
@@ -348,6 +353,14 @@ type memberProfileResp struct {
 	AvatarURL   string `json:"avatar_url"`
 }
 
+// clearMemberPending drops a user's dedupe flag once the queued task has been
+// consumed, so a later message from the same sender can enqueue them again.
+func clearMemberPending(userID string) {
+	memberMu.Lock()
+	delete(pendingMembers, userID)
+	memberMu.Unlock()
+}
+
 // resolveMember brings one unknown sender's attributes in, preferring a single
 // room-wide seed over a per-user fetch. It takes the client the way backfillOne
 // does, since the worker outlives any one login.
@@ -355,6 +368,7 @@ func resolveMember(userID, roomID string) {
 	if userID == "" || memberKnown(userID) {
 		return
 	}
+	defer clearMemberPending(userID)
 	// Record the attempt up front: a member who never set a display name would
 	// otherwise be re-requested on every message they send.
 	if !memberAttemptAllowed(userID) {
