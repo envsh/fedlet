@@ -292,8 +292,11 @@ func TestCollectBatteryRuleEOnError(t *testing.T) {
 	errs := newErrCollector()
 	collectBattery(snap, errs)
 
-	if len(snap.Battery) != 0 {
-		t.Errorf("rule E: battery must stay empty, got %d rows", len(snap.Battery))
+	if len(snap.Battery) != 1 {
+		t.Errorf("rule E: want one sentinel row, got %d", len(snap.Battery))
+	}
+	if len(snap.Battery) > 0 && snap.Battery[0].Present != TriUnknown {
+		t.Errorf("sentinel present = %d, want -1 (unknown)", snap.Battery[0].Present)
 	}
 	list := errs.String()
 	if list == nil {
@@ -322,9 +325,13 @@ func TestCollectBatteryNoBatteryPresent(t *testing.T) {
 	errs := newErrCollector()
 	collectBattery(snap, errs)
 
-	if len(snap.Battery) != 0 {
-		t.Errorf("no-battery: got %d rows, want empty array", len(snap.Battery))
+	if len(snap.Battery) != 1 {
+		t.Errorf("no-battery: got %d rows, want one sentinel", len(snap.Battery))
 	}
+	if len(snap.Battery) > 0 && snap.Battery[0].Present != TriNo {
+		t.Errorf("sentinel present = %d, want 0 (absent)", snap.Battery[0].Present)
+	}
+	// errors[] semantics are unchanged: the no-battery entry must still be here.
 	if list := errs.String(); list == nil || list[0] != "battery: no battery present" {
 		t.Errorf("want 'battery: no battery present', got %v", list)
 	}

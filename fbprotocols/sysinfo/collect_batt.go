@@ -5,8 +5,9 @@
 // first error. This file owns the shared shape of that list: indexing, the
 // "no battery" rule-E case and the sentinel defaults every field starts from.
 //
-// There is deliberately no -1 placeholder row: a desktop or a VM without a
-// battery publishes Battery = [] plus an errors[] entry saying so.
+// Battery is the one section that is never allowed to be empty, so every path
+// that has no real battery appends exactly one sentinel row (present:0 when
+// absent, -1 when unreadable) on top of the errors[] entry, which is unchanged.
 package sysinfo
 
 // readBatteriesFn is an indirection point so the battery section can be tested
@@ -19,11 +20,13 @@ func collectBattery(s *Snapshot, errs *errCollector) {
 	if err != nil {
 		// Rule E: the platform could not be queried at all.
 		errs.Add("battery", err.Error())
+		s.Battery = append(s.Battery, absentBattery(TriUnknown))
 		return
 	}
 	if len(bats) == 0 {
 		// Rule E: a machine that genuinely has no battery (desktop, VM, board).
 		errs.Add("battery", "no battery present")
+		s.Battery = append(s.Battery, absentBattery(TriNo))
 		return
 	}
 	for i := range bats {
@@ -50,6 +53,16 @@ func invalidBattery() BatteryInfo {
 		Voltage:       InvalidNum,
 		Temperature:   InvalidNum,
 	}
+}
+
+// absentBattery is the row published when there is no battery to report. Its
+// scalars are all the -1 sentinel; present carries the reason: TriNo when the
+// machine genuinely has no battery, TriUnknown when the reader failed and
+// presence could not be determined. Index is filled by collectBattery.
+func absentBattery(present int) BatteryInfo {
+	b := invalidBattery()
+	b.Present = present
+	return b
 }
 
 // healthPercent derives health_percent from a full-charged/design-capacity
