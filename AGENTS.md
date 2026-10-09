@@ -6,7 +6,7 @@ Federated messaging bridge: ingests messages from multiple chat/IM protocols and
 
 ```
 fedbridge/         — Main Go app (entrypoint: main.go). Build with:
-                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo
+                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo,sysinfo
 fbprotocols/       — Protocol backend Go packages
   emailimap/       IMAP email polling (most mature)
   irccloud/        IRCCloud integration
@@ -18,6 +18,7 @@ fbprotocols/       — Protocol backend Go packages
   hongguo/         Hongguo drama hot board (hongguoduanju.com/category/real-drama; anonymous, no session; extracts embedded _ROUTER_DATA JSON — see hotlist.go + hotlist_test.go)
   coolapk/         Coolapk 酷安 hot board + digest feed (anonymous, weak X-App-Token sign)
   weibo/           Hot boards (realtime/hotgov/band; anonymous via ajax/side/hotSearch)
+  sysinfo/         Host metrics sampler (battery/disk/cpu/mem/load/net/temp/io) — local only, no credentials; 123s interval, see README.md
   nostr/ misskey/ mailchat/ discordpy/ toxoverclib/  — planned/stubs (mostly empty)
 fedpubhttp/        — HTTP-to-P2P publishing utility (Go package + shell script)
 curlrq/            — V language module: parallel HTTP via libcurl (c2v bindings)
@@ -29,7 +30,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 - **fedbridge** is the primary binary. Build from _within_ `fedbridge/`:
   ```
-  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk
+  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,sysinfo
   ```
   Tags are how protocols are selected; omit tags to exclude backends.
   Pre-built binaries: `main.gz` (20MB), `main` (32MB), `main.full` (42MB).
@@ -38,7 +39,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 ## Architecture quirks
 
-- **Backend registration**: Each protocol in `fedbridge/*.go` uses `//go:build <tag>` + `init()` that appends to `var starters []func()`. `main.go` iterates `starters`. To add a new protocol, create a new file with the build tag guard and append to `starters`.
+- **Backend registration**: Each protocol ships as `fedbridge/<tag>.go` guarded by `//go:build <tag>`, which declares `var _ = RegisterProtocol(&ProtocolInfo{...})` with `StartFn` (optionally `StopFn`, `statusFn`) — see `fedbridge/hongguo.go` and `fedbridge/bdtieba.go` for the template, and `fedbridge/protocolreg.go:46` for `RegisterProtocol`. Flags are registered in a local `init()` under the same build tag (e.g. `-sysinfo-interval`). `main.go` calls `StartFn` for every registered protocol. To add a protocol: copy a template file, change the tag, and expose `SetPublishInfo/Start/IsRunning/ConnectedSince/LastErrs/AuthStatus` from the backend package.
 - **Publish routing**: Messages can go via HTTP POST to `http://127.0.0.1:4004/p2pin/send?topic=...` (default) or directly to libp2p via `p2put.PublishTopic`. Controlled by `publishViaHTTP` in `main.go`.
 - **Config files**: IMAP state persists to `~/.config/fedlet/imap-state.json`.
 - **Server**: The bridge listens on `:4004` with default HTTP handlers.
@@ -46,7 +47,8 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 ## Hard constraints
 
 - **Do NOT import `github.com/microsoftgraph/msgraph-sdk-go`** — it causes Go compiler memory exhaustion and OOM (confirmed in readme.md). The `outlookgraph` protocol avoids this; use it as reference.
-- The root `go.mod` has minimal deps (go-imap, gorilla/websocket, x/text). Most heavy deps (libp2p, nostr, etc.) live in `fedbridge/go.mod`.
+- The root `go.mod` has few deps (go-imap, gorilla/websocket, x/text plus `gopsutil/v4` + `howett.net/plist` for `fbprotocols/sysinfo`). Most heavy deps (libp2p, nostr, etc.) live in `fedbridge/go.mod`.
+- `gopsutil/v4` must stay pinned at **v4.24.12**: v4.25.x+ raises `go.mod` to `go 1.23.0` and forces a toolchain upgrade.
 - `fedbridge/go.mod` uses `replace github.com/envsh/fedlet => ../` for local development.
 
 ## Language notes

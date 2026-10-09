@@ -20,7 +20,14 @@
 	发布统一为"条目原样转发":各协议把列表中的单条原始 JSON 条目逐条发布,
 	并在每个条目顶级(0级)插入 proto_type(协议/来源类型)与 cycle_count(本轮条数),
 	见 fbshared.InsertFlatFields(fbprotocols/fbshared/listmsg.go)。
-	已生效协议:toutiao / zhihu / bilibili / xhs / weibo / bdtieba。
+	已生效协议:toutiao / zhihu / bilibili / xhs / weibo / bdtieba / sysinfo。
+	sysinfo 是唯一的本机采集后端(fbprotocols/sysinfo/),不拉取任何外部数据:
+	每 123s 采一次全机快照(host/cpu/mem/load/disk/io/net/temp/battery),整份
+	序列化为**一条**发布(不是逐条转发列表),仍带顶级 proto_type=sysinfo /
+	cycle_count=1(一轮一条)。build tag `sysinfo`,flag `-sysinfo-interval`,
+	状态仅存 ~/.config/fedlet/sysinfo-state.json(只记 last_ok_at + 最近3条错误,
+	不存指标)。数值取不到一律 -1(非 0)、bool 用 -1/0/1 三态、整类缺失(台式机
+	无电池/VM 无温度)发空数组 + errors[] 说明原因,详见其 README.md。
 	weibo 协议另有 Rust 版二次实现(fbprotocols/weibo/weibo_rs lib,
 	Cargo.toml+weibo.rs+hotlist.rs 平铺、无 src/ 子目录),行为与 Go 版一致
 	(条目原样转发 + 顶级 proto_type=weibo_hot/cycle_count),但 Go 与 Rust 两份

@@ -1,5 +1,5 @@
 BINARY = main
-PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs,sysinfo
 # noauth toutiao,weibo,coolapk,bdtieba(流量大),hongguo,
 TAGS = $(PROTO_TAGS)
 
@@ -34,11 +34,11 @@ noproto: TAGS := nowatchdog
 noproto: all
 
 # about 28M
-min: TAGS := nodht,nopubsub,nowatchdog
+min: TAGS := nodht,nopubsub,nowatchdog,sysinfo
 min: all
 
 # about 28M, with noauth proto
-min2: TAGS := nodht,nopubsub,nowatchdog,toutiao,weibo,coolapk,hongguo
+min2: TAGS := nodht,nopubsub,nowatchdog,sysinfo,toutiao,weibo,coolapk,hongguo
 min2: all
 
 NDK_DIR = /opt/android-ndk
@@ -82,11 +82,11 @@ a64:
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(AARCH64_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(AARCH64_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog -o $(BINARY).arm64
+	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo -o $(BINARY).arm64
 
 a32:
 	CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(ARMV7_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(ARMV7_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog -o $(BINARY).arm32
+	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo -o $(BINARY).arm32

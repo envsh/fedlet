@@ -149,6 +149,13 @@ var knownProtocols = []struct {
 		{"misskey-timeline", "timeline", false},
 		{"misskey-token", "token", true},
 	}},
+	{"sysinfo-interval", "sysinfo", "Host metrics (sysinfo)", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"sysinfo-interval", "interval", false},
+	}},
 }
 
 func handleProtocols(w http.ResponseWriter, r *http.Request) {
