@@ -133,6 +133,7 @@ type messageData struct {
 	FolderName       string   `json:"folderName"`
 	HasAttachments   bool     `json:"hasAttachments"`
 	Size             int64    `json:"size,omitempty"`
+	URL              string   `json:"url,omitempty"`
 	AccountID        string   `json:"account_id"`
 	AccountName      string   `json:"account_name"`
 }
@@ -189,6 +190,7 @@ type rawMsg struct {
 	BodyPreview      *string `json:"bodyPreview"`
 	ReceivedDateTime *string `json:"receivedDateTime"`
 	HasAttachments   *bool   `json:"hasAttachments"`
+	WebLink          *string `json:"webLink"`
 	Body             *struct {
 		Content     *string `json:"content"`
 		ContentType *string `json:"contentType"`
@@ -288,7 +290,7 @@ func getChildFolders(ctx context.Context, token, parentID string) ([]folderInfo,
 }
 
 func initDeltaSync(ctx context.Context, token, folderID string) (string, error) {
-	url := graphAPI + "/me/mailFolders/" + folderID + "/messages/delta?$select=id,subject,from,toRecipients,bodyPreview,receivedDateTime,hasAttachments"
+	url := graphAPI + "/me/mailFolders/" + folderID + "/messages/delta?$select=id,subject,from,toRecipients,bodyPreview,receivedDateTime,hasAttachments,webLink"
 	var deltaLink string
 	for url != "" {
 		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -363,6 +365,9 @@ func pollDelta(ctx context.Context, token, deltaLink string) ([]messageData, str
 			}
 			if m.HasAttachments != nil {
 				msg.HasAttachments = *m.HasAttachments
+			}
+			if m.WebLink != nil {
+				msg.URL = *m.WebLink
 			}
 			if m.From != nil && m.From.EmailAddress != nil && m.From.EmailAddress.Address != nil {
 				msg.From = *m.From.EmailAddress.Address
@@ -553,6 +558,9 @@ func poll(cfg Config) {
 			for _, m := range msgs {
 				m.FolderID = folders[i].ID
 				m.FolderName = folders[i].Name
+				if m.URL == "" {
+					m.URL = "https://outlook.office.com/mail/" + url.PathEscape(m.FolderID) + "/id/" + url.PathEscape(m.ID)
+				}
 				if sz, err := fetchMessageSize(ctx, token, m.ID); err != nil {
 					log.Printf("outlook: %s: size fetch %s: %v", folders[i].Name, m.ID, err)
 				} else {
@@ -622,8 +630,12 @@ func LastErrs() []error {
 }
 
 func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
+	text := m.BodyPreview
+	if m.URL != "" {
+		text = m.URL + "\n" + text
+	}
 	um := fbshared.UnifiedMessage{
-		Text:      m.BodyPreview,
+		Text:      text,
 		MsgFormat: fbshared.FmtText,
 		Protocol:  fbshared.ProtoOutlookGraph,
 		ChatID:    m.FolderID,

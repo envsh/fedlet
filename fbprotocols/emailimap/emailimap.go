@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,21 +60,23 @@ type messageData struct {
 	FolderID         string   `json:"folderId"`
 	FolderName       string   `json:"folderName"`
 	Charset          string   `json:"charset"`
+	URL              string   `json:"url,omitempty"`
 	AccountID        string   `json:"account_id"`
 	AccountName      string   `json:"account_name"`
 }
 
 type stateData struct {
-	Folders map[string]uint32 `json:"folders"`
+	Folders  map[string]uint32 `json:"folders"`
+	UIDValid map[string]uint32 `json:"uidvalidity,omitempty"`
 }
 
 var (
-	publishFn func(any) error
-	muSend    sync.Mutex
-	smtpAddr  string
-	smtpUser  string
-	smtpPass  string
-	mailFrom  string
+	publishFn   func(any) error
+	muSend      sync.Mutex
+	smtpAddr    string
+	smtpUser    string
+	smtpPass    string
+	mailFrom    string
 	accountId   string
 	accountName string
 )
@@ -147,6 +150,9 @@ func loadState() *stateData {
 	json.Unmarshal(data, &s)
 	if s.Folders == nil {
 		s.Folders = make(map[string]uint32)
+	}
+	if s.UIDValid == nil {
+		s.UIDValid = make(map[string]uint32)
 	}
 	return &s
 }
@@ -374,6 +380,10 @@ func poll(username, password, server string, dirs []string) {
 	statusConnectedSince.Store(time.Now())
 	defer statusRunning.Store(false)
 	log.Printf("emailimap: connecting to %s", server)
+	host, port, splitErr := net.SplitHostPort(server)
+	if splitErr != nil {
+		host, port = server, "143"
+	}
 
 	c, err := client.DialTLS(server, nil)
 	if err != nil {
@@ -407,10 +417,12 @@ func poll(username, password, server string, dirs []string) {
 	for _, dir := range dirs {
 		log.Printf("emailimap: syncing %s", dir)
 
-		if _, err := c.Select(dir, true); err != nil {
+		st, err := c.Select(dir, true)
+		if err != nil {
 			log.Printf("emailimap: select %s: %v", dir, err)
 			continue
 		}
+		state.UIDValid[dir] = uint32(st.UidValidity)
 
 		lastUID := state.Folders[dir]
 		var uids []uint32
@@ -447,6 +459,7 @@ func poll(username, password, server string, dirs []string) {
 		if len(uids) > 0 {
 			msgs := fetchMessages(c, uids, dir)
 			for _, m := range msgs {
+				m.URL = imapMessageURL(accountId, host, port, dir, state.UIDValid[dir], m.ID)
 				b, _ := json.Marshal(m)
 				if err := publish(m); err != nil {
 					log.Println("emailimap: publish error:", err)
@@ -494,9 +507,11 @@ func poll(username, password, server string, dirs []string) {
 		}
 
 		for _, dir := range dirs {
-			if _, err := c.Select(dir, true); err != nil {
+			st, err := c.Select(dir, true)
+			if err != nil {
 				continue
 			}
+			state.UIDValid[dir] = uint32(st.UidValidity)
 
 			lastUID := state.Folders[dir]
 			if lastUID == 0 {
@@ -526,6 +541,7 @@ func poll(username, password, server string, dirs []string) {
 
 			msgs := fetchMessages(c, uids, dir)
 			for _, m := range msgs {
+				m.URL = imapMessageURL(accountId, host, port, dir, state.UIDValid[dir], m.ID)
 				if err := publish(m); err != nil {
 					log.Println("emailimap: publish error:", err)
 				}
@@ -614,6 +630,14 @@ func fetchMessages(c *client.Client, uids []uint32, folder string) []messageData
 	}
 
 	return result
+}
+
+func imapMessageURL(u, host, port, mailbox string, validity uint32, uid string) string {
+	b := "imap://" + url.PathEscape(u) + "@" + host + ":" + port + "/" + url.PathEscape(mailbox)
+	if validity > 0 {
+		b += ";UIDVALIDITY=" + fmt.Sprintf("%d", validity)
+	}
+	return b + "/;UID=" + uid
 }
 
 func addrString(a *imap.Address) string {
@@ -852,8 +876,12 @@ func LastErrs() []error {
 }
 
 func (m *messageData) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
+	text := m.BodyPreview
+	if m.URL != "" {
+		text = m.URL + "\n" + text
+	}
 	um := fbshared.UnifiedMessage{
-		Text:      m.BodyPreview,
+		Text:      text,
 		HTML:      m.BodyHtml,
 		MsgFormat: fbshared.FmtText,
 		Protocol:  fbshared.ProtoEmailImap,
