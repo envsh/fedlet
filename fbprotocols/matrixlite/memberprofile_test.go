@@ -419,3 +419,75 @@ func TestMemberAttemptsAreNotPersisted(t *testing.T) {
 		t.Errorf("throttle state leaked into the persisted state: %s", raw)
 	}
 }
+
+func TestMemberIdentityPredicate(t *testing.T) {
+	withCleanMembers(t, "http://hs")
+
+	if memberHasIdentity("@ghost:hs") {
+		t.Error("unknown user must not report identity")
+	}
+
+	noteMember(&memberProfile{UserID: "@p:hs", Presence: "offline"})
+	if memberHasIdentity("@p:hs") {
+		t.Error("presence alone must not count as identity")
+	}
+
+	noteMember(&memberProfile{UserID: "@n:hs", DisplayName: strp("N")})
+	if !memberHasIdentity("@n:hs") {
+		t.Error("display name must count as identity")
+	}
+
+	noteMember(&memberProfile{UserID: "@a:hs", AvatarURL: strp("mxc://hs/a")})
+	if !memberHasIdentity("@a:hs") {
+		t.Error("avatar must count as identity")
+	}
+}
+
+func TestMemberPresenceOnlyStillResolvesName(t *testing.T) {
+	withCleanMembers(t, "http://hs")
+	withCleanProfiles(t, "http://hs")
+
+	// Name-less but presence-known, exactly like the observed bridge sender.
+	harvestPresenceEvent(json.RawMessage(
+		`{"type":"m.presence","sender":"@tg:hs","content":{"presence":"offline"}}`))
+	if memberHasIdentity("@tg:hs") {
+		t.Fatal("precondition: presence-only cache entry must lack identity")
+	}
+
+	// Large-room path: over the seed limit, so resolution is a direct per-user
+	// profile fetch — the path hit by the 13k-member telegram room.
+	profileMu.Lock()
+	profiles["!big:hs"] = &roomProfile{MemberCount: seedMemberLimit + 1}
+	profileMu.Unlock()
+
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Write([]byte(`{"displayname":"TG Name","avatar_url":"mxc://hs/tg"}`))
+	}))
+	defer srv.Close()
+
+	prev := curClient
+	curClient = &Client{baseURL: srv.URL, hc: srv.Client(), summaryClient: srv.Client()}
+	t.Cleanup(func() { curClient = prev })
+
+	resolveMember("@tg:hs", "!big:hs")
+
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if got == 0 {
+		t.Fatal("presence-only sender must still trigger a profile fetch")
+	}
+
+	w, ok := MemberProfileForPublish("@tg:hs")
+	if !ok {
+		t.Fatal("expected a publishable profile")
+	}
+	if w.DisplayName != "TG Name" || w.AvatarURL != "mxc://hs/tg" || w.Presence != "offline" {
+		t.Errorf("name/avatar did not merge onto the presence entry: %+v", w)
+	}
+}

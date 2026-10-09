@@ -228,10 +228,18 @@ func restoreMembers(in map[string]*memberProfile) {
 	}
 }
 
-// memberKnown reports whether we already hold a publishable profile.
-func memberKnown(userID string) bool {
-	_, ok := MemberProfileForPublish(userID)
-	return ok
+// memberHasIdentity reports whether the cached profile already carries a
+// name-bearing attribute (display name or avatar). Presence alone does not
+// count: a user known only by presence still needs a resolution attempt.
+func memberHasIdentity(userID string) bool {
+	memberMu.Lock()
+	defer memberMu.Unlock()
+	p := members[userID]
+	if p == nil {
+		return false
+	}
+	return (p.DisplayName != nil && *p.DisplayName != "") ||
+		(p.AvatarURL != nil && *p.AvatarURL != "")
 }
 
 // memberAttemptAllowed reports whether a fetch may run now, and records the
@@ -365,7 +373,7 @@ func clearMemberPending(userID string) {
 // room-wide seed over a per-user fetch. It takes the client the way backfillOne
 // does, since the worker outlives any one login.
 func resolveMember(userID, roomID string) {
-	if userID == "" || memberKnown(userID) {
+	if userID == "" || memberHasIdentity(userID) {
 		return
 	}
 	defer clearMemberPending(userID)

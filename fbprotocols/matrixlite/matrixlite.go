@@ -153,7 +153,8 @@ func pollLoop(baseURL, token, user, password string) {
 					if sender, _ := m["sender"].(string); sender != "" {
 						if sp, ok := MemberProfileForPublish(sender); ok {
 							m["sender_profile"] = sp
-						} else {
+						}
+						if !memberHasIdentity(sender) {
 							EnqueueMember(sender, rid)
 						}
 					}

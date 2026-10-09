@@ -39,7 +39,7 @@ func poll_demopub() {
 	// var channel_name = "v2ex"
 
 	for i := 0; ; i++ {
-		time.Sleep(35 * time.Second) // many nodes pub xN msgs
+		time.Sleep(135 * time.Second) // many nodes pub xN msgs
 		scc := fmt.Sprintf(`{"vvv": "ddddddd %v", "virtip4": "%s", "peerid7": "%s"}`, i, virtIP(), peerID7())
 		err := publish("demopub", channel_name, json.RawMessage(scc))
 		if err != nil {
