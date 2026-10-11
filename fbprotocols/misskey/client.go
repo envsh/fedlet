@@ -116,17 +116,24 @@ func apiPost(host, endpoint string, body, out any) error {
 }
 
 type noteCreateResp struct {
-	ID string `json:"id"`
+	ID          string `json:"id"`
+	CreatedNote struct {
+		ID string `json:"id"`
+	} `json:"createdNote"`
 }
 
-func SendNote(host, token, text, visibility string, fileIds []string) (string, error) {
+func SendNote(host, token, text, visibility string, visibleUserIds, fileIds []string) (string, error) {
 	var resp noteCreateResp
 	err := apiPost(host, "notes/create", noteCreateReq{
-		I:          token,
-		Text:       text,
-		Visibility: visibility,
-		FileIds:    fileIds,
+		I:              token,
+		Text:           text,
+		Visibility:     visibility,
+		VisibleUserIds: visibleUserIds,
+		FileIds:        fileIds,
 	}, &resp)
+	if resp.ID == "" { // misskey@>=13 返回 createdNote.id,旧版返回顶层 id
+		resp.ID = resp.CreatedNote.ID
+	}
 	return resp.ID, err
 }
 

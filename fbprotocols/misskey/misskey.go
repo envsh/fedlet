@@ -136,18 +136,47 @@ func pollLoop() {
 	}
 }
 
+// validVisibilities 为 Misskey notes/create 的可见性白名单。
+var validVisibilities = map[string]bool{
+	"public":    true,
+	"home":      true,
+	"followers": true,
+	"specified": true,
+}
+
+// resolveVisibility 确定 note 可见性。
+// 优先级:extra.Visibility 显式字段 → 兼容旧约定的 to 关键词 → 默认 home;
+// 非白名单显式值直接报错,不再静默降级。
+func resolveVisibility(to string, extra *fbshared.SendExtra) (string, error) {
+	v := "home"
+	if extra != nil && extra.Visibility != "" {
+		v = extra.Visibility
+	} else if validVisibilities[to] {
+		v = to
+	}
+	if !validVisibilities[v] {
+		return "", fmt.Errorf("misskey: unsupported visibility %q (want public/home/followers/specified)", v)
+	}
+	return v, nil
+}
+
 func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
-	_ = extra
 	if msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: empty message")
 	}
 	if len(filedata) > 0 && fileinfo == nil {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: filedata present but fileinfo is nil")
 	}
-	visibility := "home"
-	switch to {
-	case "public", "home", "followers", "specified":
-		visibility = to
+	visibility, err := resolveVisibility(to, extra)
+	if err != nil {
+		return fbshared.SendResult{}, err
+	}
+	var visibleUserIds []string
+	if visibility == "specified" {
+		if extra == nil || len(extra.RelatesTo) == 0 {
+			return fbshared.SendResult{}, fmt.Errorf("misskey: specified visibility requires relates_to recipients")
+		}
+		visibleUserIds = extra.RelatesTo
 	}
 	muClient.Lock()
 	host, token := curHost, curToken
@@ -168,7 +197,7 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 		fileIds = []string{fileID}
 	}
 	log.Printf("misskey: sending [%s]: %s", visibility, truncate(msg, 80))
-	noteID, err := SendNote(host, token, msg, visibility, fileIds)
+	noteID, err := SendNote(host, token, msg, visibility, visibleUserIds, fileIds)
 	if err == nil {
 		log.Printf("misskey: sent note_id=%s", noteID)
 	}

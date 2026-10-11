@@ -194,6 +194,9 @@ func ForeachSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbsh
 			if len(extra.Mentions) > 0 {
 				w.WriteField("mentions", strings.Join(extra.Mentions, ","))
 			}
+			if extra.Visibility != "" {
+				w.WriteField("visibility", extra.Visibility)
+			}
 		}
 		if len(filedata) > 0 {
 			filename := "file"

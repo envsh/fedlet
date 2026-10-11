@@ -27,10 +27,11 @@ type Note struct {
 }
 
 type noteCreateReq struct {
-	I          string   `json:"i"`
-	Text       string   `json:"text"`
-	Visibility string   `json:"visibility"`
-	FileIds    []string `json:"fileIds,omitempty"`
+	I              string   `json:"i"`
+	Text           string   `json:"text"`
+	Visibility     string   `json:"visibility"`
+	VisibleUserIds []string `json:"visibleUserIds,omitempty"`
+	FileIds        []string `json:"fileIds,omitempty"`
 }
 
 type DriveFile struct {

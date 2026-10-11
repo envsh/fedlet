@@ -529,17 +529,22 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	message := r.FormValue("message")
 	sendTTL := r.FormValue("ttl") // foreachSend ttl+1
 
+	visibility := strings.TrimSpace(r.FormValue("visibility"))
 	var extra *fbshared.SendExtra
 	if strings.TrimSpace(r.FormValue("relates_to")) != "" ||
-		strings.TrimSpace(r.FormValue("mentions")) != "" {
+		strings.TrimSpace(r.FormValue("mentions")) != "" ||
+		visibility != "" {
 		extra = &fbshared.SendExtra{
-			RelatesTo: splitCommaCSV(r.FormValue("relates_to")),
-			Mentions:  splitCommaCSV(r.FormValue("mentions")),
+			RelatesTo:  splitCommaCSV(r.FormValue("relates_to")),
+			Mentions:   splitCommaCSV(r.FormValue("mentions")),
+			Visibility: visibility,
 		}
 	}
 	var rt, mt []string
+	var vz string
 	if extra != nil {
 		rt, mt = extra.RelatesTo, extra.Mentions
+		vz = extra.Visibility
 	}
 
 	if message == "" && len(fileData) > 0 {
@@ -576,8 +581,8 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	simEvents = append(simEvents, e)
 	simMu.Unlock()
 
-	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q file=%q event_id=%d relates_to=%v mentions=%v",
-		chatType, idStr, message, fileName, e.ID, rt, mt)
+	log.Printf("toxrestsim: POST /api/messages/send type=%q id=%q message=%q visibility=%q file=%q event_id=%d relates_to=%v mentions=%v",
+		chatType, idStr, message, vz, fileName, e.ID, rt, mt)
 
 	res, err := DispatchSend(chatType, idStr, message, chatType, fileData, fileInfo, extra)
 	if err != nil {
