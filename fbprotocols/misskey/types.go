@@ -34,6 +34,11 @@ type noteCreateReq struct {
 	FileIds        []string `json:"fileIds,omitempty"`
 }
 
+type noteDeleteReq struct {
+	I      string `json:"i"`
+	NoteId string `json:"noteId"`
+}
+
 type DriveFile struct {
 	ID string `json:"id"`
 }

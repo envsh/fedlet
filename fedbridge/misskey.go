@@ -19,6 +19,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Ctypes:     []string{TypeMisskeyNote},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     misskey.Send,
+	RedactFn:   misskey.Redact,
 	StartFn:    func() { misskey.Start(misskeyHost, misskeyToken, misskeyTimeline) },
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{

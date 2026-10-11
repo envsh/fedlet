@@ -204,6 +204,26 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	return fbshared.SendResult{MsgID: noteID}, err
 }
 
+// Redact 删除本账号的 note。to 为目标身份标识,Misskey 删除仅需 note_id,故不使用;
+// reason 也被 notes/delete 忽略,仅记日志备查。
+func Redact(to, noteID, reason string) (fbshared.SendResult, error) {
+	if noteID == "" {
+		return fbshared.SendResult{}, fmt.Errorf("misskey: empty note id")
+	}
+	muClient.Lock()
+	host, token := curHost, curToken
+	muClient.Unlock()
+	if host == "" || token == "" {
+		return fbshared.SendResult{}, fmt.Errorf("misskey: not configured")
+	}
+	log.Printf("misskey: deleting note_id=%s reason=%q", noteID, reason)
+	if err := DeleteNote(host, token, noteID); err != nil {
+		return fbshared.SendResult{}, err
+	}
+	log.Printf("misskey: deleted note_id=%s", noteID)
+	return fbshared.SendResult{MsgID: noteID}, nil
+}
+
 func stateFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

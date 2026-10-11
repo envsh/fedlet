@@ -137,6 +137,16 @@ func SendNote(host, token, text, visibility string, visibleUserIds, fileIds []st
 	return resp.ID, err
 }
 
+func DeleteNote(host, token, noteID string) error {
+	if noteID == "" {
+		return fmt.Errorf("misskey: empty noteID")
+	}
+	if err := apiPost(host, "notes/delete", noteDeleteReq{I: token, NoteId: noteID}, nil); err != nil {
+		return fmt.Errorf("misskey: note delete: %w", err)
+	}
+	return nil
+}
+
 func timelineEndpoint(timeline string) string {
 	if timeline == "home" || timeline == "" {
 		return "notes/timeline"
