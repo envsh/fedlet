@@ -14,6 +14,7 @@
 * fbprotocols 不同fed/nonfed协议后端消息源
     matrix/nostr/misskey/tox/tg/...
     irccloud无法连接非irc.irccloud.com的服务端！！！没法用
+    免费帐号 add-server 受限(connecting_restricted)时代码回退 add-default-server
 	github.com/microsoftgraph/msgraph-sdk-go/models 编译该包内存炸了，有问题
 	不要引入该包。
 	本协议组实现,注重拉取与透明转发消息,不做二次格式化.这样客户端只处理标准消息格式即可.

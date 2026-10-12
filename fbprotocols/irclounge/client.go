@@ -17,11 +17,13 @@ type Client struct {
 }
 
 type authPerformData struct {
-	User     string `json:"user"`
-	Password string `json:"password"`
+	User        string `json:"user"`
+	Password    string `json:"password"`
+	LastMessage int64  `json:"lastMessage,omitempty"`
+	OpenChannel int    `json:"openChannel,omitempty"`
 }
 
-func Connect(serverURL, user, password string) (*Client, error) {
+func Connect(serverURL, user, password string, lastMessage int64) (*Client, error) {
 	eio, err := DialEio(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("engine.io: %w", err)
@@ -35,7 +37,7 @@ func Connect(serverURL, user, password string) (*Client, error) {
 		done:   make(chan struct{}),
 	}
 
-	if err := c.auth(user, password); err != nil {
+	if err := c.auth(user, password, lastMessage); err != nil {
 		eio.Close()
 		return nil, err
 	}
@@ -45,7 +47,7 @@ func Connect(serverURL, user, password string) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) auth(user, password string) error {
+func (c *Client) auth(user, password string, lastMessage int64) error {
 	if err := c.sio.SendConnect(); err != nil {
 		return fmt.Errorf("socket.io connect: %w", err)
 	}
@@ -67,8 +69,9 @@ func (c *Client) auth(user, password string) error {
 		switch ev.Name {
 		case "auth:start":
 			if err := c.sio.Emit("auth:perform", authPerformData{
-				User:     user,
-				Password: password,
+				User:        user,
+				Password:    password,
+				LastMessage: lastMessage,
 			}); err != nil {
 				return fmt.Errorf("auth:perform emit: %w", err)
 			}
@@ -129,10 +132,17 @@ func (c *Client) RunCommand(channelID int, text string) error {
 	return c.SendMessage(channelID, text)
 }
 
-func (c *Client) Join(channel string) error {
+func (c *Client) Join(lobbyID int, channel string) error {
 	return c.sio.Emit("input", map[string]interface{}{
-		"target": nil,
+		"target": lobbyID,
 		"text":   "/join " + channel,
+	})
+}
+
+func (c *Client) RequestMore(channelID, lastID int) error {
+	return c.sio.Emit("more", map[string]interface{}{
+		"target": channelID,
+		"lastId": lastID,
 	})
 }
 

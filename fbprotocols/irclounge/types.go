@@ -63,16 +63,17 @@ type Message struct {
 }
 
 type Channel struct {
-	ID       int        `json:"id"`
-	Name     string     `json:"name"`
-	Topic    string     `json:"topic"`
-	Type     ChanType   `json:"type"`
-	State    ChanState  `json:"state"`
-	Unread   int        `json:"unread"`
-	Muted    bool       `json:"muted"`
-	Key      string     `json:"key,omitempty"`
-	Users    []User     `json:"users,omitempty"`
-	Messages []Message  `json:"messages,omitempty"`
+	ID            int       `json:"id"`
+	Name          string    `json:"name"`
+	Topic         string    `json:"topic"`
+	Type          ChanType  `json:"type"`
+	State         ChanState `json:"state"`
+	Unread        int       `json:"unread"`
+	TotalMessages int       `json:"totalMessages"`
+	Muted         bool      `json:"muted"`
+	Key           string    `json:"key,omitempty"`
+	Users         []User    `json:"users,omitempty"`
+	Messages      []Message `json:"messages,omitempty"`
 }
 
 type Network struct {
@@ -101,6 +102,12 @@ type Event struct {
 type InitData struct {
 	Active   int       `json:"active"`
 	Networks []Network `json:"networks"`
+}
+
+type moreEvent struct {
+	Chan          int       `json:"chan"`
+	Messages      []Message `json:"messages"`
+	TotalMessages int       `json:"totalMessages"`
 }
 
 type NetworkConfig struct {

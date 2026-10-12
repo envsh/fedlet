@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 const demoServer = "https://demo.thelounge.chat"
@@ -22,7 +24,7 @@ func TestDialEio(t *testing.T) {
 }
 
 func TestFullConnect(t *testing.T) {
-	client, err := Connect(demoServer, "", "")
+	client, err := Connect(demoServer, "", "", 0)
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -363,5 +365,139 @@ func TestSplit2(t *testing.T) {
 		if len(got) != 2 || got[0] != tt.want[0] || got[1] != tt.want[1] {
 			t.Errorf("split2(%q,%q) = %v, want %v", tt.input, tt.sep, got, tt.want)
 		}
+	}
+}
+
+func TestLoungeUnifiedTypeMapping(t *testing.T) {
+	tests := []struct {
+		in   MessageType
+		want string
+	}{
+		{MsgMessage, fbshared.MsgTypeCreate},
+		{MsgNotice, fbshared.MsgTypeCreate},
+		{MsgAction, "action"},
+		{MsgJoin, fbshared.MsgTypeJoin},
+		{MsgPart, fbshared.MsgTypeLeave},
+		{MsgQuit, fbshared.MsgTypeLeave},
+		{MsgKick, fbshared.MsgTypeLeave},
+		{MsgTopic, fbshared.MsgTypeCreate},
+	}
+	for _, tt := range tests {
+		if got := loungeUnifiedMsgType(tt.in); got != tt.want {
+			t.Errorf("loungeUnifiedMsgType(%s) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestEmitLoungeDedup(t *testing.T) {
+	seenMu.Lock()
+	seenIDs = make(map[int]struct{})
+	maxSeenID = 0
+	seenMu.Unlock()
+
+	if !markSeen(42) {
+		t.Fatal("first markSeen(42) should be true")
+	}
+	if markSeen(42) {
+		t.Fatal("second markSeen(42) should be false")
+	}
+	if !markSeen(43) {
+		t.Fatal("markSeen(43) should be true")
+	}
+	if maxSeen() != 43 {
+		t.Fatalf("maxSeen() = %d, want 43", maxSeen())
+	}
+}
+
+func TestLoungeMessageToUnified(t *testing.T) {
+	raw := []byte(`{"chan":5,"msg":{"id":1,"from":{"nick":"alice"},"text":"hi","type":"message","time":"2024-01-01T00:00:00Z"}}`)
+	msg := Message{ID: 1, From: &UserInMessage{Nick: "alice"}, Text: "hi", Type: MsgMessage, Time: "2024-01-01T00:00:00Z"}
+	um, ok := loungeMessageToUnified(msg, 5, raw)
+	if !ok {
+		t.Fatal("expected ok for non-empty message")
+	}
+	if um.ChatID != "5" || um.Username != "alice" || um.Text != "hi" || um.MsgType != fbshared.MsgTypeCreate {
+		t.Fatalf("unexpected unified: %+v", um)
+	}
+	empty := Message{ID: 2, Type: MsgMessage}
+	if _, ok := loungeMessageToUnified(empty, 5, nil); ok {
+		t.Fatal("expected empty create message to be dropped")
+	}
+	j := Message{ID: 3, Type: MsgJoin}
+	uj, ok := loungeMessageToUnified(j, 5, nil)
+	if !ok || uj.MsgType != fbshared.MsgTypeJoin {
+		t.Fatal("expected empty join to be published with join type")
+	}
+}
+
+func TestParseMoreEvent(t *testing.T) {
+	data := []byte(`{"chan":5,"messages":[{"id":10,"from":{"nick":"a"},"text":"x","type":"message"},{"id":11,"from":{"nick":"b"},"text":"y","type":"message"}],"totalMessages":50}`)
+	var ev moreEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		t.Fatalf("unmarshal more: %v", err)
+	}
+	if ev.Chan != 5 || len(ev.Messages) != 2 || ev.TotalMessages != 50 {
+		t.Fatalf("unexpected moreEvent: %+v", ev)
+	}
+	if ev.Messages[0].ID != 10 || ev.Messages[1].ID != 11 {
+		t.Fatalf("unexpected messages: %+v", ev.Messages)
+	}
+}
+
+func TestInitMessagesParse(t *testing.T) {
+	data := []byte(`{"active":5,"networks":[{"uuid":"u1","name":"Libera","nick":"me","channels":[{"id":5,"name":"#x","type":"channel","totalMessages":3,"messages":[{"id":1,"text":"a","type":"message"},{"id":2,"text":"b","type":"message"},{"id":3,"text":"c","type":"message"}]}]}]}`)
+	var initData InitData
+	if err := json.Unmarshal(data, &initData); err != nil {
+		t.Fatalf("unmarshal init: %v", err)
+	}
+	if len(initData.Networks) != 1 || len(initData.Networks[0].Channels) != 1 {
+		t.Fatalf("unexpected networks: %+v", initData)
+	}
+	ch := initData.Networks[0].Channels[0]
+	if ch.TotalMessages != 3 || len(ch.Messages) != 3 {
+		t.Fatalf("unexpected channel: %+v", ch)
+	}
+}
+
+func TestSetPrimaryNetwork(t *testing.T) {
+	lobbyMu.Lock()
+	primaryLobbyID = 0
+	netConnected = false
+	lobbyMu.Unlock()
+
+	net := Network{
+		Channels: []Channel{
+			{ID: 7, Name: "Libera", Type: ChanLobby},
+			{ID: 8, Name: "#x", Type: ChanChannel},
+		},
+		Status: NetworkStatus{Connected: true},
+	}
+	setPrimaryNetwork(net)
+
+	lobbyMu.Lock()
+	gotLobby, gotConnected := primaryLobbyID, netConnected
+	lobbyMu.Unlock()
+	if gotLobby != 7 {
+		t.Fatalf("primaryLobbyID = %d, want 7", gotLobby)
+	}
+	if !gotConnected {
+		t.Fatalf("netConnected = false, want true")
+	}
+}
+
+func TestFlushPendingJoinsGated(t *testing.T) {
+	lobbyMu.Lock()
+	primaryLobbyID = 0
+	netConnected = false
+	pendingJoins = []string{"#x"}
+	lobbyMu.Unlock()
+
+	flushPendingJoins(nil)
+
+	lobbyMu.Lock()
+	n := len(pendingJoins)
+	lobbyMu.Unlock()
+	if n != 1 {
+		t.Fatalf("pendingJoins len = %d, want 1 (still queued while disconnected)", n)
 	}
 }

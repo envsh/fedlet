@@ -76,8 +76,14 @@ go test -v -timeout 60s ./fbprotocols/irclounge/
   - `TestFullConnect`：完整连接 demo.thelounge.chat，验证收到 init 事件
 - 集成测试用 `demo.thelounge.chat`（public 模式），无需凭据
 
+## 历史拉取
+
+- 处理 `msg` / `more` / `init` 三类事件，逐条发布 raw 事件 + unified 消息
+- 按 `msg.id` 去重（有界内存 `seenIDs`），过滤 `self` 自回显
+- `init` 频道内嵌 `messages` 全量发布；`totalMessages` 大于已收条数时经 `more` 请求继续回填，每频道上限 `maxMoreBatchesPerChan`（5）页
+- 重连时 `auth:perform` 携带 `lastMessage`（取自 `maxSeenID`）避免重投重复
+- 消息类型映射：join→`join`，part/quit/kick→`leave`，action→`action`，其余→`create`
+
 ## 待办
 
-- 注册 `fedbridge/` 入口（`//go:build irclounge` + `init()` 追加到 `starters`）
 - private 模式认证集成测试（需本地 Lounge 实例）
-- 消息类型扩展解析（join/part/quit/nick/topic/channel:state/names 等）

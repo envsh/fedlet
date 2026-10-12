@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>小红书登录 - fedlet</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:620px;margin:3rem auto;padding:0 1rem;color:#222}
+h1{font-size:1.3rem}
+.card{border:1px solid #ddd;border-radius:10px;padding:1.2rem;margin:1rem 0}
+.qrimg{width:220px;height:220px;border:1px solid #eee;border-radius:8px}
+input{padding:.5rem;width:100%;box-sizing:border-box;margin:.3rem 0;border:1px solid #ccc;border-radius:6px}
+button{padding:.55rem 1.4rem;border:0;border-radius:6px;background:#ff2442;color:#fff;cursor:pointer;margin-top:.5rem}
+button.blue{background:#0d69d5}
+#state{font-weight:600}
+.err{color:#b00020}
+pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;border-radius:6px}
+.slider{max-width:100%}
+.hint{color:#666;font-size:.85rem}
+</style>
+</head>
+<body>
+<h1>小红书登录 / 风控验证(fedlet xhs)</h1>
+<div class="card">
+<p id="state">初始化…</p>
+<div id="qrbox" style="display:none">
+  <img class="qrimg" id="qr" alt="QR">
+  <p>用 <b>小红书 App</b> 的「扫一扫」登录;<br>或手机浏览器打开:<pre id="qrl"></pre></p>
+</div>
+<div id="userbox" style="display:none">登录成功:<b id="user"></b></div>
+<div id="failed" class="err" style="display:none"></div>
+</div>
+<div class="card" id="riskcard" style="display:none">
+<h2>风控验证</h2>
+<p class="hint" id="riskhint"></p>
+<p id="riskmsg"></p>
+<div id="riskqr" style="display:none">
+  <p>检测到安全验证。请用 <b>小红书 App</b>「扫一扫」验证(二次验证二维码):</p>
+  <img class="qrimg" id="riskqr_img" alt="verify QR">
+  <pre id="riskqr_url"></pre>
+</div>
+<div id="riskslider" style="display:none">
+  <p>滑块验证:请<a id="riskslider_bg_link" href="#" target="_blank" rel="noopener">打开原图</a>查看方向,在原页面完成后点下方按钮继续。</p>
+</div>
+<button class="blue" id="riskbtn" onclick="riskContinue()">已完成验证,继续发送请求</button>
+</div>
+<div class="card">
+<h2>手机号 + 验证码</h2>
+<div id="phoneform">
+  <input id="phone" type="tel" placeholder="手机号" autocomplete="tel">
+  <button onclick="sendCode()">发送验证码</button>
+</div>
+<div id="codeform" style="display:none">
+  <input id="code" type="text" placeholder="验证码" autocomplete="one-time-code">
+  <button onclick="doVerify()">登录</button>
+</div>
+<p id="phonemsg" class="err" style="display:none;white-space:pre-wrap"></p>
+</div>
+<div class="card">
+<h2>Cookie 登录(从浏览器复制)</h2>
+<details>
+<summary style="cursor:pointer;color:#0d69d5">点击展开:获取方法</summary>
+<ol style="font-size:.9rem;color:#555;line-height:1.6">
+<li>电脑浏览器打开 <b>xiaohongshu.com</b> 并登录</li>
+<li>F12 打开开发者工具 → <b>Application</b> → <b>Cookies</b> → <code>xiaohongshu.com</code></li>
+<li>找到并复制以下字段的值:</li>
+<ul>
+<li><b>a1</b>(必填) — 签名所需的浏览器指纹 cookie</li>
+<li><b>web_session</b>(必填) — 登录会话令牌</li>
+<li><b>web_session_sec</b>(可选) — 安全会话 cookie</li>
+<li><b>webId</b>(可选) — 浏览器标识</li>
+</ul>
+<li>注意:Cookie 有效期有限,过期后需重新获取</li>
+</ol>
+</details>
+<div id="cookieform">
+  <input id="cookie_a1" type="text" placeholder="a1(必填)" autocomplete="off">
+  <input id="cookie_session" type="text" placeholder="web_session(必填)" autocomplete="off">
+  <input id="cookie_sec" type="text" placeholder="web_session_sec(可选)" autocomplete="off">
+  <input id="cookie_webid" type="text" placeholder="webId(可选)" autocomplete="off">
+  <button class="blue" onclick="cookieLogin()">使用 Cookie 登录</button>
+</div>
+<p id="cookiemsg" class="err" style="display:none;white-space:pre-wrap"></p>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const stage_txt={'idle':'准备二维码…','waiting':'等待扫码…','scanned':'已扫码,确认中…','done':'登录成功','expired':'二维码已过期,请刷新页面','failed':'登录失败'};
+async function poll(){
+  try{
+    const r=await fetch('/api/state');const s=await r.json();
+    $('state').textContent=stage_txt[s.stage]||s.stage;
+    if(s.qr_code_url){$('qrbox').style.display='';$('qr').src=s.qr_code_url;$('qrl').textContent=s.qr_url;}
+    if(s.stage==='done'){ $('qrbox').style.display='none';$('userbox').style.display='';$('user').textContent=s.user||'';}
+    if(s.stage==='failed'){ $('failed').style.display='';$('failed').textContent=s.error||'未知错误';}
+    renderRisk(s.risk);
+  }catch(e){}
+}
+function renderRisk(rk){
+  if(!rk){ $('riskcard').style.display='none'; return; }
+  $('riskcard').style.display='';
+  $('riskhint').textContent='请求被风控拦截(HTTP '+rk.status+' · Captcha '+rk.type+')';
+  $('riskmsg').textContent='';
+  let hasQR=false,hasSlide=false;
+  if(rk.verify_qr_code_url){hasQR=true;$('riskqr').style.display='';$('riskqr_img').src=rk.verify_qr_code_url;$('riskqr_url').textContent=rk.verify_qr_url;}
+  if(rk.slider_bg){hasSlide=true;$('riskslider').style.display='';$('riskslider_bg_link').href=rk.slider_bg;}
+  if(!hasQR&&!hasSlide){$('riskmsg').textContent='未生成验证二维码(需手动在浏览器完成验证后继续)。';}
+}
+async function riskContinue(){
+  await fetch('/api/risk/continue',{method:'POST'});
+  $('riskcard').style.display='none';
+}
+async function sendCode(){
+  const phone=$('phone').value.trim();
+  const r=await fetch('/api/phone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const j=await r.json();
+  if(j.ok){ $('phoneform').style.display='none';$('codeform').style.display='';$('phonemsg').style.display='none';
+  } else { $('phonemsg').style.display='';$('phonemsg').textContent='发送验证码失败:\n'+j.error; }
+}
+async function doVerify(){
+  const phone=$('phone').value.trim(),code=$('code').value.trim();
+  const r=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
+  const j=await r.json();
+  if(j.ok){ $('phoneform').style.display='none';$('codeform').style.display='none';$('phonemsg').style.display='none';
+  } else { $('phonemsg').style.display='';$('phonemsg').textContent='登录失败:\n'+j.error; }
+}
+poll();setInterval(poll,1500);
+async function cookieLogin(){
+  const a1=$('cookie_a1').value.trim(),web_session=$('cookie_session').value.trim();
+  const web_session_sec=$('cookie_sec').value.trim(),webId=$('cookie_webid').value.trim();
+  const msg=$('cookiemsg'); msg.style.display='none';
+  if(!a1||!web_session){ msg.style.display=''; msg.textContent='a1 和 web_session 为必填项'; return; }
+  try{
+    const body={a1,web_session};
+    if(web_session_sec) body.web_session_sec=web_session_sec;
+    if(webId) body.webId=webId;
+    const r=await fetch('/api/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(j.ok){
+      $('cookieform').style.display='none'; msg.style.display='none';
+      $('qrbox').style.display='none'; $('phoneform').style.display='none'; $('codeform').style.display='none';
+      $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||'';
+    } else { msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+j.error; }
+  }catch(e){ msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+(e&&e.message||'网络错误'); }
+}
+</script>
+</body>
+</html>
+
