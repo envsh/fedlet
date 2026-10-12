@@ -1,6 +1,6 @@
 module github.com/envsh/fedlet
 
-go 1.22.1
+go 1.25.9
 
 require (
 	github.com/emersion/go-imap v1.2.1

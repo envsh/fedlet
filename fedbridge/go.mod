@@ -3,7 +3,7 @@
 // making it unimportable. See https://github.com/golang/go/issues/28514.
 module fedbridge
 
-go 1.22.1
+go 1.25.9
 
 // require github.com/envsh/toxera/p2put v0.0.0
 
