@@ -22,14 +22,16 @@ func publish(v any) error {
 	return pubfn_(v)
 }
 
+const maxBacklogPages = 5
+
 var (
-	pubfn_        func([]byte) error
+	pubfn_        func(any) error
 	muIrc         sync.Mutex
 	ircClient     *Client
 	ircSessionKey string
 )
 
-func SetPublishInfo(pubfn func([]byte) error) {
+func SetPublishInfo(pubfn func(any) error) {
 	pubfn_ = pubfn
 }
 
@@ -98,6 +100,14 @@ func Start(info string) {
 	go poll_irccloud(info)
 }
 
+type bufferInfo struct {
+	cid      int
+	name     string
+	bufType  string
+	minEID   uint64
+	deferred bool
+}
+
 type streamState struct {
 	lastEID        uint64
 	streamID       string
@@ -106,17 +116,26 @@ type streamState struct {
 	serverMap      map[string]int
 	pendingJoins   map[int][]string
 	serversChecked bool
+
+	seenMu       sync.Mutex
+	seenEIDs     map[int]map[uint64]struct{}
+	bids         map[int]bufferInfo
+	backlogPages map[int]int
 }
 
 func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 	var h struct {
 		Type string `json:"type"`
+		BID  int    `json:"bid"`
 		EID  uint64 `json:"eid"`
 	}
 	json.Unmarshal(msg, &h)
 
 	if h.EID > st.lastEID {
 		st.lastEID = h.EID
+	}
+	if !st.markSeen(h.BID, h.EID) {
+		return
 	}
 
 	switch h.Type {
@@ -177,9 +196,6 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 			} else {
 				for oobMsg := range oobCh {
 					st.processMessage(oobMsg, cl, cfg)
-					if err := publish(json.RawMessage(oobMsg)); err != nil {
-						log.Println("OOB publish error:", err)
-					}
 				}
 			}
 		}
@@ -191,16 +207,21 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 
 	case "set_shard":
 		var sh struct {
-			APIHost string `json:"api_host"`
-			Cookie  string `json:"cookie"`
+			APIHost       string `json:"api_host"`
+			WebsocketHost string `json:"websocket_host"`
+			Cookie        string `json:"cookie"`
 		}
 		json.Unmarshal(msg, &sh)
 		if sh.Cookie != "" {
 			st.sessionKey = sh.Cookie
 		}
-		if sh.APIHost != "" {
-			log.Println("IRCCloud switching to shard:", sh.APIHost)
-			cl.SetBaseURL(sh.APIHost)
+		host := sh.APIHost
+		if host == "" && sh.WebsocketHost != "" {
+			host = "https://" + sh.WebsocketHost
+		}
+		if host != "" {
+			log.Println("IRCCloud switching to shard:", host)
+			cl.SetBaseURL(host)
 		}
 
 	case "idle":
@@ -208,17 +229,42 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 
 	case "buffer_msg", "buffer_me_msg":
 		var body struct {
-			From string `json:"from"`
-			Chan string `json:"chan"`
-			To   string `json:"to"`
-			Msg  string `json:"msg"`
+			From      string `json:"from"`
+			Chan      string `json:"chan"`
+			To        string `json:"to"`
+			Msg       string `json:"msg"`
+			Self      bool   `json:"self"`
+			Highlight bool   `json:"highlight"`
 		}
 		if err := json.Unmarshal(msg, &body); err == nil {
 			target := body.Chan
 			if target == "" {
 				target = body.To
 			}
-			log.Printf("<%s> <%s> %s", target, body.From, body.Msg)
+			log.Printf("<%s> <%s> %s self=%v hl=%v", target, body.From, body.Msg, body.Self, body.Highlight)
+		}
+
+	case "makebuffer":
+		var mb struct {
+			CID        int    `json:"cid"`
+			BID        int    `json:"bid"`
+			BufferType string `json:"buffer_type"`
+			Name       string `json:"name"`
+			Deferred   bool   `json:"deferred"`
+			Timeout    bool   `json:"timeout"`
+			MinEID     uint64 `json:"min_eid"`
+		}
+		if err := json.Unmarshal(msg, &mb); err == nil {
+			st.bids[mb.BID] = bufferInfo{
+				cid:      mb.CID,
+				name:     mb.Name,
+				bufType:  mb.BufferType,
+				minEID:   mb.MinEID,
+				deferred: mb.Deferred || mb.Timeout,
+			}
+			if mb.Deferred || mb.Timeout {
+				st.pullBacklog(cl, cfg, mb.CID, mb.BID, mb.MinEID)
+			}
 		}
 
 	case "channel_init":
@@ -240,6 +286,56 @@ func (st *streamState) processMessage(msg []byte, cl *Client, cfg *AppConfig) {
 	um, ok := irccloudMsgToUnified(msg)
 	if ok {
 		publish(um)
+	}
+}
+
+func (st *streamState) markSeen(bid int, eid uint64) bool {
+	if bid == 0 || eid == 0 {
+		return true
+	}
+	st.seenMu.Lock()
+	defer st.seenMu.Unlock()
+	m := st.seenEIDs[bid]
+	if m == nil {
+		m = make(map[uint64]struct{})
+		st.seenEIDs[bid] = m
+	}
+	if _, ok := m[eid]; ok {
+		return false
+	}
+	m[eid] = struct{}{}
+	return true
+}
+
+func (st *streamState) pullBacklog(cl *Client, cfg *AppConfig, cid, bid int, minEID uint64) {
+	if st.backlogPages[bid] >= maxBacklogPages {
+		return
+	}
+	beforeID := 0
+	for st.backlogPages[bid] < maxBacklogPages {
+		st.backlogPages[bid]++
+		ch, err := cl.Backlog(st.sessionKey, cid, bid, 50, beforeID)
+		if err != nil {
+			log.Printf("irccloud backlog bid=%d: %v", bid, err)
+			return
+		}
+		earliest := uint64(0)
+		n := 0
+		for line := range ch {
+			var e struct {
+				EID uint64 `json:"eid"`
+			}
+			json.Unmarshal(line, &e)
+			if e.EID > 0 && (earliest == 0 || e.EID < earliest) {
+				earliest = e.EID
+			}
+			st.processMessage(line, cl, cfg)
+			n++
+		}
+		if n == 0 || earliest == 0 || earliest <= minEID {
+			return
+		}
+		beforeID = int(earliest)
 	}
 }
 
@@ -352,10 +448,10 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 
 	addServer := func() (int, error) {
 		return cl.AddServer(st.sessionKey, ServerParams{
-			Hostname: "irc.freenode.net",
+			Hostname: "irc.libera.chat",
 			Port:     6697,
 			SSL:      true,
-			Netname:  "Freenode",
+			Netname:  "Libera.Chat",
 			Nickname: "fedlet",
 			Realname: "fedlet",
 		})
@@ -400,7 +496,7 @@ func (st *streamState) checkServers(cl *Client, cfg *AppConfig) {
 			return
 		}
 	}
-	log.Printf("added server irc.freenode.net → cid %d", cid)
+	log.Printf("added server irc.libera.chat → cid %d", cid)
 	st.pendingJoins[cid] = cfg.Channels
 }
 
@@ -421,6 +517,9 @@ func poll_irccloud(info string) {
 	state := &streamState{
 		serverMap:    make(map[string]int),
 		pendingJoins: make(map[int][]string),
+		seenEIDs:     make(map[int]map[uint64]struct{}),
+		bids:         make(map[int]bufferInfo),
+		backlogPages: make(map[int]int),
 	}
 
 	for {
@@ -473,6 +572,7 @@ func poll_irccloud(info string) {
 			state.processMessage(msg, cl, cfg)
 		}
 		log.Println("IRCCloud stream disconnected after", time.Since(connStart))
+		statusReconnTimes.Add(1)
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -518,36 +618,74 @@ func LastErrs() []error {
 func irccloudMsgToUnified(msg []byte) (fbshared.UnifiedMessage, bool) {
 	var h struct {
 		Type string `json:"type"`
+		CID  int    `json:"cid"`
+		BID  int    `json:"bid"`
 		EID  uint64 `json:"eid"`
+		Chan string `json:"chan"`
+		From string `json:"from"`
+		Nick string `json:"nick"`
+		Msg  string `json:"msg"`
+		Self bool   `json:"self"`
 	}
-	json.Unmarshal(msg, &h)
+	if json.Unmarshal(msg, &h) != nil {
+		return fbshared.UnifiedMessage{}, false
+	}
 
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoIRCCloud,
 		MsgID:     strconv.FormatUint(h.EID, 10),
 		MsgType:   h.Type,
 		Timestamp: time.Now().UnixNano(),
+		Raw:       msg,
+	}
+	if h.EID > 0 {
+		um.Timestamp = time.Unix(0, int64(h.EID)*1000).UnixNano()
 	}
 
-	if h.Type != "buffer_msg" && h.Type != "buffer_me_msg" {
-		return um, false
+	target := h.Chan
+	if h.CID != 0 && target != "" {
+		um.ChatID = strconv.Itoa(h.CID) + ":" + target
 	}
+	um.ChatName = target
 
-	var body struct {
-		From string `json:"from"`
-		Chan string `json:"chan"`
-		Msg  string `json:"msg"`
-	}
-	if json.Unmarshal(msg, &body) == nil {
-		um.Username = body.From
-		um.UserID = body.From
-		um.ChatName = body.Chan
-		um.Text = body.Msg
+	switch h.Type {
+	case "buffer_msg", "buffer_me_msg", "notice":
+		if h.Self {
+			return um, false
+		}
+		um.Username = h.From
+		um.UserID = h.From
+		um.Text = h.Msg
 		um.MsgFormat = fbshared.FmtText
+		if h.Type == "buffer_me_msg" {
+			um.MsgType = "action"
+		}
+		return um, true
+
+	case "joined_channel":
+		if h.Self {
+			return um, false
+		}
+		um.Username = h.Nick
+		um.UserID = h.Nick
+		um.MsgType = fbshared.MsgTypeJoin
+		um.Text = h.Nick + " joined"
+		um.MsgFormat = fbshared.FmtText
+		return um, true
+
+	case "parted_channel", "kicked_channel", "quit":
+		if h.Self {
+			return um, false
+		}
+		um.Username = h.Nick
+		um.UserID = h.Nick
+		um.MsgType = fbshared.MsgTypeLeave
+		um.Text = h.Nick + " left"
+		um.MsgFormat = fbshared.FmtText
+		return um, true
 	}
 
-	um.Raw = msg
-	return um, true
+	return um, false
 }
 
 func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
@@ -572,6 +710,9 @@ func Send(to, msg, msgType string, filedata []byte, _ *fbshared.MediaDataInfo, e
 	cid, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return fbshared.SendResult{}, fmt.Errorf("irccloud: invalid cid %q: %w", parts[0], err)
+	}
+	if msgType == "action" && !strings.HasPrefix(msg, "/") {
+		msg = "/me " + msg
 	}
 	return fbshared.SendResult{}, cl.Say(sk, cid, parts[1], msg)
 }
