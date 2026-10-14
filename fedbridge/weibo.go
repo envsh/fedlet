@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/weibo"
@@ -11,6 +12,10 @@ import (
 var (
 	weiboInterval = 60 * time.Second
 )
+
+func init() {
+	flag.DurationVar(&weiboInterval, "weibo-interval", 60*time.Second, "poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "weibo",

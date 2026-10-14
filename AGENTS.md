@@ -6,7 +6,7 @@ Federated messaging bridge: ingests messages from multiple chat/IM protocols and
 
 ```
 fedbridge/         — Main Go app (entrypoint: main.go). Build with:
-                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo
+                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo,bdtieba,bilibili,irccloud,irclounge,matrixlite
 fbprotocols/       — Protocol backend Go packages
   emailimap/       IMAP email polling (most mature)
   irccloud/        IRCCloud integration
@@ -30,7 +30,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 - **fedbridge** is the primary binary. Build from _within_ `fedbridge/`:
   ```
-  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk
+  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo,bdtieba,bilibili,irccloud,irclounge,matrixlite
   ```
   Tags are how protocols are selected; omit a tag to exclude its backend.
   Exception: `sysinfo` has no build tag and is always compiled.

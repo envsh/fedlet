@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/hongguo"
@@ -11,6 +12,10 @@ import (
 var (
 	hongguoInterval = 600 * time.Second
 )
+
+func init() {
+	flag.DurationVar(&hongguoInterval, "hongguo-interval", 600*time.Second, "poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "hongguo",

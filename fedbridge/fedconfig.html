@@ -72,6 +72,29 @@ const GROUPS = [
     {flag:'misskey',label:'instance'},{flag:'misskey-timeline',label:'timeline'},
     {flag:'misskey-token',label:'token',secret:true}]},
   {label:'Host metrics (sysinfo)', items:[{flag:'sysinfo-interval',label:'interval'}]},
+  {label:'Bilibili', items:[
+    {flag:'bilibili-hot',label:'热门'},{flag:'bilibili-notify',label:'通知'},
+    {flag:'bilibili-interval',label:'热门间隔'},{flag:'bilibili-notify-interval',label:'通知间隔'}]},
+  {label:'Coolapk', items:[
+    {flag:'coolapk-hot',label:'热门'},{flag:'coolapk-news',label:'动态'},
+    {flag:'coolapk-interval',label:'热门间隔'},{flag:'coolapk-notify-interval',label:'动态间隔'}]},
+  {label:'Hongguo', items:[{flag:'hongguo-interval',label:'轮询间隔'}]},
+  {label:'Toutiao', items:[
+    {flag:'toutiao-hot',label:'热门'},{flag:'toutiao-news',label:'实时'},
+    {flag:'toutiao-interval',label:'热门间隔'},{flag:'toutiao-notify-interval',label:'实时间隔'}]},
+  {label:'Weibo', items:[{flag:'weibo-interval',label:'轮询间隔'}]},
+  {label:'XHS', items:[
+    {flag:'xhs-hot',label:'热门'},{flag:'xhs-notify',label:'通知'},
+    {flag:'xhs-interval',label:'热门间隔'},{flag:'xhs-notify-interval',label:'通知间隔'}]},
+  {label:'Zhihu', items:[
+    {flag:'zhihu-hot',label:'热门'},{flag:'zhihu-notify',label:'通知'},
+    {flag:'zhihu-interval',label:'热门间隔'},{flag:'zhihu-notify-interval',label:'通知间隔'}]},
+  {label:'Baidu Tieba', items:[
+    {flag:'tiebakw',label:'吧名(逗号分隔)'},{flag:'tiebainterval',label:'轮询间隔'}]},
+  {label:'General', items:[
+    {flag:'ntfysh-topic',label:'ntfy topic'},{flag:'ntfysh-server',label:'ntfy server'},
+    {flag:'mozpush-uaid',label:'Mozilla UAID'},{flag:'mozpush-endpoint',label:'Mozilla endpoint'},
+    {flag:'sync-dir',label:'同步目录'},{flag:'peerno',label:'peer'},{flag:'vlan',label:'vlan 前缀'}]},
 ];
 
 let CFG = {}, ORIG = {}, SECRET = new Set();

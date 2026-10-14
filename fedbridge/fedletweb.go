@@ -156,6 +156,78 @@ var knownProtocols = []struct {
 	}{
 		{"sysinfo-interval", "interval", false},
 	}},
+	{"bilibili-hot", "bilibili", "Bilibili", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"bilibili-hot", "hot", false},
+		{"bilibili-notify", "notify", false},
+		{"bilibili-interval", "interval", false},
+		{"bilibili-notify-interval", "notify_interval", false},
+	}},
+	{"coolapk-hot", "coolapk", "Coolapk", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"coolapk-hot", "hot", false},
+		{"coolapk-news", "news", false},
+		{"coolapk-interval", "interval", false},
+		{"coolapk-notify-interval", "notify_interval", false},
+	}},
+	{"hongguo-interval", "hongguo", "Hongguo", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"hongguo-interval", "interval", false},
+	}},
+	{"toutiao-hot", "toutiao", "Toutiao", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"toutiao-hot", "hot", false},
+		{"toutiao-news", "news", false},
+		{"toutiao-interval", "interval", false},
+		{"toutiao-notify-interval", "notify_interval", false},
+	}},
+	{"weibo-interval", "weibo", "Weibo", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"weibo-interval", "interval", false},
+	}},
+	{"xhs-hot", "xhs", "XHS", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"xhs-hot", "hot", false},
+		{"xhs-notify", "notify", false},
+		{"xhs-interval", "interval", false},
+		{"xhs-notify-interval", "notify_interval", false},
+	}},
+	{"zhihu-hot", "zhihu", "Zhihu", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"zhihu-hot", "hot", false},
+		{"zhihu-notify", "notify", false},
+		{"zhihu-interval", "interval", false},
+		{"zhihu-notify-interval", "notify_interval", false},
+	}},
+	{"tiebakw", "bdtieba", "Baidu Tieba", []struct {
+		Flag string
+		Key  string
+		Hide bool
+	}{
+		{"tiebakw", "keywords", false},
+		{"tiebainterval", "interval", false},
+	}},
 }
 
 func handleProtocols(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/bilibili"
@@ -14,6 +15,13 @@ var (
 	bilibiliInterval     = 600 * time.Second
 	bilibiliNotifyIntval = 60 * time.Second
 )
+
+func init() {
+	flag.BoolVar(&bilibiliHot, "bilibili-hot", true, "publish hot board")
+	flag.BoolVar(&bilibiliNotify, "bilibili-notify", true, "publish notifications")
+	flag.DurationVar(&bilibiliInterval, "bilibili-interval", 600*time.Second, "hot board poll interval")
+	flag.DurationVar(&bilibiliNotifyIntval, "bilibili-notify-interval", 60*time.Second, "notify poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "bilibili",

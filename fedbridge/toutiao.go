@@ -3,17 +3,25 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/toutiao"
 )
 
 var (
-	toutiaoHot    = true
-	toutiaoNews   = true
-	toutiaoIntv   = 600 * time.Second
-	toutiaoNIntv  = 120 * time.Second
+	toutiaoHot   = true
+	toutiaoNews  = true
+	toutiaoIntv  = 600 * time.Second
+	toutiaoNIntv = 120 * time.Second
 )
+
+func init() {
+	flag.BoolVar(&toutiaoHot, "toutiao-hot", true, "publish hot board")
+	flag.BoolVar(&toutiaoNews, "toutiao-news", true, "publish news feed")
+	flag.DurationVar(&toutiaoIntv, "toutiao-interval", 600*time.Second, "hot board poll interval")
+	flag.DurationVar(&toutiaoNIntv, "toutiao-notify-interval", 120*time.Second, "news poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "toutiao",

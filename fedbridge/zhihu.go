@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/zhihu"
@@ -14,6 +15,13 @@ var (
 	zhihuInterval     = 600 * time.Second
 	zhihuNotifyIntval = 60 * time.Second
 )
+
+func init() {
+	flag.BoolVar(&zhihuHot, "zhihu-hot", true, "publish hot board")
+	flag.BoolVar(&zhihuNotify, "zhihu-notify", true, "publish notifications")
+	flag.DurationVar(&zhihuInterval, "zhihu-interval", 600*time.Second, "hot board poll interval")
+	flag.DurationVar(&zhihuNotifyIntval, "zhihu-notify-interval", 60*time.Second, "notify poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "zhihu",

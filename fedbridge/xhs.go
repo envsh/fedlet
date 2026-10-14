@@ -3,14 +3,15 @@
 package main
 
 import (
+	"flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/xhs"
 )
 
 var (
-	xhsHot          = true
-	xhsNotify       = true
+	xhsHot    = true
+	xhsNotify = true
 	// xhsInterval is the hot-board round cadence: exactly ONE uapis type is
 	// fetched per round, rotating through the On entries of hotBoards
 	// (10 enabled × 61s ≈ 10m10s per board; uapis refreshes data every ~5min,
@@ -18,6 +19,13 @@ var (
 	xhsInterval     = 61 * time.Second
 	xhsNotifyIntval = 60 * time.Second
 )
+
+func init() {
+	flag.BoolVar(&xhsHot, "xhs-hot", true, "publish hot board")
+	flag.BoolVar(&xhsNotify, "xhs-notify", true, "publish notifications")
+	flag.DurationVar(&xhsInterval, "xhs-interval", 61*time.Second, "hot board poll interval")
+	flag.DurationVar(&xhsNotifyIntval, "xhs-notify-interval", 60*time.Second, "notify poll interval")
+}
 
 var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "xhs",

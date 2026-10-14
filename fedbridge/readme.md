@@ -31,6 +31,9 @@ drasil's quic-go depend cannot remove
 启动时按 `显式CLI > FEDLET_* 环境变量 > ~/.config/fedlet/config.json > flag默认` 合并,
 经 `flag.Set` 回写既有 flag(见 `multi_source_config.go`)。键名即 flag 名,值写字符串。
 
+协议自身的设置(hot/notify/interval 等)已统一注册为 flag,并在 `/fedlet/config` 按协议分组
+展示、可编辑;非协议项归入 General 组。新暴露的设置默认 `applies=restart`(改后持久化,重启生效)。
+
 - `GET /api/config`: 返回全部 flag 现值(敏感项打码)、default、source、applies(`hot`|`restart`)。
 - `PATCH /api/config` (或 PUT): 请求体 `{"<flag>":"<值>"}`, 热应用并写入 `config.json`;
   返回 `updated/hot_applied/restart_required/unknown`; 有未知键返回 207;任一已知 flag 的
