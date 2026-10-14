@@ -6,7 +6,7 @@ Federated messaging bridge: ingests messages from multiple chat/IM protocols and
 
 ```
 fedbridge/         — Main Go app (entrypoint: main.go). Build with:
-                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo,sysinfo
+                     cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo
 fbprotocols/       — Protocol backend Go packages
   emailimap/       IMAP email polling (most mature)
   irccloud/        IRCCloud integration
@@ -30,16 +30,17 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 - **fedbridge** is the primary binary. Build from _within_ `fedbridge/`:
   ```
-  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,sysinfo
+  cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk
   ```
-  Tags are how protocols are selected; omit tags to exclude backends.
+  Tags are how protocols are selected; omit a tag to exclude its backend.
+  Exception: `sysinfo` has no build tag and is always compiled.
   Pre-built binaries: `main.gz` (20MB), `main` (32MB), `main.full` (42MB).
 
 - **V code**: `curlrq/curlrq.v` is a V module using `#flag -lcurl` for libcurl. Test with `v run test_curlrq.v`.
 
 ## Architecture quirks
 
-- **Backend registration**: Each protocol ships as `fedbridge/<tag>.go` guarded by `//go:build <tag>`, which declares `var _ = RegisterProtocol(&ProtocolInfo{...})` with `StartFn` (optionally `StopFn`, `statusFn`) — see `fedbridge/hongguo.go` and `fedbridge/bdtieba.go` for the template, and `fedbridge/protocolreg.go:46` for `RegisterProtocol`. Flags are registered in a local `init()` under the same build tag (e.g. `-sysinfo-interval`). `main.go` calls `StartFn` for every registered protocol. To add a protocol: copy a template file, change the tag, and expose `SetPublishInfo/Start/IsRunning/ConnectedSince/LastErrs/AuthStatus` from the backend package.
+- **Backend registration**: Each protocol ships as `fedbridge/<tag>.go` guarded by `//go:build <tag>` (exception: `fedbridge/sysinfo.go` has no tag and is always compiled), which declares `var _ = RegisterProtocol(&ProtocolInfo{...})` with `StartFn` (optionally `StopFn`, `statusFn`) — see `fedbridge/hongguo.go` and `fedbridge/bdtieba.go` for the template, and `fedbridge/protocolreg.go:46` for `RegisterProtocol`. Flags are registered in a local `init()` (under the same build tag for tagged protocols; `-sysinfo-interval` is always present). `main.go` calls `StartFn` for every registered protocol. To add a protocol: copy a template file, change the tag, and expose `SetPublishInfo/Start/IsRunning/ConnectedSince/LastErrs/AuthStatus` from the backend package.
 - **Publish routing**: Messages can go via HTTP POST to `http://127.0.0.1:4004/p2pin/send?topic=...` (default) or directly to libp2p via `p2put.PublishTopic`. Controlled by `publishViaHTTP` in `main.go`.
 - **Config files**: IMAP state persists to `~/.config/fedlet/imap-state.json`.
 - **Server**: The bridge listens on `:4004` with default HTTP handlers.

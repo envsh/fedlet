@@ -25,7 +25,7 @@
 	sysinfo 是唯一的本机采集后端(fbprotocols/sysinfo/),不拉取任何外部数据:
 	每 123s 采一次全机快照(host/cpu/mem/load/disk/io/net/temp/battery),整份
 	序列化为**一条**发布(不是逐条转发列表),仍带顶级 proto_type=sysinfo /
-	cycle_count=1(一轮一条)。build tag `sysinfo`,flag `-sysinfo-interval`,
+	cycle_count=1(一轮一条)。无 build tag(始终编译),flag `-sysinfo-interval`,
 	状态仅存 ~/.config/fedlet/sysinfo-state.json(只记 last_ok_at + 最近3条错误,
 	不存指标)。数值取不到一律 -1(非 0)、bool 用 -1/0/1 三态、整类缺失(台式机
 	无电池/VM 无温度)发空数组 + errors[] 说明原因,详见其 README.md。

@@ -1,4 +1,4 @@
-//go:build sysinfo
+// //go:build sysinfo
 
 package main
 
