@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -580,10 +581,14 @@ func withLoopIsolation(t *testing.T) func() int {
 	}
 }
 
+// startWithInterval adapts the tests' old Start(d) form to the getter-based
+// signature; the value is static unless the test overrides it.
+func startWithInterval(d time.Duration) { Start(func() time.Duration { return d }) }
+
 func TestStartPollsAndPublishes(t *testing.T) {
 	count := withLoopIsolation(t)
 
-	Start(80 * time.Millisecond)
+	startWithInterval(80 * time.Millisecond)
 	// The first tick is one interval out; wait long enough for several rounds.
 	time.Sleep(500 * time.Millisecond)
 	Stop()
@@ -607,7 +612,7 @@ func TestStartPollsAndPublishes(t *testing.T) {
 func TestStartWaitsOneIntervalBeforeFirstRound(t *testing.T) {
 	count := withLoopIsolation(t)
 
-	Start(300 * time.Millisecond)
+	startWithInterval(300 * time.Millisecond)
 	time.Sleep(120 * time.Millisecond) // well before the first tick
 	early := count()
 	Stop()
@@ -629,9 +634,9 @@ func TestStopIsIdempotentAndSafeWithoutStart(t *testing.T) {
 func TestStartTwiceDoesNotLeakLoops(t *testing.T) {
 	count := withLoopIsolation(t)
 
-	Start(60 * time.Millisecond)
+	startWithInterval(60 * time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
-	Start(60 * time.Millisecond) // restarts: the old loop must be stopped
+	startWithInterval(60 * time.Millisecond) // restarts: the old loop must be stopped
 	time.Sleep(300 * time.Millisecond)
 	Stop()
 
@@ -643,6 +648,24 @@ func TestStartTwiceDoesNotLeakLoops(t *testing.T) {
 	}
 	if max := 14; got > max {
 		t.Errorf("published %d snapshots, want <= %d (two loops were racing)", got, max)
+	}
+}
+
+// TestStartResetsIntervalAtRuntime proves a changed provider takes effect
+// without restarting the loop (hot interval).
+func TestStartResetsIntervalAtRuntime(t *testing.T) {
+	count := withLoopIsolation(t)
+
+	var iv atomic.Int64
+	iv.Store(int64(400 * time.Millisecond))
+	Start(func() time.Duration { return time.Duration(iv.Load()) })
+	time.Sleep(100 * time.Millisecond) // < first interval, nothing published yet
+	iv.Store(int64(60 * time.Millisecond))
+	time.Sleep(500 * time.Millisecond) // fast ticks now
+	Stop()
+
+	if got := count(); got < 3 {
+		t.Errorf("published %d snapshots after interval reset, want >= 3", got)
 	}
 }
 

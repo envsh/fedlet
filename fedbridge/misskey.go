@@ -20,7 +20,13 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
 	SendFn:     misskey.Send,
 	RedactFn:   misskey.Redact,
-	StartFn:    func() { misskey.Start(misskeyHost, misskeyToken, misskeyTimeline) },
+	StartFn: func() {
+		misskey.Start(
+			makeMscfgGetter("misskey", ""),
+			makeMscfgGetter("misskey-token", ""),
+			makeMscfgGetter("misskey-timeline", "home"),
+		)
+	},
 	statusFn: func() ProtocolStatus {
 		return ProtocolStatus{
 			Running:        misskey.IsRunning(),

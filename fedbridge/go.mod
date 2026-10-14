@@ -25,8 +25,12 @@ require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/libp2p/go-yamux/v5 v5.1.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+	github.com/mitchellh/copystructure v1.2.0 // indirect
+	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
@@ -59,11 +63,15 @@ require (
 	github.com/envsh/toxera/fedkey v0.0.0-20260704194804-bccdd6d90e12
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/kitech/touse/oai v0.0.0-20260712120832-957a5f2a1671
+	github.com/knadh/koanf/parsers/json v1.0.1
+	github.com/knadh/koanf/providers/env/v2 v2.0.2
+	github.com/knadh/koanf/providers/file v1.2.1
+	github.com/knadh/koanf/v2 v2.3.8
 	golang.design/x/clipboard v0.7.0
 )
 
 // github.com/envsh/libp2px v0.0.0
-require github.com/gorilla/websocket v1.5.3 // indirect
+require github.com/gorilla/websocket v1.5.3
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0

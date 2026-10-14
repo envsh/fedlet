@@ -54,10 +54,14 @@ func publish(v any) error {
 	return pubfn_(v)
 }
 
-// Start launches the polling loop. A non-positive interval falls back to
-// DefaultInterval (123s). Calling Start again stops any previous loop first
-// and waits for it to finish, so no two loops ever publish in parallel.
-func Start(interval time.Duration) {
+// Start launches the polling loop. getInterval is consulted once now and then
+// on every tick: when it returns a different positive value the ticker is
+// Reset, so a runtime configuration change takes effect without restarting.
+// A non-positive interval falls back to DefaultInterval (123s). Calling Start
+// again stops any previous loop first and waits for it to finish, so no two
+// loops ever publish in parallel.
+func Start(getInterval func() time.Duration) {
+	interval := getInterval()
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -73,7 +77,7 @@ func Start(interval time.Duration) {
 	loopMu.Unlock()
 
 	go func() {
-		pollLoop(ch)
+		pollLoop(ch, getInterval)
 		close(done)
 	}()
 }
@@ -113,7 +117,7 @@ var stateFilePathFn = stateFilePath
 // pollLoop samples on a ticker. The first tick is a full interval away, which
 // is deliberate: the first round must not race fedbridge's HTTP server, whose
 // ListenAndServe runs after StartFn.
-func pollLoop(stop <-chan struct{}) {
+func pollLoop(stop <-chan struct{}, getInterval func() time.Duration) {
 	statusRunning.Store(true)
 	statusConnectedSince.Store(time.Now())
 	defer statusRunning.Store(false)
@@ -130,6 +134,11 @@ func pollLoop(stop <-chan struct{}) {
 		select {
 		case <-ticker.C:
 			prev = round(state, prev)
+			if n := getInterval(); n > 0 && n != iv {
+				iv = n
+				ticker.Reset(iv)
+				logPrefix("interval changed to %s", iv)
+			}
 		case <-stop:
 			logPrefix("stopped")
 			return

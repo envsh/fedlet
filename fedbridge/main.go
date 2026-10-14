@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,11 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 	"unsafe"
-	"encoding/hex"
 
 	"github.com/envsh/toxera/fedkey"
 
@@ -137,6 +137,8 @@ func main() {
 	mozpushUAID := flag.String("mozpush-uaid", "", "预注册的 Mozilla UAID(如 mozpush-reguaid.sh 输出);填了则启动 mobsub(订阅;自发送需 -mozpush-endpoint)")
 	mozpushEndpoint := flag.String("mozpush-endpoint", "", "预注册的 Mozilla endpoint(如 mozpush-reguaid.sh 输出);自发送回环目标(空则不自发送)")
 	flag.Parse()
+	loadMultiSourceConfig()
+	seedFromFlags(flag.CommandLine)
 
 	if *mozpushUAID != "" && !mobsubValidUAID(*mozpushUAID) {
 		log.Fatalf("mozpush-uaid: 非法 UUID %q (需小写 dashed)", *mozpushUAID)
@@ -304,11 +306,11 @@ func getKeyRingSeedHex(kr *fedkey.KeyRing) string {
 
 // localPeerIDFromKeyFile 从 fedkey keyfile(如 key.txt)提取本地 libp2p peer ID。
 // 与 p2put 的 host ID(h.ID())同源:同一 ed25519 种子 → 相同 protobuf 编码 → 相同 base58。
-func localPeerIDFromKeyFile(keyFile string) (string,string) {
+func localPeerIDFromKeyFile(keyFile string) (string, string) {
 	kr, err := fedkey.LoadKeyRing(keyFile, true)
 	if err != nil {
 		log.Printf("localpeerid: load keyring %s: %v", keyFile, err)
-		return "",""
+		return "", ""
 	}
 	pid := kr.Libp2pPeerID(fedkey.Libp2pEd25519)
 	if pid == "" {

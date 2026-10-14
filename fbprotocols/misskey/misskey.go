@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	pubfn_   func(any) error
-	muClient sync.Mutex
-	curHost  string
-	curToken string
-	curTL    string
+	pubfn_      func(any) error
+	muClient    sync.Mutex
+	curHost     string
+	curToken    string
+	curTL       string
 	accountId   string
 	accountName string
+	cfgProvider func() (host, token, tl string)
 )
 
 func SetPublishInfo(pubfn func(any) error) {
@@ -35,7 +36,19 @@ func publish(v any) error {
 	return pubfn_(v)
 }
 
-func Start(host, token, timeline string) {
+// currentCfg 返回最新配置:优先用 Start 注入的 getter(可热改),否则回退
+// 到 Start 时缓存的 curHost/curToken/curTL(测试与冷启动路径)。
+func currentCfg() (string, string, string) {
+	muClient.Lock()
+	defer muClient.Unlock()
+	if cfgProvider != nil {
+		return cfgProvider()
+	}
+	return curHost, curToken, curTL
+}
+
+func Start(getHost, getToken, getTimeline func() string) {
+	host, token, timeline := getHost(), getToken(), getTimeline()
 	if host == "" || token == "" {
 		log.Println("misskey: host and token required")
 		return
@@ -47,6 +60,13 @@ func Start(host, token, timeline string) {
 	curHost = host
 	curToken = token
 	curTL = timeline
+	cfgProvider = func() (string, string, string) {
+		tl := getTimeline()
+		if tl == "" {
+			tl = "home"
+		}
+		return getHost(), getToken(), tl
+	}
 	muClient.Unlock()
 
 	info, err := VerifyToken(host, token)
@@ -74,7 +94,8 @@ func pollLoop() {
 	statusRunning.Store(true)
 	statusConnectedSince.Store(time.Now())
 	defer statusRunning.Store(false)
-	log.Printf("misskey: polling %s timeline every 30s", curTL)
+	_, _, tl0 := currentCfg()
+	log.Printf("misskey: polling %s timeline every 30s", tl0)
 
 	statePath := stateFilePath()
 	state := loadState(statePath)
@@ -82,9 +103,7 @@ func pollLoop() {
 	firstRun := state.SinceID == ""
 
 	for {
-		muClient.Lock()
-		host, token, tl := curHost, curToken, curTL
-		muClient.Unlock()
+		host, token, tl := currentCfg()
 
 		notes, raws, err := FetchTimeline(host, token, tl, state.SinceID)
 		if err != nil {
@@ -178,9 +197,7 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 		}
 		visibleUserIds = extra.RelatesTo
 	}
-	muClient.Lock()
-	host, token := curHost, curToken
-	muClient.Unlock()
+	host, token, _ := currentCfg()
 	if host == "" || token == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: not configured")
 	}
@@ -210,9 +227,7 @@ func Redact(to, noteID, reason string) (fbshared.SendResult, error) {
 	if noteID == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: empty note id")
 	}
-	muClient.Lock()
-	host, token := curHost, curToken
-	muClient.Unlock()
+	host, token, _ := currentCfg()
 	if host == "" || token == "" {
 		return fbshared.SendResult{}, fmt.Errorf("misskey: not configured")
 	}
@@ -316,15 +331,15 @@ func truncate(s string, n int) string {
 
 func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
-		Text:      n.Text,
-		MsgFormat: fbshared.FmtText,
-		Protocol:  fbshared.ProtoMisskey,
-		Username:  n.User.Username,
-		UserID:    n.UserID,
-		Usernick:  n.User.Name,
-		MsgID:     n.ID,
-		MsgType:   fbshared.MsgTypeCreate,
-		AccountID: n.AccountID,
+		Text:        n.Text,
+		MsgFormat:   fbshared.FmtText,
+		Protocol:    fbshared.ProtoMisskey,
+		Username:    n.User.Username,
+		UserID:      n.UserID,
+		Usernick:    n.User.Name,
+		MsgID:       n.ID,
+		MsgType:     fbshared.MsgTypeCreate,
+		AccountID:   n.AccountID,
 		AccountName: n.AccountName,
 	}
 

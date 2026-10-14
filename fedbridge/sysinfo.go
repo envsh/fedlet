@@ -19,7 +19,7 @@ var _ = RegisterProtocol(&ProtocolInfo{
 		sysinfo.SetPublishInfo(func(v any) error {
 			return publish("sysinfo", channel_name, v)
 		})
-		sysinfo.Start(sysinfoInterval)
+		sysinfo.Start(makeMscfgGetter("sysinfo-interval", sysinfo.DefaultInterval))
 	},
 	StopFn: sysinfo.Stop,
 	statusFn: func() ProtocolStatus {
