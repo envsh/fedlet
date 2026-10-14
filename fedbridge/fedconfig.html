@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fedlet Config</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;padding:20px;font-size:14px}
+h1{color:#58a6ff;font-size:20px;margin-bottom:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin-bottom:20px}
+h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
+.row{display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center;padding:6px 0}
+.k{color:#8b949e;font-size:13px}
+.k small{color:#6e7681;font-family:'SF Mono','Consolas',monospace}
+input[type=text],input[type=password]{width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:6px 10px;font-size:13px;font-family:'SF Mono','Consolas','Liberation Mono',monospace}
+input:focus{outline:none;border-color:#58a6ff}
+input[type=checkbox]{width:auto;justify-self:start;accent-color:#238636}
+.badge{font-size:11px;padding:1px 6px;border-radius:10px;margin-left:6px}
+.badge.hot{background:#1a3a24;color:#3fb950;border:1px solid #238636}
+.badge.restart{background:#3a2f1a;color:#d29922;border:1px solid #9e6a03}
+.badge.src{background:#21262d;color:#8b949e;border:1px solid #30363d}
+#savebar{position:sticky;bottom:0;background:#0d1117;border-top:1px solid #30363d;padding:12px 0;display:flex;gap:12px;align-items:center}
+#save{background:#238636;border:1px solid #2ea043;color:#fff;border-radius:6px;padding:8px 20px;font-size:14px;cursor:pointer}
+#save:disabled{opacity:.5;cursor:default}
+#result{font-size:13px}
+#result .ok{color:#3fb950}#result .warn{color:#d29922}#result .err{color:#f85149}#result .muted{color:#8b949e}
+#filter{width:240px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:6px 10px;font-size:13px}
+details summary{cursor:pointer;color:#58a6ff;font-size:13px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<h1>Config</h1>
+<div id="fedlet-nav"></div>
+<script src="/fedlet/nav.js" defer></script>
+
+<div class="card">
+  <h2>Protocols</h2>
+  <div id="groups"><div style="color:#666">loading...</div></div>
+</div>
+
+<div class="card">
+  <details>
+    <summary>全部 flag</summary>
+    <input id="filter" type="text" placeholder="filter by flag name...">
+    <div id="allflags" style="margin-top:12px"></div>
+  </details>
+</div>
+
+<div id="savebar">
+  <button id="save" disabled>保存</button>
+  <span id="result"></span>
+</div>
+
+<script>
+const GROUPS = [
+  {label:'Email IMAP', items:[
+    {flag:'imapserver',label:'server'},{flag:'imapdir',label:'folders'},
+    {flag:'emailauth',label:'auth',secret:true}]},
+  {label:'Microsoft Graph', items:[{flag:'outlook-client-id',label:'client_id',secret:true}]},
+  {label:'Matrix (gomuks)', items:[{flag:'gomuks',label:'endpoint'}]},
+  {label:'IRCCloud', items:[
+    {flag:'irc-join',label:'channels'},{flag:'irc',label:'auth',secret:true}]},
+  {label:'The Lounge IRC', items:[
+    {flag:'irclounge',label:'server'},{flag:'irclounge-join',label:'channels'},
+    {flag:'irclounge-network',label:'network'},{flag:'irclounge-auth',label:'auth',secret:true}]},
+  {label:'Tox over HTTP', items:[{flag:'toxhs',label:'url'}]},
+  {label:'Matrix (native)', items:[
+    {flag:'matrix-url',label:'server'},{flag:'matrix-auth',label:'auth',secret:true}]},
+  {label:'Misskey', items:[
+    {flag:'misskey',label:'instance'},{flag:'misskey-timeline',label:'timeline'},
+    {flag:'misskey-token',label:'token',secret:true}]},
+  {label:'Host metrics (sysinfo)', items:[{flag:'sysinfo-interval',label:'interval'}]},
+];
+
+let CFG = {}, ORIG = {}, SECRET = new Set();
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function isSecret(name){
+  const l = name.toLowerCase();
+  if (l.includes('password')||l.includes('secret')) return true;
+  if (l.endsWith('auth')) return true;
+  return l.split('-').some(s=>['auth','token','key','passwd'].includes(s));
+}
+function masked(v){return v && /^\*+$/.test(v)}
+
+async function loadConfig(){
+  const r = await fetch('/api/config');
+  CFG = await r.json();
+  ORIG = {}; SECRET = new Set();
+  for (const k in CFG){ ORIG[k] = CFG[k].value; if (isSecret(k)) SECRET.add(k); }
+  renderGroups(); renderAll(); updateDirty();
+}
+
+function fieldInput(flag){
+  const e = CFG[flag];
+  const sec = SECRET.has(flag);
+  if (sec){
+    const ph = masked(e.value) ? 'placeholder="已设置,留空不改"' : `value="${esc(e.value)}"`;
+    return `<input data-flag="${esc(flag)}" data-secret="1" type="password" ${ph}>`;
+  }
+  if (e.type === 'bool'){
+    const ck = e.value === 'true' ? ' checked' : '';
+    return `<input data-flag="${esc(flag)}" data-bool="1" type="checkbox"${ck}>`;
+  }
+  const t = e.type === 'number' ? 'number' : 'text';
+  const step = e.type === 'number' ? ' step="any"' : '';
+  const ph = e.type === 'duration' ? 'placeholder="如 120s / 5m"' : '';
+  return `<input data-flag="${esc(flag)}" type="${t}"${step} value="${esc(e.value)}" ${ph}>`;
+}
+
+function inputRow(flag, label){
+  const e = CFG[flag]; if (!e) return '';
+  const badges = `<span class="badge ${e.applies}">${e.applies==='hot'?'即时生效':'需重启'}</span>` +
+                 `<span class="badge src">${esc(e.source)}</span>`;
+  return `<div class="row"><div class="k">${esc(label)} <small>${esc(flag)}</small>${badges}</div>` +
+         fieldInput(flag) + `</div>`;
+}
+
+function renderGroups(){
+  const html = GROUPS.map(g=>{
+    const rows = g.items.map(it=>inputRow(it.flag, it.label)).filter(Boolean).join('');
+    return rows ? `<div style="margin-bottom:16px"><div style="color:#8b949e;font-size:12px;margin-bottom:4px">${esc(g.label)}</div>${rows}</div>` : '';
+  }).join('');
+  document.getElementById('groups').innerHTML = html || '<div style="color:#888">no protocols</div>';
+  bind();
+}
+
+function renderAll(){
+  const grouped = new Set();
+  GROUPS.forEach(g=>g.items.forEach(it=>grouped.add(it.flag)));
+  const rest = Object.keys(CFG).filter(k=>!grouped.has(k)).sort();
+  document.getElementById('allflags').innerHTML = rest.map(flag=>{
+    const e = CFG[flag];
+    const badges = `<span class="badge ${e.applies}">${e.applies}</span><span class="badge src">${esc(e.source)}</span>`;
+    return `<div class="row" data-name="${esc(flag)}"><div class="k">${esc(flag)}${badges}</div>` +
+           fieldInput(flag) + `</div>`;
+  }).join('');
+  bind();
+}
+
+function bind(){
+  document.querySelectorAll('#groups input,#allflags input').forEach(inp=>{
+    inp.oninput = updateDirty;
+  });
+}
+
+function changedFields(){
+  const out = {};
+  document.querySelectorAll('#groups input,#allflags input').forEach(inp=>{
+    const flag = inp.dataset.flag;
+    if (inp.dataset.bool === '1'){
+      const v = inp.checked ? 'true' : 'false';
+      if (v !== ORIG[flag]) out[flag] = v;
+    } else if (inp.dataset.secret === '1'){
+      if (inp.value !== '') out[flag] = inp.value;
+    } else if (inp.value !== ORIG[flag]){
+      out[flag] = inp.value;
+    }
+  });
+  return out;
+}
+
+function updateDirty(){
+  document.getElementById('save').disabled = Object.keys(changedFields()).length === 0;
+}
+
+async function save(){
+  const body = changedFields();
+  const res = document.getElementById('result');
+  res.innerHTML = '';
+  if (!Object.keys(body).length) return;
+  try {
+    const r = await fetch('/api/config', {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const raw = await r.text();
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch(_){}
+    if (r.status === 400){
+      const inv = Object.entries(data.invalid||{}).map(([k,v])=>`${k}: ${esc(v)}`).join('; ');
+      res.innerHTML = `<span class="err">拒绝(未保存): ${inv || 'invalid'}</span>`;
+      return;
+    }
+    if (r.status === 409){
+      res.innerHTML = `<span class="err">配置已被外部修改,请刷新后重试</span>`;
+      return;
+    }
+    if (!r.ok){
+      const msg = (data && (data.error || data.message)) || raw || '';
+      res.innerHTML = `<span class="err">保存失败(HTTP ${r.status}): ${esc(String(msg).slice(0,300))}</span>`;
+      return;
+    }
+    let h = '';
+    if (data.hot_applied?.length)      h += `<span class="ok">即时生效: ${esc(data.hot_applied.join(', '))}</span> `;
+    if (data.restart_required?.length) h += `<span class="warn">需重启: ${esc(data.restart_required.join(', '))}</span> `;
+    if (data.unknown?.length)          h += `<span class="muted">未知: ${esc(data.unknown.join(', '))}</span>`;
+    res.innerHTML = h || '<span class="ok">已保存</span>';
+    await loadConfig();
+  } catch(e){
+    res.innerHTML = `<span class="err">保存失败: ${esc(e.message)}</span>`;
+  }
+}
+
+document.getElementById('save').onclick = save;
+document.getElementById('filter').oninput = function(){
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#allflags .row').forEach(r=>{
+    r.style.display = r.dataset.name.toLowerCase().includes(q) ? '' : 'none';
+  });
+};
+loadConfig();
+</script>
+</body>
+</html>

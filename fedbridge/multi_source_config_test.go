@@ -22,6 +22,24 @@ func TestMscfgEnvTransform(t *testing.T) {
 	}
 }
 
+func TestMscfgType(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.Bool("b", false, "")
+	fs.Int("i", 0, "")
+	fs.Duration("d", 0, "")
+	fs.String("s", "", "")
+	fs.Func("f", "", func(string) error { return nil })
+	cases := map[string]string{"b": "bool", "i": "number", "d": "duration", "s": "string"}
+	for name, want := range cases {
+		if got := mscfgType(fs.Lookup(name).Value); got != want {
+			t.Errorf("%s: got %q want %q", name, got, want)
+		}
+	}
+	if got := mscfgType(fs.Lookup("f").Value); got != "string" {
+		t.Errorf("Func flag: got %q want string", got)
+	}
+}
+
 func TestMscfgIsSecret(t *testing.T) {
 	cases := map[string]bool{
 		"ntfysh-topic":     false,

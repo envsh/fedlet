@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 func init() {
@@ -18,6 +20,42 @@ type mscfgEntry struct {
 	Default string `json:"default"`
 	Source  string `json:"source"`
 	Applies string `json:"applies"`
+	Type    string `json:"type"`
+}
+
+// mscfgType 判定 flag 的值类型,供前端选择控件。优先用 flag.Getter 拿真实
+// Go 类型(标准库 stringValue/boolValue/intValue/durationValue 均实现 Getter);
+// 对不实现 Getter 的(如 flag.Func 或自定义 Value)回退到反射类型名。
+func mscfgType(v flag.Value) string {
+	if g, ok := v.(flag.Getter); ok {
+		switch g.Get().(type) {
+		case time.Duration: // 必须最早判定(底层是 int64)
+			return "duration"
+		case bool:
+			return "bool"
+		case int, int64, uint, uint64, float64:
+			return "number"
+		case string:
+			return "string"
+		}
+	}
+	t := reflect.TypeOf(v)
+	if t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t != nil {
+		switch strings.TrimSuffix(t.Name(), "Value") {
+		case "bool":
+			return "bool"
+		case "int", "int64", "uint", "uint64", "float64":
+			return "number"
+		case "duration":
+			return "duration"
+		case "string":
+			return "string"
+		}
+	}
+	return "string"
 }
 
 func mscfgIsSecret(name string) bool {
@@ -97,6 +135,7 @@ func mscfgHandleGet(w http.ResponseWriter, r *http.Request) {
 			Default: f.DefValue,
 			Source:  mscfgGetSource(f.Name),
 			Applies: mscfgApplies(f.Name),
+			Type:    mscfgType(f.Value),
 		}
 	})
 	w.Header().Set("Content-Type", "application/json")

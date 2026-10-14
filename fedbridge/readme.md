@@ -50,3 +50,12 @@ Stop/Start 协议即可生效(见 `multi_source_config.go:applyLive`)。
 - 连接态不热:`misskey`/`misskey-token` 更换后抓取请求立即用新凭据,但
   `VerifyToken`/`accountId` 是 Start 期状态,需重连才一致。故其 getter 虽为"用时
   读取",仍**未列入 `hot`**,`applies` 保守上报 `restart`。
+
+### Web 导航
+
+`:4004` 上各页面共用一套导航:`nav.js`(`/fedlet/nav.js`)向约定容器
+`<div id="fedlet-nav"></div>` 注入 tab 条,按 `location.pathname` 高亮。
+新增页面:在 `nav.js` 的 `PAGES` 数组加一项,页面引入
+`<script src="/fedlet/nav.js" defer></script>` 即可。p2put Dashboard
+(`/p2pin/index`,libp2px 模块内)未纳入,仍可从 tab 跳转过去。
+配置页:`/fedlet/config`(`fedconfig.html`),经既有 `/api/config` 读写。

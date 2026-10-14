@@ -8,8 +8,6 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;padding:20px;font-size:14px}
 h1{color:#58a6ff;font-size:20px;display:flex;align-items:center;gap:12px;margin-bottom:20px}
-h1 a{font-size:13px;color:#58a6ff;text-decoration:none;margin-left:auto}
-h1 a:hover{text-decoration:underline}
 h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin-bottom:20px}
 .protocol-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
@@ -41,8 +39,9 @@ h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
 
 <h1>
   Fedlet Bridge
-  <a href="/p2pin/index">p2put Dashboard &rarr;</a>
 </h1>
+<div id="fedlet-nav"></div>
+<script src="/fedlet/nav.js" defer></script>
 
 <div class="card">
   <h2>Protocols</h2>
