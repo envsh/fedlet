@@ -134,7 +134,19 @@ func main() {
 	flag.StringVar(&vlanpfx, "vlan", vlanpfx, "tun vlan ip prefix")
 	flag.StringVar(&ntfyshTopic, "ntfysh-topic", "", "ntfy.sh topic for dual-publish (empty=disabled)")
 	flag.StringVar(&ntfyshServer, "ntfysh-server", "https://ntfy.sh", "ntfy.sh server URL")
+	mobsubName := flag.String("mobsub-name", "", "mobsub 固定名字:接收订阅(ntfy + Mozilla push);空则关闭")
+	mozpushServer := flag.String("mozpush-server", "wss://push.services.mozilla.com/", "Mozilla autopush WebSocket 服务端(mobsub)")
+	mozpushUAID := flag.String("mozpush-uaid", "", "预注册的 Mozilla UAID(如 mozpush-reguaid.sh 输出);mobsub 必填")
 	flag.Parse()
+
+	if *mobsubName != "" {
+		if *mozpushUAID == "" {
+			log.Fatalf("mozpush-uaid: mobsub 需预注册 UAID(见 mozpush-reguaid.sh)")
+		}
+		if !mobsubValidUAID(*mozpushUAID) {
+			log.Fatalf("mozpush-uaid: 非法 UUID %q (需小写 dashed)", *mozpushUAID)
+		}
+	}
 
 	mypeerid := ""
 	if true {
@@ -224,6 +236,9 @@ func main() {
 	// go poll_toxrest()
 	go poll_demopub()
 	go poll_service_discovery()
+	if *mobsubName != "" {
+		go startMobSub(buildMobSubConfig(*mobsubName, *mozpushServer, ntfyshServer, *mozpushUAID))
+	}
 	// go poll_gomuks()
 	// go echoLoop()
 	go tunloop()

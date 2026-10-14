@@ -6,11 +6,14 @@ export GOMUKS_USER=admin
 export GOMUKS_PASS=xxxxx
 EXE=./main.before-droppubsub
 EXE=./main
-$EXE -m -sync-dir ~/Sync2/ -toxhs https:// -matrix-url https://matrix.tchncs.de -matrix-auth @name:tchncs.de:pass -imapserver imap.163.com:993 -emailauth name@163.com:pass -outlook-client-id 85f9d250-2ae3-4d88-805a-bbf92dfxxxxx -misskey https://misskey.gg -misskey-token xxxxxxxxxxxx -ntfysh-topic xxxxxxxxx -ntfysh-server https://ntfy.frei.chat 2>&1
+$EXE -m -sync-dir ~/Sync2/ -toxhs https:// -matrix-url https://matrix.tchncs.de -matrix-auth @name:tchncs.de:pass -imapserver imap.163.com:993 -emailauth name@163.com:pass -outlook-client-id 85f9d250-2ae3-4d88-805a-bbf92dfxxxxx -misskey https://misskey.gg -misskey-token xxxxxxxxxxxx -ntfysh-topic xxxxxxxxx -ntfysh-server https://ntfy.frei.chat -mobsub-name mobsubexample -mozpush-uaid 00000000-0000-0000-0000-000000000000 2>&1
 
 # 07-22 09:15:18.296 15958 15986 D qsktox  : [PushHandler] endpoint: "https://ntfy.frei.chat/upFPF2Ku33Cxxx?up=1"
 # https://updates.push.services.mozilla.com/wpush/v1/gAAAAABqZv376VKrQac6ZCJYbZBG-TrVsAfsXWOwQFyo6S6bspBeOq44OCNdXJvprD6rCfzNCMHe1o-3dTLYjzpE7SAzcqPFbQURpX1BGyPJmZHT6BIqxxxxxxxx
 # 15:04:15 main.go:94: ntfysh: status 429 retry-after= body={"code":42901,"http":429,"error":"limit reached: too many requests","link":"https://ntfy.sh/docs/publish/#limitations"} len=294
+
+# mobsub: 仅接收订阅(ntfy + Mozilla push),名字原样;非法 ntfy 名则跳过 ntfy。可选 -mozpush-server 覆盖。
+# mobsub 预注册 UAID: ./mozpush-reguaid.sh <name> 得到 uaid 后,用 -mozpush-uaid <uaid> 认领(频道已存在,不再 register)。
 
 # adminforge timeout
 
