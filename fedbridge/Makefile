@@ -46,6 +46,9 @@ NDK_HOST = $(shell uname -s | tr A-Z a-z)-x86_64
 LLVM_DIR = $(NDK_DIR)/toolchains/llvm/prebuilt/$(NDK_HOST)
 ANDROID_API ?= 23
 
+# anet uses //go:linkname to net.zoneCache; Go >=1.23 linker needs this off.
+ANET_LDFLAGS = -ldflags=-checklinkname=0
+
 AARCH64_TRIPLE = aarch64-linux-android
 ARMV7_TRIPLE   = armv7a-linux-androideabi
 ARMV7_TRIPLE_C = arm-linux-androideabi
@@ -82,11 +85,11 @@ a64:
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(AARCH64_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(AARCH64_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo -o $(BINARY).arm64
+	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo $(ANET_LDFLAGS) -o $(BINARY).arm64
 
 a32:
 	CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
 	CC=$(LLVM_DIR)/bin/clang \
 	CGO_CFLAGS="-isystem $(CURDIR)/android/include $(ARMV7_SYSROOT_CFLAGS)" \
 	CGO_LDFLAGS="$(ARMV7_SYSROOT_LDFLAGS)" \
-	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo -o $(BINARY).arm32
+	go build -v -tags nodht,nopubsub,nowatchdog,sysinfo $(ANET_LDFLAGS) -o $(BINARY).arm32
