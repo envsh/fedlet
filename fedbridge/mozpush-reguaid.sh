@@ -4,12 +4,14 @@
 #
 # 用法:
 #   ./mozpush-reguaid.sh <name> [reg-base]
-#     name     可读账号名(与 fedbridge -mobsub-name 保持一致)
+#     name     可读账号名(仅用于派生 channelID 与 registration token/aps)
 #     reg-base 注册服务基址,默认 https://updates.push.services.mozilla.com
 #
 # 输出: stdout 为注册 JSON {uaid, channelID, endpoint, secret};
-#       派生值另打印到 stderr。拿到 uaid/endpoint/secret 后即可喂给
-#       ~/.config/fedlet/mobsub-<name>.json(配合程序生成的 ec_private/auth)。
+#       派生值另打印到 stderr。拿到 uaid/endpoint 后喂给 fedbridge:
+#       -mozpush-uaid <uaid> -mozpush-endpoint <endpoint>。
+#       (密钥不落盘:fedbridge 以 uaid 为「密码」经 HKDF 派生 p256dh/auth,
+#        启动日志打印,交给外部发送方加密。)
 #
 # 关于 reg-base 里的 "updates" 主机(Mozilla push 分两套独立主机):
 #   - 连接(WebSocket,Firefox 连这里): wss://push.services.mozilla.com/

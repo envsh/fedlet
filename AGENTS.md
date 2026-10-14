@@ -46,6 +46,7 @@ Empty dirs (`cmd/`, `fbtransports/`, `fednet/`, `qlfed/`, `web/`) are future pla
 
 ## Hard constraints
 
+- **不要执行 `find /`**:全盘查找会长时间无输出并打断会话;定位文件请用 Glob/Grep 工具或 `go env GOMODCACHE` 等定向路径。
 - **Do NOT import `github.com/microsoftgraph/msgraph-sdk-go`** — it causes Go compiler memory exhaustion and OOM (confirmed in readme.md). The `outlookgraph` protocol avoids this; use it as reference.
 - The root `go.mod` has few deps (go-imap, gorilla/websocket, x/text plus `gopsutil/v4` + `howett.net/plist` for `fbprotocols/sysinfo`). Most heavy deps (libp2p, nostr, etc.) live in `fedbridge/go.mod`.
 - `gopsutil/v4` must stay pinned at **v4.24.12**: v4.25.x+ raises `go.mod` to `go 1.23.0` and forces a toolchain upgrade.
