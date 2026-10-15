@@ -54,6 +54,17 @@ h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
   <div class="peer-list" id="peerList"><div style="color:#666;font-size:0.9rem">loading...</div></div>
 </div>
 
+<div class="card">
+  <h2 style="display:flex;align-items:center;gap:12px">
+    Push Subscriptions (mobsub) <span id="mobsubCount" style="font-size:0.8rem;color:#8b949e"></span>
+    <label style="margin-left:auto;font-size:12px;color:#8b949e;font-weight:400">
+      <input type="checkbox" id="mobsubShow" onchange="renderMobsub()"> 显示密钥
+    </label>
+    <button onclick="loadMobsub()" style="font-size:12px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 10px;cursor:pointer">Refresh</button>
+  </h2>
+  <div class="peer-list" id="mobsubList"><div style="color:#666;font-size:0.9rem">loading...</div></div>
+</div>
+
 <div id="errorToast" class="error-toast"></div>
 
 <script>
@@ -106,8 +117,33 @@ async function switchPeer(n) {
   }
 }
 
+let mobsubData = []
+function maskSecret(s) { if (!s) return ''; return s.length <= 6 ? '***' : s.slice(0,3)+'***'+s.slice(-3) }
+function fmtTime(t) { try { return new Date(t).toLocaleString() } catch(_) { return t } }
+function renderMobsub() {
+  const show = document.getElementById('mobsubShow').checked
+  const list = document.getElementById('mobsubList')
+  document.getElementById('mobsubCount').textContent = mobsubData.length ? mobsubData.length+' subs' : ''
+  if (!mobsubData.length) { list.innerHTML = '<div style="color:#888">no subscriptions yet</div>'; return }
+  list.innerHTML = mobsubData.map(s => {
+    const auth = show ? s.auth : maskSecret(s.auth)
+    const ep = show ? s.endpoint : maskSecret(s.endpoint)
+    return `<div class="peer-item" style="cursor:default;align-items:flex-start"><div style="flex:1;min-width:0"><div class="peer-id">auth=${esc(auth)}</div><div style="color:#8b949e;font-size:12px;margin-top:4px">uaid: ${esc(s.uaid||'—')} · peer: ${esc(s.peer_id||'—')} · last: ${esc(fmtTime(s.last_seen))}</div><div style="color:#8b949e;font-size:12px;margin-top:2px;word-break:break-all">endpoint: ${esc(ep)}</div></div></div>`
+  }).join('')
+}
+async function loadMobsub() {
+  try {
+    const r = await fetch('/api/mobsub')
+    mobsubData = await r.json() || []
+    renderMobsub()
+  } catch(e) {
+    document.getElementById('mobsubList').innerHTML = '<div style="color:#c55">failed to load</div>'
+  }
+}
+
 loadProtocols()
 loadPeers()
+loadMobsub()
 </script>
 </body>
 </html>

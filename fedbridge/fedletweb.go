@@ -55,6 +55,7 @@ func init() {
 	http.HandleFunc("/fedlet/index", handleFedletIndex)
 	http.HandleFunc("/api/protocols", handleProtocols)
 	http.HandleFunc("/api/peer", handlePeer)
+	http.HandleFunc("/api/mobsub", handleMobsub)
 }
 
 func handleFedletIndex(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +253,15 @@ func handleProtocols(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// handleMobsub 列出已收集的 mobsub 推送订阅(proto_type=mobsub),按 last_seen 倒序。
+// 明文返回,由前端默认打码并提供「显示密钥」开关。
+func handleMobsub(w http.ResponseWriter, r *http.Request) {
+	snap := mobsubSnapshot() // 深拷贝,不泄露内部指针
+	sort.Slice(snap, func(i, j int) bool { return snap[i].LastSeen.After(snap[j].LastSeen) })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(snap)
 }
 
 func handlePeer(w http.ResponseWriter, r *http.Request) {
