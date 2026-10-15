@@ -88,20 +88,13 @@ func TestMobsubRegistryLazyExpire(t *testing.T) {
 	}
 }
 
-// TestMobsubRegistryEventFallback 覆盖转发路径:p2put.Event{Type:"pubsub", Value: pubsubEvent}
-// pubsubEvent 未导出,用同形状匿名结构体验证反射兜底。
+// TestMobsubRegistryEventFallback 覆盖转发路径:p2put.Event{Type:"pubsub", Value: p2put.PubsubEvent}。
 func TestMobsubRegistryEventFallback(t *testing.T) {
 	resetMobsubRegistry()
 	data, _ := json.Marshal(map[string]any{
 		"proto_type": "mobsub", "endpoint": "https://ep/3", "p256dh": "p3", "auth": "a3",
 	})
-	evt := p2put.Event{Type: "pubsub", Topic: channel_name, Value: struct {
-		From         string `json:"from"`
-		Data         string `json:"data"`
-		Seqno        string `json:"seqno"`
-		Topic        string `json:"topic"`
-		ReceivedFrom string `json:"ReceivedFrom"`
-	}{From: "peerX", Data: string(data)}}
+	evt := p2put.Event{Type: "pubsub", Topic: channel_name, Value: p2put.PubsubEvent{From: "peerX", Data: string(data)}}
 	onP2PTopicEvent(evt)
 
 	snap := mobsubSnapshot()

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"reflect"
 	"sync"
 	"time"
 
@@ -36,8 +35,8 @@ var (
 // extractPubsubData 从 p2put.OnEvent 的 raw 里取出「消息字节 + 发布者 peer」。
 // 只有两条路径承载 pubsub 数据,其余事件(libp2p 系统事件等)直接丢弃:
 //   - gossip 路径:topicListener 投递 *pubsub.Message(pso_pubsub.go:202)
-//   - 转发/nopubsub 路径:p2put.Event{Type:"pubsub", Value:pubsubEvent{...}}
-//     pubsubEvent 未导出,仅这一处反射读 Data/From。
+//   - 转发/nopubsub 路径:p2put.Event{Type:"pubsub", Value:p2put.PubsubEvent{...}}
+//     直接类型断言读取 Data/From,无反射。
 func extractPubsubData(raw any) (data []byte, from string) {
 	switch v := raw.(type) {
 	case *pubsub.Message:
@@ -48,28 +47,11 @@ func extractPubsubData(raw any) (data []byte, from string) {
 	case pubsub.Message:
 		return v.Data, peer.ID(v.GetFrom()).ShortString()
 	case p2put.Event:
-		if v.Type != "pubsub" {
+		pe, ok := v.Value.(p2put.PubsubEvent)
+		if !ok {
 			return nil, ""
 		}
-		val := reflect.ValueOf(v.Value)
-		for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-			if val.IsNil() {
-				return nil, ""
-			}
-			val = val.Elem()
-		}
-		if val.Kind() != reflect.Struct {
-			return nil, ""
-		}
-		if f := val.FieldByName("Data"); f.IsValid() {
-			if s, ok := f.Interface().(string); ok {
-				data = []byte(s)
-			}
-		}
-		if f := val.FieldByName("From"); f.IsValid() {
-			from, _ = f.Interface().(string)
-		}
-		return data, from
+		return []byte(pe.Data), pe.From
 	default:
 		return nil, ""
 	}
