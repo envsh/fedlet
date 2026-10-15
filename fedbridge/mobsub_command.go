@@ -127,7 +127,7 @@ func startMobSub(cfg mobsubConfig) {
 		log.Printf("[mobsub] moz %s: init state: %v", cfg.uaid, err)
 		return
 	}
-	log.Printf("[mobsub] moz %s: 分发用 p256dh=%s auth=%s", cfg.uaid, st.ECPublic, maskSecret(st.AuthSecret))
+	log.Printf("[mobsub] moz %s: 分发用 p256dh=%s auth=%s", cfg.uaid, st.ECPublic, toDisplaySecret(st.AuthSecret))
 	go runMobSubMozilla(cfg, st)
 	if cfg.endpoint != "" {
 		go runMobSubSelfSend(cfg, st)
@@ -144,8 +144,8 @@ func handleMobSubMsg(src string, msg []byte) {
 	}
 }
 
-// maskSecret 日志打码:保留首尾各 3 位,中间以 *** 代替。
-func maskSecret(s string) string {
+// toDisplaySecret 日志打码:保留首尾各 3 位,中间以 *** 代替。
+func toDisplaySecret(s string) string {
 	if len(s) <= 6 {
 		return "***"
 	}

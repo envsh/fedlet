@@ -128,7 +128,7 @@ func mscfgHandleGet(w http.ResponseWriter, r *http.Request) {
 	flag.CommandLine.VisitAll(func(f *flag.Flag) {
 		val := f.Value.String()
 		if mscfgIsSecret(f.Name) {
-			val = maskSecret(val)
+			val = toDisplaySecret(val)
 		}
 		out[f.Name] = mscfgEntry{
 			Value:   val,

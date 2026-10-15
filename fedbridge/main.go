@@ -232,6 +232,7 @@ func main() {
 	}
 
 	p2put.InstallRestHandler("/p2pin", nil)
+	p2put.OnEvent(onP2PTopicEvent)
 	go p2put.MainLibp2p(*cfg)
 
 	// go poll_toxrest()

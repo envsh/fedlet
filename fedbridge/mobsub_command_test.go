@@ -237,7 +237,7 @@ func TestDeriveMobSubState(t *testing.T) {
 	}
 }
 
-func TestMaskSecret(t *testing.T) {
+func TestToDisplaySecret(t *testing.T) {
 	cases := map[string]string{
 		"":             "***",
 		"abcdef":       "***",
@@ -245,8 +245,8 @@ func TestMaskSecret(t *testing.T) {
 		"AAAABBBBCCCC": "AAA***CCC",
 	}
 	for in, want := range cases {
-		if got := maskSecret(in); got != want {
-			t.Errorf("maskSecret(%q) = %q, want %q", in, got, want)
+		if got := toDisplaySecret(in); got != want {
+			t.Errorf("toDisplaySecret(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
