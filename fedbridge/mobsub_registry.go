@@ -7,8 +7,10 @@ import (
 	"sync"
 	"time"
 
+	p2put "github.com/envsh/libp2px/p2put"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/tidwall/gjson"
 )
 
 // mobsubRegistryTTL 订阅条目过期时限;惰性清理:每次 upsert 时删掉超时的。
@@ -31,10 +33,11 @@ var (
 	mobsubSubs   = map[string]*mobsubPushSub{} // key = auth
 )
 
-// extractPubsubData 从 p2put.OnEvent 的 raw 里取出「消息字节 + 发布者 peer」:
+// extractPubsubData 从 p2put.OnEvent 的 raw 里取出「消息字节 + 发布者 peer」。
+// 只有两条路径承载 pubsub 数据,其余事件(libp2p 系统事件等)直接丢弃:
 //   - gossip 路径:topicListener 投递 *pubsub.Message(pso_pubsub.go:202)
 //   - 转发/nopubsub 路径:p2put.Event{Type:"pubsub", Value:pubsubEvent{...}}
-//     pubsubEvent 未导出,只能反射读 Data/From 字段。
+//     pubsubEvent 未导出,仅这一处反射读 Data/From。
 func extractPubsubData(raw any) (data []byte, from string) {
 	switch v := raw.(type) {
 	case *pubsub.Message:
@@ -44,63 +47,57 @@ func extractPubsubData(raw any) (data []byte, from string) {
 		return v.Data, peer.ID(v.GetFrom()).ShortString()
 	case pubsub.Message:
 		return v.Data, peer.ID(v.GetFrom()).ShortString()
-	}
-
-	rv := reflect.ValueOf(raw)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
+	case p2put.Event:
+		if v.Type != "pubsub" {
 			return nil, ""
 		}
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
+		val := reflect.ValueOf(v.Value)
+		for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
+			if val.IsNil() {
+				return nil, ""
+			}
+			val = val.Elem()
+		}
+		if val.Kind() != reflect.Struct {
+			return nil, ""
+		}
+		if f := val.FieldByName("Data"); f.IsValid() {
+			if s, ok := f.Interface().(string); ok {
+				data = []byte(s)
+			}
+		}
+		if f := val.FieldByName("From"); f.IsValid() {
+			from, _ = f.Interface().(string)
+		}
+		return data, from
+	default:
 		return nil, ""
 	}
-	if f := rv.FieldByName("Type"); f.IsValid() {
-		if t, ok := f.Interface().(string); !ok || t != "pubsub" {
-			return nil, ""
-		}
-	}
-	val := rv.FieldByName("Value")
-	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-		if val.IsNil() {
-			return nil, ""
-		}
-		val = val.Elem()
-	}
-	if val.Kind() != reflect.Struct {
-		return nil, ""
-	}
-	if f := val.FieldByName("Data"); f.IsValid() {
-		if s, ok := f.Interface().(string); ok {
-			data = []byte(s)
-		}
-	}
-	if f := val.FieldByName("From"); f.IsValid() {
-		from, _ = f.Interface().(string)
-	}
-	return data, from
 }
 
 // onP2PTopicEvent 消费 p2put 收到的消息:过滤 proto_type=mobsub,
 // 解析 endpoint/p256dh/auth,按 auth 为键存入 map 并刷新 last_seen。
 // 回调在 p2put 的独立 goroutine 里跑(fireCallbacks),故全程加锁。
+// 通道内混着全部协议流量,故先用 gjson 精确判定 proto_type 作廉价过滤,
+// 只对疑似 mobsub 的载荷做一次 Unmarshal。
 func onP2PTopicEvent(raw any) {
 	data, from := extractPubsubData(raw)
 	if len(data) == 0 {
 		return
 	}
-	var m struct {
-		ProtoType string `json:"proto_type"`
-		Endpoint  string `json:"endpoint"`
-		P256dh    string `json:"p256dh"`
-		Auth      string `json:"auth"`
-		UAID      string `json:"uaid"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
+	// 第一步:按 key 精确判定(优于子串匹配,聊天内容里的 "mobsub" 不会误触发),
+	// 缺失/非 mobsub 一律返回,不进入全量解码。
+	if gjson.GetBytes(data, "proto_type").String() != "mobsub" {
 		return
 	}
-	if m.ProtoType != "mobsub" {
+	// 第二步:命中的少数才做一次 Unmarshal 取全部字段。
+	var m struct {
+		Endpoint string `json:"endpoint"`
+		P256dh   string `json:"p256dh"`
+		Auth     string `json:"auth"`
+		UAID     string `json:"uaid"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
 		return
 	}
 	if m.Endpoint == "" || m.P256dh == "" || m.Auth == "" {

@@ -168,7 +168,7 @@ require (
 	github.com/quic-go/webtransport-go v0.11.1 // indirect
 	github.com/sashabaranov/go-openai v1.41.2 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/tidwall/gjson v1.14.4 // indirect
+	github.com/tidwall/gjson v1.14.4
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
