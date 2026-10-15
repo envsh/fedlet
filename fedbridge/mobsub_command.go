@@ -138,6 +138,10 @@ func startMobSub(cfg mobsubConfig) {
 
 func handleMobSubMsg(src string, msg []byte) {
 	log.Printf("mobsub[%s]: %s", src, msg)
+	err := publishBytes(channel_name, msg)
+	if err != nil {
+		log.Println("[mobsub] repub", err)
+	}
 }
 
 // maskSecret 日志打码:保留首尾各 3 位,中间以 *** 代替。
@@ -342,7 +346,7 @@ func runMobSubSelfSend(cfg mobsubConfig, st *mobsubState) {
 		n++
 		payload, err := json.Marshal(map[string]any{
 			"proto_type":    "mobsub",
-			"uaid":    st.UAID,
+			"uaid":    "", // st.UAID,
 			"virtip4": virtIP(),
 			"peerid7": peerID7(),
 			"seq":       n,
@@ -358,6 +362,55 @@ func runMobSubSelfSend(cfg mobsubConfig, st *mobsubState) {
 		}
 		log.Printf("[mobsub] moz %s: self-send #%d ok", cfg.uaid, n)
 	}
+}
+
+// sendMozPushSunup 用订阅密钥(endpoint/auth/p256dh)按 RFC8291(aes128gcm)加密并发送一条
+// WebPush(RFC8030)通知,可被 Android 上的 Sunup(UnifiedPush distributor,后端 Mozilla
+// Autopush)解密。p256dh/auth 须来自 Sunup 订阅(UnifiedPush 注册所得),非本进程 uaid 派生值。
+//
+// 本实现走 v1 签名:endpoint 为注册时未绑定 VAPID 的 capability URL(UnifiedPush connector
+// 默认 vapid=null,/wpush/v1/... ),故发送端 VAPID 可选、每次临时生成即可;Sunup APK
+// (Autopush 后端,要求 Content-Encoding=aes128gcm + TTL 头、返回 201)与之兼容,可正常解密。
+// 若订阅注册时绑定了 VAPID 公钥(v2 endpoint),则须配对私钥,本签名不覆盖(会 401)。
+//
+// 规范:UnifiedPush ANDROID 3.0(server→server = WebPush)、RFC8291 加密、RFC8292 VAPID。
+func sendMozPushSunup(msg any, endpoint, auth, p256dh string) error {
+	if endpoint == "" || auth == "" || p256dh == "" {
+		return errors.New("sendMozPushSunup: endpoint/auth/p256dh 不可为空")
+	}
+	var payload []byte
+	switch m := msg.(type) {
+	case []byte:
+		payload = m
+	case json.RawMessage:
+		payload = m
+	case string:
+		payload = []byte(m)
+	case nil:
+		payload = []byte("null")
+	default:
+		b, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("sendMozPushSunup: marshal: %w", err)
+		}
+		payload = b
+	}
+	vpriv, vpub, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		return fmt.Errorf("sendMozPushSunup: 生成 VAPID: %w", err)
+	}
+	sub := &webpush.Subscription{
+		Endpoint: endpoint,
+		Keys:     webpush.Keys{P256dh: p256dh, Auth: auth},
+	}
+	opts := &webpush.Options{
+		Subscriber:      "mobsub@localhost", // → mailto:... 合法 URI
+		VAPIDPublicKey:  vpub,
+		VAPIDPrivateKey: vpriv,
+		TTL:             60,
+		HTTPClient:      httpClient30s,
+	}
+	return sendMobSubSelf(sub, opts, payload) // 复用:POST + 2xx(含 201)校验 + 关 body
 }
 
 func sendMobSubSelf(sub *webpush.Subscription, opts *webpush.Options, payload []byte) error {
