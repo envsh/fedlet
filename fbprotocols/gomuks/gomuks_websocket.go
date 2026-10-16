@@ -311,6 +311,13 @@ func gomuksEventLoop(c *websocket.Conn) {
 				ch <- nil
 			}
 			continue
+		// typing is a standalone backend event; drop it instead of forwarding it
+		// raw to the mesh. m.receipt, m.read and m.fully_read would ideally be
+		// dropped too, but they are embedded in sync_complete (rooms[*].receipts
+		// and account_data) and gomuks has no config to disable just those, so
+		// they cannot be stripped here and ride along with sync_complete.
+		case resp.Command == "typing":
+			continue
 		case resp.RequestID == 0 && isGomuksControl(resp.Command):
 			continue
 		}

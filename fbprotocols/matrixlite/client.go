@@ -457,7 +457,9 @@ func (c *Client) normalSync(timeout time.Duration) ([]map[string]any, error) {
 	if timeout > 0 {
 		q.Set("timeout", strconv.Itoa(int(timeout.Milliseconds())))
 	}
-	q.Set("filter", `{"room":{"timeline":{"limit":10},"state":{"lazy_load_members":true,"event_fields":["type","content","sender","state_key","event_id","origin_server_ts"]}},"presence":{"types":["m.presence"]},"event_fields":["type","content","sender","event_id","origin_server_ts"]}`)
+	// Only messages and presence are needed: drop typing/receipt (ephemeral) and
+	// m.read/m.fully_read (room account_data); this client parses neither.
+	q.Set("filter", `{"room":{"timeline":{"limit":10},"state":{"lazy_load_members":true,"event_fields":["type","content","sender","state_key","event_id","origin_server_ts"]},"ephemeral":{"not_types":["m.typing","m.receipt"]},"account_data":{"not_types":["m.read","m.fully_read"]}},"presence":{"types":["m.presence"]},"event_fields":["type","content","sender","event_id","origin_server_ts"]}`)
 	u += "?" + q.Encode()
 
 	resp, err := c.doRequest(http.MethodGet, u, nil)
