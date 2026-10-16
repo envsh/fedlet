@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -35,16 +36,16 @@ var (
 // can be unit-tested offline.
 var doNtfyPublishFn = doNtfyPublish
 
-func publishNtfy(protocol, channel string, v any) {
+func publishNtfy(protocol, channel string, v any) error {
 	if ntfyshTopic == "" {
-		return
+		return nil
 	}
 	ntfyMu.Lock()
 	inBackoff := time.Now().Before(ntfyRetryAfter)
 	ntfyMu.Unlock()
 	if inBackoff {
 		ntfySkipped.Add(1)
-		return
+		return nil
 	}
 	var body string
 	var title string
@@ -63,14 +64,14 @@ func publishNtfy(protocol, channel string, v any) {
 		panic("not support")
 	}
 	if body == "" {
-		return
+		return nil
 	}
 	url := ntfyshServer + "/" + ntfyshTopic + "?up=1"
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		ntfySentFail.Add(1)
 		log.Printf("ntfysh: request error: %v", err)
-		return
+		return err
 	}
 	req.Header.Set("Title", title)
 	req.Header.Set("Tags", protocol)
@@ -78,7 +79,7 @@ func publishNtfy(protocol, channel string, v any) {
 	if err != nil {
 		ntfySentFail.Add(1)
 		log.Printf("ntfysh: publish error: %v", err)
-		return
+		return err
 	}
 	if status == 200 {
 		ntfySentOK.Add(1)
@@ -90,7 +91,7 @@ func publishNtfy(protocol, channel string, v any) {
 			log.Printf("ntfysh: backoff ended, skipped %d (ok=%d fail=%d)",
 				n, ntfySentOK.Load(), ntfySentFail.Load())
 		}
-		return
+		return nil
 	}
 	ntfySentFail.Add(1)
 	ntfyMu.Lock()
@@ -106,6 +107,7 @@ func publishNtfy(protocol, channel string, v any) {
 	ntfyMu.Unlock()
 	log.Printf("ntfysh: status %d retry-after=%s backoff=%v body=%s len=%v",
 		status, retryAfter, d, respBody, len(body))
+	return fmt.Errorf("ntfysh: status %d: %s", status, respBody)
 }
 
 // doNtfyPublish performs the real POST, returning status, Retry-After header

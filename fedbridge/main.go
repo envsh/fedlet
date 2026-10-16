@@ -56,8 +56,12 @@ var channel_name = "reddit"
 
 func publish(protocol, channel string, v any) error {
 	switch vv := v.(type) {
+	case []byte:
+		panic(fmt.Sprintf("publish: raw []byte not allowed (channel=%s, len=%d)", channel, len(vv)))
+
 	// 是否要使用后端解析还是UI端解析呢,后端解析部署麻烦
 	// 这个server层还是只做数据拉取,原样返回UI客户端,忽略统一化解析
+	// mob上接收该类型事件,减小解析复杂度
 	case fbshared.UnifiedMessage:
 		data, err := json.Marshal(vv)
 		if err != nil {
@@ -78,12 +82,15 @@ func publish(protocol, channel string, v any) error {
 			vv.ChatID, vv.ChatName,
 			vv.UserID, vv.Username,
 			len(vv.Text), len(vv.Attachments))
-		publishNtfy(protocol, channel, vv)
-		publishWebPush(protocol, channel, vv)
-		return err
+		
+		if matchPubMsg(data, "proto_type", "mobsub") {
+			return nil
+		}
 
-	case []byte:
-		panic(fmt.Sprintf("publish: raw []byte not allowed (channel=%s, len=%d)", channel, len(vv)))
+		err = publishNtfy(protocol, channel, vv)
+		if false { err = publishWebPush(protocol, channel, vv)
+		} else { err = publishMozPush(protocol, channel, vv) }
+		return err
 
 	default:
 		data, err := json.Marshal(v)
@@ -99,7 +106,7 @@ func publish(protocol, channel string, v any) error {
 		if err != nil {
 			log.Println(channel, len(data), time.Since(btime), err)
 		}
-		// publishNtfy(protocol, channel, v)
+
 		return err
 	}
 }

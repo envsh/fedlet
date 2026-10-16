@@ -96,13 +96,14 @@ func initWebpush() error {
 	return nil
 }
 
-func publishWebPush(protocol, channel string, v any) {
+// depppp
+func publishWebPush(protocol, channel string, v any) error {
 	if webpushSub == nil || webpushOpts == nil {
-		return
+		return nil
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		return
+		return err
 	}
 	opts := *webpushOpts
 	opts.Topic = ntfyshTopic
@@ -110,7 +111,40 @@ func publishWebPush(protocol, channel string, v any) {
 	resp, err := webpush.SendNotification(data, webpushSub, &opts)
 	if err != nil {
 		log.Printf("webpush: %v", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
+	return nil
+}
+
+func publishMozPush(protocol, channel string, v any) error {
+	subs := mobsubSnapshot()
+	if len(subs) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	if matchPubMsg(data, "proto_type", "mobsub") {
+		return nil
+	}
+	go func() {
+		failn := 0
+		var firstErr error
+		for _, sub := range subs {
+			if err := sendMozPushSunup(v, sub.Endpoint, sub.Auth, sub.P256dh); err != nil {
+				failn++
+				if firstErr == nil {
+					firstErr = err
+				}
+				log.Printf("[mobsub] mozpush %s: auth=%s endpoint=%s: %v",
+					protocol, toDisplaySecret(sub.Auth), sub.Endpoint, err)
+				continue
+			}
+		}
+		log.Printf("[mobsub] mozpush protocol=%s channel=%s ok=%d fail=%d firstErr=%v",
+			protocol, channel, len(subs)-failn, failn, firstErr)
+	}()
+	return nil
 }

@@ -72,6 +72,10 @@ func onP2PTopicEvent(raw any) {
 	if gjson.GetBytes(data, "proto_type").String() != "mobsub" {
 		return
 	}
+	if !matchPubMsg(data, "proto_type", "mobsub") {
+		log.Println("wtfff, some error")
+	}
+		
 	// 第二步:命中的少数才做一次 Unmarshal 取全部字段。
 	var m struct {
 		Endpoint string `json:"endpoint"`
@@ -120,6 +124,41 @@ func onP2PTopicEvent(raw any) {
 	}
 	log.Printf("[mobsub] 收集订阅 auth=%s endpoint=%s uaid=%s peer=%s",
 		toDisplaySecret(m.Auth), m.Endpoint, m.UAID, from)
+}
+
+// matchPubMsg 通用「发布消息」过滤器:按平铺的键值对 [K,V,K,V,...] 全部命中才返回 true,
+// 供 publishMozPush 决定一条消息是否推送。
+//
+// 参数格式:
+//
+//	K = gjson 路径(点号分隔,如 "protocol"、"msgtype"、"chat.name"、"items.#.type")
+//	V = 期望的字面值,精确比较(不做通配/正则/大小写折叠)
+//
+// 语义:
+//   - 无参 → 不过滤,恒 true
+//   - 多组之间为 AND:每一组 K 取到的字符串值都等于 V 才 true
+//   - 末尾若落单(只给 K 没给 V)→ 视作「K 存在且非空」的存在性判断
+//
+// 例:matchPubMsg(data, "msgtype", "create")
+//
+//	matchPubMsg(data, "protocol", "matrixlite", "msgtype", "create")
+func matchPubMsg(data []byte, kv ...string) bool {
+	if len(kv) == 0 {
+		return true
+	}
+	for i := 0; i < len(kv); i += 2 {
+		v := gjson.GetBytes(data, kv[i])
+		if i+1 >= len(kv) { // 落单键:存在且非空
+			if !v.Exists() || v.String() == "" {
+				return false
+			}
+			continue
+		}
+		if v.String() != kv[i+1] {
+			return false
+		}
+	}
+	return true
 }
 
 // mobsubSnapshot 供后续 push 到移动 app 取用:深拷贝,不泄露内部指针。
