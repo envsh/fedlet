@@ -40,3 +40,14 @@ func TestParsePmset(t *testing.T) {
 		t.Fatalf("got %+v", b)
 	}
 }
+
+// A discharging line must not be read as charging: the substring "charging" is
+// itself contained in "discharging".
+func TestParsePmsetDischarging(t *testing.T) {
+	out := "Now drawing from 'Battery Power'\n" +
+		" -InternalBattery-0 (id=1)\t78%; discharging; 4:12 remaining present: true\n"
+	b := parsePmsetBatt(out)
+	if b.capacity != 78 || b.externalPower || b.charging {
+		t.Fatalf("got %+v", b)
+	}
+}

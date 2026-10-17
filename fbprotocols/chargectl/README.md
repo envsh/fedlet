@@ -150,6 +150,7 @@ go test -race ./fbprotocols/chargectl/
 | `TestParseIoregBattery` | `ioreg` 解析(Intel mAh 换算百分比) |
 | `TestParseIoregBatteryAS` | Apple silicon `MaxCapacity=100` 时直接用百分比 |
 | `TestParsePmset` | `pmset -g batt` 回退解析 |
+| `TestParsePmsetDischarging` | `discharging` 不被误判为充电 |
 
 测试用 `sandbox()` 把 `sysRoot` 指向临时目录,并用 fixture 目录模拟
 `/sys/class/power_supply` 与厂商节点(`ctrl_linux.go`,仅 linux/android)。
@@ -174,6 +175,8 @@ go test -race ./fbprotocols/chargectl/
   `FEDLET_CHARGECTL_SUDO="sudo -n"` 注入前缀,`none` 表示不提权。
 - env 覆盖:`FEDLET_CHARGECTL_SMC`(默认 `smc`)、`FEDLET_CHARGECTL_BCLM`(默认
   `bclm`)、`FEDLET_CHARGECTL_MAC_MODE=auto|level|switch`、`FEDLET_CHARGECTL_SUDO`。
+- 稳健性:所有外部调用 5s 超时;连续写失败 3 次后重新探测;只读降级经 `AuthStatus`
+  暴露为 `read-only`;`CHWA`(固定 80%)命中时打印忽略 75/30 的告警。
 - **现代 macOS 限制(root 不能绕过)**:BCLM 在 macOS `>= 15.0` 为 no-op(需关 SIP);
   `CH0B/CH0C/CHTE` 在 `26.7+`/`27 beta` 即使 root 也返回 `kIOReturnNotPrivileged`。
   写入失败即降级只读并告警。若机器暴露 `bfF0` 等固件上限键,需由支持该路径的工具

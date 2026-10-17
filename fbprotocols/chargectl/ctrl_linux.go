@@ -28,11 +28,6 @@ var writeRetryDelay = time.Second
 // drivers transiently return EBUSY right after a charger event.
 const writeRetries = 6
 
-// reprobeAfter is the number of consecutive failed writes after which the loop
-// re-probes the hardware, in case the chosen node was removed (hot-unplug, a
-// driver reload). Failures are cheap to detect and re-probing resets everything.
-const reprobeAfter = 3
-
 // Start launches the control loop. It is idempotent: a second call while the
 // loop is running does nothing.
 func Start() {
@@ -83,6 +78,7 @@ func runLoop(stop <-chan struct{}) {
 		err := errors.New("no controllable charge node found")
 		pushError(err)
 		logf("%v; giving up", err)
+		setRunning(false)
 		return
 	}
 	logf("using %s (mode=%s)", ctl.label, ctl.modeName())

@@ -29,6 +29,10 @@ const (
 	Interval = 30 * time.Second
 )
 
+// reprobeAfter is the number of consecutive failed writes after which the loop
+// re-probes the hardware, in case the chosen node or backend went away.
+const reprobeAfter = 3
+
 // thresholds holds the active {pause, resume} window; nil means the defaults.
 var thresholds atomic.Pointer[[2]int]
 
@@ -70,6 +74,12 @@ func resumeAt() int { _, r := Thresholds(); return r }
 
 // authStatusLocal is reported for a backend that needs no credentials.
 const authStatusLocal = "local"
+
+// authStatusOverride lets a platform backend surface a degraded mode (the macOS
+// read-only fallback) through the same AuthStatus field.
+var authStatusOverride atomic.Value
+
+func setAuthStatus(s string) { authStatusOverride.Store(s) }
 
 var (
 	statusRunning        atomic.Bool
@@ -132,4 +142,9 @@ func LastErrs() []error {
 }
 
 // AuthStatus reports the operating mode; nothing here needs credentials.
-func AuthStatus() string { return authStatusLocal }
+func AuthStatus() string {
+	if v := authStatusOverride.Load(); v != nil {
+		return v.(string)
+	}
+	return authStatusLocal
+}

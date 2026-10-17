@@ -3,6 +3,7 @@
 package chargectl
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -47,6 +48,16 @@ func sudoArgs() []string {
 		return strings.Fields(v)
 	}
 	return nil
+}
+
+// runTimeout bounds every external tool call so a hung ioreg/pmset/smc/bclm
+// cannot stall the control loop.
+const runTimeout = 5 * time.Second
+
+func runOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 // Start launches the control loop (idempotent).
@@ -94,6 +105,7 @@ type macLoopState struct {
 	lastPlug   bool
 	havePlug   bool
 	warned     bool
+	roWarned   bool
 	writeFails int
 }
 
@@ -111,6 +123,13 @@ func runMacLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
+			if st.writeFails >= reprobeAfter {
+				if nc := macProbeController(); nc.kind != "readonly" {
+					logf("re-probing after %d failed writes (now %s)", st.writeFails, nc.label)
+					ctl = nc
+				}
+				st.writeFails = 0
+			}
 			checkMacOnce(ctl, st)
 		}
 	}
@@ -129,6 +148,10 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 			logf("charger unplugged (battery=%s)", name)
 		}
 		st.lastPlug, st.havePlug = plugged, true
+	}
+
+	if !plugged || capacity < pauseAt() {
+		st.warned = false
 	}
 
 	switch ctl.kind {
@@ -175,9 +198,9 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 			st.lastState = desired
 		}
 	default:
-		if !st.warned {
+		if !st.roWarned {
 			logf("read-only: battery=%d%% plugged=%v; install bclm or smc (see README) to enable charge control", capacity, plugged)
-			st.warned = true
+			st.roWarned = true
 		}
 		return
 	}
@@ -189,6 +212,18 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 }
 
 func macProbeController() *macCtl {
+	ctl := macDetect()
+	if ctl.kind == "readonly" {
+		setAuthStatus("read-only")
+	} else {
+		setAuthStatus(authStatusLocal)
+	}
+	return ctl
+}
+
+// macDetect resolves a backend from the installed tools and
+// FEDLET_CHARGECTL_MAC_MODE (auto|level|switch).
+func macDetect() *macCtl {
 	bclmPath, bclmErr := exec.LookPath(bclmBin)
 	smcPath, smcErr := exec.LookPath(smcBin)
 	haveBclm := bclmErr == nil
@@ -204,6 +239,9 @@ func macProbeController() *macCtl {
 			return macSMSCtrl(smcPath)
 		}
 		return &macCtl{kind: "readonly", label: "read-only (smc not found)"}
+	case "", "auto":
+	default:
+		logf("unknown FEDLET_CHARGECTL_MAC_MODE=%q; using auto", macMode)
 	}
 	if haveBclm {
 		return &macCtl{kind: "bclm", label: bclmPath, bin: bclmPath}
@@ -225,18 +263,19 @@ func macSMSCtrl(path string) *macCtl {
 		return &macCtl{kind: "smc", label: "smc CHTE", bin: path, key: "CHTE", stopVal: "01000000", allowVal: "00000000"}
 	}
 	if _, ok := smcRead(path, "CHWA"); ok {
+		logf("warning: CHWA is a fixed 80%% firmware cap; the %d/%d%% window is ignored", pauseAt(), resumeAt())
 		return &macCtl{kind: "smc", label: "smc CHWA (fixed 80%)", bin: path, key: "CHWA", stopVal: "01", allowVal: "00"}
 	}
 	return &macCtl{kind: "readonly", label: "read-only (no known SMC atom)"}
 }
 
 func macReadBattery() (name string, capacity int, plugged, charging, ok bool) {
-	if out, err := exec.Command("ioreg", "-rn", "AppleSmartBattery").Output(); err == nil {
+	if out, err := runOutput("ioreg", "-rn", "AppleSmartBattery"); err == nil {
 		if b := parseIoregBattery(string(out)); b.installed && b.capacity >= 0 {
 			return "AppleSmartBattery", b.capacity, b.externalPower, b.charging, true
 		}
 	}
-	if out, err := exec.Command("pmset", "-g", "batt").Output(); err == nil {
+	if out, err := runOutput("pmset", "-g", "batt"); err == nil {
 		if b := parsePmsetBatt(string(out)); b.capacity >= 0 {
 			return "InternalBattery", b.capacity, b.externalPower, b.charging, true
 		}
@@ -270,7 +309,7 @@ func (c *macCtl) startCharging() error {
 
 // smcRead reads an SMC atom; ok=false when the tool errors or the atom is absent.
 func smcRead(path, key string) (string, bool) {
-	out, err := exec.Command(path, "-k", key, "-r").Output()
+	out, err := runOutput(path, "-k", key, "-r")
 	if err != nil {
 		return "", false
 	}
@@ -286,7 +325,9 @@ func runOut(argv ...string) error {
 	if len(argv) == 0 {
 		return errors.New("empty command")
 	}
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
 	}

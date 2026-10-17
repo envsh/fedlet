@@ -95,7 +95,7 @@ func parsePmsetBatt(out string) macBattery {
 					b.capacity = n
 				}
 			}
-			b.charging = strings.Contains(l, "charging")
+			b.charging = strings.Contains(l, "charging") && !strings.Contains(l, "discharging")
 			b.fullyCharged = strings.Contains(l, "charged") && !strings.Contains(l, "discharging")
 		}
 	}
