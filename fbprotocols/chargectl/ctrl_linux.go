@@ -28,9 +28,10 @@ var writeRetryDelay = time.Second
 // drivers transiently return EBUSY right after a charger event.
 const writeRetries = 6
 
-// atCapacity is the pseudo-value meaning "the battery's current capacity".
-// ACC writes it to charge_stop_level to stop charging where the pack is now.
-const atCapacity = "@capacity"
+// reprobeAfter is the number of consecutive failed writes after which the loop
+// re-probes the hardware, in case the chosen node was removed (hot-unplug, a
+// driver reload). Failures are cheap to detect and re-probing resets everything.
+const reprobeAfter = 3
 
 // Start launches the control loop. It is idempotent: a second call while the
 // loop is running does nothing.
@@ -66,9 +67,11 @@ func Stop() {
 // loopState is per-run state. It is deliberately not persisted: a restart
 // re-probes the hardware and re-derives everything from the current charge.
 type loopState struct {
-	paused   bool
-	lastPlug bool
-	havePlug bool
+	lastState  int
+	lastPlug   bool
+	havePlug   bool
+	warned     bool
+	writeFails int
 }
 
 func runLoop(stop <-chan struct{}) {
@@ -94,6 +97,13 @@ func runLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
+			if st.writeFails >= reprobeAfter {
+				if nc := probeController(); nc != nil {
+					logf("re-probing after %d failed writes (now %s, mode=%s)", st.writeFails, nc.label, nc.modeName())
+					ctl = nc
+				}
+				st.writeFails = 0
+			}
 			checkOnce(ctl, st)
 		}
 	}
@@ -118,43 +128,74 @@ func checkOnce(ctl *controller, st *loopState) {
 		st.lastPlug, st.havePlug = plugged, true
 	}
 
-	// Threshold mode lets the kernel own the hysteresis: once both thresholds
-	// are set it charges below the start level and stops at the end level with
-	// no further help from us.
-	if ctl.mode == modeThreshold {
-		if err := ctl.ensureThreshold(); err != nil {
-			pushError(fmt.Errorf("threshold write: %w", err))
-		}
-		return
-	}
-
 	if capacity < 0 {
 		pushError(errors.New("battery capacity unreadable"))
 		return
 	}
 
-	// Nothing can be done while unplugged; when the charger returns the state
-	// below re-applies the limit if the pack is still above the pause level.
+	switch ctl.mode {
+	case modeThreshold:
+		// Kernel owns the hysteresis: charge below start, stop at end.
+		if err := ctl.ensureThreshold(); err != nil {
+			st.writeFails++
+			pushError(fmt.Errorf("threshold write: %w", err))
+		} else {
+			st.writeFails = 0
+		}
+		ctl.checkEffective(name, capacity, plugged, st)
+		return
+	case modeLevel:
+		// End-threshold only: charge up to PauseAt and stop; recharges below it,
+		// so no resume step is needed.
+		if err := ctl.ensureLevel(); err != nil {
+			st.writeFails++
+			pushError(fmt.Errorf("level write: %w", err))
+		} else {
+			st.writeFails = 0
+		}
+		ctl.checkEffective(name, capacity, plugged, st)
+		return
+	}
+
 	if !plugged {
 		return
 	}
 
+	// Stateless hysteresis: derive the wanted state from the capacity on every
+	// tick and let the lazy write make it idempotent. This survives restarts and
+	// any stale hardware state left behind by a previous run.
+	desired := -1 // -1: leave as-is
 	switch {
-	case capacity >= PauseAt && !st.paused:
-		if err := ctl.stopCharging(capacity); err != nil {
-			pushError(fmt.Errorf("pause: %w", err))
-			return
-		}
-		st.paused = true
-		logf("capacity=%d%% >= %d%%: charging paused", capacity, PauseAt)
-	case capacity <= ResumeAt && st.paused:
-		if err := ctl.startCharging(); err != nil {
-			pushError(fmt.Errorf("resume: %w", err))
-			return
-		}
-		st.paused = false
-		logf("capacity=%d%% <= %d%%: charging resumed", capacity, ResumeAt)
+	case capacity >= PauseAt:
+		desired = 1
+	case capacity <= ResumeAt:
+		desired = 0
 	}
+	if desired < 0 {
+		st.lastState = -1
+		return
+	}
+	var err error
+	if desired == 1 {
+		err = ctl.stopCharging()
+	} else {
+		err = ctl.startCharging()
+	}
+	if err != nil {
+		st.writeFails++
+		pushError(fmt.Errorf("apply: %w", err))
+		return
+	}
+	st.writeFails = 0
+	if desired != st.lastState {
+		if desired == 1 {
+			logf("capacity=%d%% >= %d%%: charging stopped", capacity, PauseAt)
+		} else {
+			logf("capacity=%d%% <= %d%%: charging resumed", capacity, ResumeAt)
+		}
+		st.lastState = desired
+	}
+	ctl.checkEffective(name, capacity, plugged, st)
 }
 
 // readBattery returns the first present Battery supply's name and capacity (%).
@@ -182,8 +223,18 @@ func readBattery() (string, int, bool) {
 	return "", -1, false
 }
 
-// readPlugged reports whether any external supply is online. The supply type
-// names cover Mains/USB/Wireless and the USB variants Android drivers use.
+// externalSupplies are the supply "type" values that mean an attached charger.
+var externalSupplies = map[string]bool{
+	"Mains": true, "USB": true, "USB_C": true, "USB_DCP": true,
+	"USB_CDP": true, "USB_ACA": true, "USB_PD": true, "USB_HVDCP": true,
+	"Wireless": true,
+}
+
+// plugNames are supply device names that mean an attached charger regardless of
+// the reported type (ACC also watches dc/online and pc_port/online).
+var plugNames = map[string]bool{"dc": true, "pc_port": true}
+
+// readPlugged reports whether any external supply is online.
 func readPlugged() bool {
 	base := resolve(powerSupplyDir)
 	entries, err := os.ReadDir(base)
@@ -192,18 +243,59 @@ func readPlugged() bool {
 	}
 	for _, e := range entries {
 		dir := filepath.Join(base, e.Name())
-		typ, ok := readSysfsString(dir, "type")
-		if !ok {
+		typ, _ := readSysfsString(dir, "type")
+		if !externalSupplies[typ] && !plugNames[e.Name()] {
 			continue
 		}
-		switch typ {
-		case "Mains", "USB", "USB_C", "USB_DCP", "USB_CDP", "USB_ACA", "USB_PD", "USB_HVDCP", "Wireless":
-			if v, ok := readSysfsInt(dir, "online"); ok && v > 0 {
-				return true
-			}
+		if v, ok := readSysfsInt(dir, "online"); ok && v > 0 {
+			return true
 		}
 	}
 	return false
+}
+
+// idleCurrentUA is the current below which a "Charging" status is treated as
+// idle, mirroring ACC's batt_status_workaround (a kernel may report Charging
+// while the pack draws no current).
+const idleCurrentUA = 40000
+
+// checkEffective emits a one-shot warning when a configured limit does not look
+// like it took effect: the charger is attached, capacity is at or above PauseAt,
+// yet the pack still reports active charging. It never changes state.
+func (c *controller) checkEffective(name string, capacity int, plugged bool, st *loopState) {
+	if !plugged || capacity < PauseAt {
+		st.warned = false
+		return
+	}
+	if st.warned {
+		return
+	}
+	if chargingNow(name) {
+		logf("warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, PauseAt, c.label)
+		st.warned = true
+	}
+}
+
+// chargingNow reports whether the pack is drawing meaningful charge current.
+func chargingNow(name string) bool {
+	dir := filepath.Join(resolve(powerSupplyDir), name)
+	if status, _ := readSysfsString(dir, "status"); status != "Charging" {
+		return false
+	}
+	cur, ok := readSysfsInt(dir, "current_now")
+	if !ok {
+		// Without a current reading an idle pack and a charging one are
+		// indistinguishable; stay quiet rather than risk a false alarm.
+		return false
+	}
+	return abs64(cur) > idleCurrentUA
+}
+
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // ---- controller ----
@@ -214,48 +306,89 @@ const (
 	// modeThreshold is the kernel charge-control ABI: a start and an end
 	// threshold node the kernel itself enforces.
 	modeThreshold mode = iota
+	// modeLevel is an end-threshold-only node (ASUS, Apple, some Dell). Writing
+	// PauseAt makes the pack charge up to PauseAt and stop; it recharges whenever
+	// it drops below, so no resume step is needed.
+	modeLevel
 	// modeSwitch is a single vendor node written with an allow value or a stop
 	// value; the stop value may be atCapacity.
 	modeSwitch
 )
 
 func (m mode) String() string {
-	if m == modeThreshold {
+	switch m {
+	case modeThreshold:
 		return "threshold"
+	case modeLevel:
+		return "level"
+	default:
+		return "switch"
 	}
-	return "switch"
 }
 
 // controller is a resolved, writable charge-control node.
 type controller struct {
-	mode       mode
-	label      string
-	startPath  string
-	endPath    string
-	switchPath string
-	enableVal  string
-	disableVal string
+	mode             mode
+	label            string
+	startPath        string
+	endPath          string
+	switchPath       string
+	enableVal        string
+	disableVal       string
+	chargeTypePath   string
+	chargeTypeDone   bool
+	chargeTypeWarned bool
+	degraded         bool
 }
 
 func (c *controller) modeName() string { return c.mode.String() }
 
-// ensureThreshold writes the fixed hysteresis window. writeValue is lazy, so on
-// an already-correct node this is a read-only no-op.
+// ensureThreshold writes the fixed hysteresis window. It sets charge_type first
+// (some drivers gate the ABI on it), then the end threshold, then the start
+// threshold. If the start write fails the node still limits charging via end, so
+// it degrades to end-only mode instead of failing on every tick.
 func (c *controller) ensureThreshold() error {
-	if err := writeValue(c.startPath, strconv.Itoa(ResumeAt)); err != nil {
+	c.ensureChargeType()
+	if err := writeValue(c.endPath, strconv.Itoa(PauseAt)); err != nil {
 		return err
 	}
+	if c.degraded || c.startPath == "" {
+		return nil
+	}
+	if err := writeValue(c.startPath, strconv.Itoa(ResumeAt)); err != nil {
+		logf("start threshold write failed (%v); falling back to end=%d only", err, PauseAt)
+		c.degraded = true
+		c.mode = modeLevel
+	}
+	return nil
+}
+
+// ensureLevel keeps an end-threshold-only node at PauseAt.
+func (c *controller) ensureLevel() error {
+	c.ensureChargeType()
 	return writeValue(c.endPath, strconv.Itoa(PauseAt))
 }
 
-// stopCharging writes the stop value, expanding atCapacity to the measured
-// capacity so charge_stop_level halts where the pack is now.
-func (c *controller) stopCharging(capacity int) error {
-	val := c.disableVal
-	if val == atCapacity {
-		val = strconv.Itoa(capacity)
+// ensureChargeType writes "Custom" once so drivers that only honour the
+// charge-control thresholds in Custom mode (e.g. dell_laptop) take effect. It is
+// best effort: many kernels reject the value.
+func (c *controller) ensureChargeType() {
+	if c.chargeTypePath == "" || c.chargeTypeDone {
+		return
 	}
-	return writeValue(c.switchPath, val)
+	if err := writeValue(c.chargeTypePath, "Custom"); err != nil {
+		if !c.chargeTypeWarned {
+			logf("charge_type write failed (%v); will retry, thresholds may be ignored", err)
+			c.chargeTypeWarned = true
+		}
+		return
+	}
+	c.chargeTypeDone = true
+}
+
+// stopCharging writes the stop value.
+func (c *controller) stopCharging() error {
+	return writeValue(c.switchPath, c.disableVal)
 }
 
 func (c *controller) startCharging() error {
@@ -290,7 +423,16 @@ func (c candidate) resolve() *controller {
 		if !probeAccess(end) || !probeAccess(start) {
 			return nil
 		}
-		return &controller{mode: modeThreshold, label: c.label, startPath: start, endPath: end}
+		return &controller{mode: modeThreshold, label: c.label, startPath: start, endPath: end, chargeTypePath: findChargeType(end)}
+	case modeLevel:
+		end := firstMatch(c.endPat)
+		if end == "" {
+			return nil
+		}
+		if !probeAccess(end) {
+			return nil
+		}
+		return &controller{mode: modeLevel, label: c.label, endPath: end, chargeTypePath: findChargeType(end)}
 	default:
 		p := firstMatch(c.pat)
 		if p == "" {
@@ -301,6 +443,19 @@ func (c candidate) resolve() *controller {
 		}
 		return &controller{mode: modeSwitch, label: c.label, switchPath: p, enableVal: c.enableVal, disableVal: c.disableVal}
 	}
+}
+
+// findChargeType returns a writable charge_type (or charge_types) beside end,
+// or "".
+func findChargeType(end string) string {
+	dir := filepath.Dir(end)
+	for _, name := range []string{"charge_type", "charge_types"} {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && probeAccess(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 // probeController walks the ordered tables and returns the first usable node.
@@ -363,6 +518,10 @@ func writeValue(path, val string) error {
 	}
 	var err error
 	for i := 0; i < writeRetries; i++ {
+		if err = os.WriteFile(path, []byte(val+"\n"), 0o644); err == nil {
+			return nil
+		}
+		// Some nodes reject the trailing newline; retry the bare value.
 		if err = os.WriteFile(path, []byte(val), 0o644); err == nil {
 			return nil
 		}

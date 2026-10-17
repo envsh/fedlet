@@ -30,6 +30,9 @@ var accCandidates = []candidate{
 	{label: "battery/op_disable_charge", mode: modeSwitch, pat: "battery/op_disable_charge", enableVal: "0", disableVal: "1"},
 	{label: "battery/batt_slate_mode", mode: modeSwitch, pat: "battery/batt_slate_mode", enableVal: "0", disableVal: "1"},
 	{label: "battery/battery_input_suspend", mode: modeSwitch, pat: "battery/battery_input_suspend", enableVal: "0", disableVal: "1"},
+	// Samsung store_mode freezes the level where it was triggered (recovers only
+	// after the cable is pulled for a few seconds); ACC disables it by default.
+	// Keep it behind batt_slate_mode.
 	{label: "battery/store_mode", mode: modeSwitch, pat: "battery/store_mode", enableVal: "0", disableVal: "1"},
 	{label: "battery/restricted_charging", mode: modeSwitch, pat: "battery/restricted_charging", enableVal: "0", disableVal: "1"},
 	{label: "battery/siop_level", mode: modeSwitch, pat: "battery/siop_level", enableVal: "100", disableVal: "0"},
@@ -40,6 +43,7 @@ var accCandidates = []candidate{
 	// Vendor trees, addressed by absolute path.
 	{label: "/sys/class/hw_power/charger/charge_data/enable_charger", mode: modeSwitch, pat: "/sys/class/hw_power/charger/charge_data/enable_charger", enableVal: "1", disableVal: "0"},
 	{label: "/sys/class/qcom-battery/input_suspend", mode: modeSwitch, pat: "/sys/class/qcom-battery/input_suspend", enableVal: "0", disableVal: "1"},
+	{label: "/sys/class/qcom-battery/charging_enabled", mode: modeSwitch, pat: "/sys/class/qcom-battery/charging_enabled", enableVal: "1", disableVal: "0"},
 	{label: "/sys/devices/platform/huawei_charger/enable_charger", mode: modeSwitch, pat: "/sys/devices/platform/huawei_charger/enable_charger", enableVal: "1", disableVal: "0"},
 	{label: "/sys/devices/platform/lge-unified-nodes/charging_enable", mode: modeSwitch, pat: "/sys/devices/platform/lge-unified-nodes/charging_enable", enableVal: "1", disableVal: "0"},
 	{label: "/sys/devices/platform/lge-unified-nodes/charging_completed", mode: modeSwitch, pat: "/sys/devices/platform/lge-unified-nodes/charging_completed", enableVal: "0", disableVal: "1"},
@@ -54,7 +58,9 @@ var accCandidates = []candidate{
 	{label: "/sys/kernel/debug/google_charger/input_suspend", mode: modeSwitch, pat: "/sys/kernel/debug/google_charger/input_suspend", enableVal: "0", disableVal: "1"},
 	{label: "/sys/module/pm*_charger/parameters/disabled", mode: modeSwitch, pat: "/sys/module/pm*_charger/parameters/disabled", enableVal: "0", disableVal: "1"},
 
-	// Stop-level nodes: allow charging to 100%, or stop it at the current level.
-	{label: "/sys/devices/platform/google,charger/charge_stop_level", mode: modeSwitch, pat: "/sys/devices/platform/google,charger/charge_stop_level", enableVal: "100", disableVal: atCapacity},
-	{label: "/sys/module/lge_battery/parameters/charge_stop_level", mode: modeSwitch, pat: "/sys/module/lge_battery/parameters/charge_stop_level", enableVal: "100", disableVal: atCapacity},
+	// Stop-level nodes: an end-only limit, same semantics as
+	// charge_control_end_threshold. Writing 75 makes the pack charge to 75% and
+	// stop, then recharge whenever it drops below, so no resume write is needed.
+	{label: "/sys/devices/platform/google,charger/charge_stop_level", mode: modeLevel, endPat: "/sys/devices/platform/google,charger/charge_stop_level"},
+	{label: "/sys/module/lge_battery/parameters/charge_stop_level", mode: modeLevel, endPat: "/sys/module/lge_battery/parameters/charge_stop_level"},
 }

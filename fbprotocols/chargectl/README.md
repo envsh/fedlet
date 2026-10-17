@@ -29,17 +29,25 @@ cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhih
 | 模式 | 节点形态 | 停充 | 恢复 |
 | --- | --- | --- | --- |
 | `threshold` | 内核 ABI 一对节点 | 写 `charge_control_end_threshold=75`、`..._start_threshold=30` | 同上(恒置窗口,回滞由内核负责) |
-| `switch` | 单个厂商节点 | 写 `disableVal`(可能是 `@capacity` → 写当前容量) | 写 `enableVal` |
+| `level` | 内核 ABI 仅 end 节点 | 写 `charge_control_end_threshold=75` | 同节点:低于 75% 即自行充回,无需额外步骤 |
+| `switch` | 单个厂商布尔/开关节点 | 写 `disableVal` | 写 `enableVal` |
 
-候选表两套并存,由包内 `var preferACC = true` 决定先后:
+候选按顺序探测:内核 ABI(`kernelCandidates`)无条件优先,其次首选厂商表,
+再次其余内核节点(`charge_behaviour`),最后是固定上限的笔记本兜底
+(`laptopExtras`,当前为 IdeaPad `conservation_mode`)。厂商表先后由包内
+`var preferACC = true` 决定:
 
 - `nodes_acc.go` — 译自 ACC 的 `ctrl-files.sh` 开关表(默认优先);
-- `nodes_abi.go` — 自研内核 ABI 表(后备),含 `charge_control_*`、
-  `charge_stop_level`、`charge_behaviour`。
+- `nodes_abi.go` — 自研内核 ABI 表(后备)。
 
-`@capacity` 是伪值:停充时替换为当时读到的 `capacity`,对应 Google/LGE 的
-`charge_stop_level` 语义。`switch` 模式的 `writeValue` 是**懒写**:先读回,
-值相同就不写;失败重试 6 次、间隔 1s。
+`charge_stop_level`(Google/LGE)属 end-level 语义,与
+`charge_control_end_threshold` 一样恒写 `75`,不再使用"写当前容量"的 `@capacity`
+伪值(满电时写 `100` 等于不停充)。`writeValue` 是**懒写**:先读回,值相同就不
+写;失败重试 6 次、间隔 1s,每次重试先写 `值+\n`,被拒再写裸值。
+
+阈值/end-only 模式在写阈值前会 best-effort 写 `charge_type=Custom`——Dell 等
+驱动只有在 `Custom` 下才让 `charge_control_*` 生效(KDE #497200);写失败时保持
+未完成状态,下一轮重试(失败日志只打一次)。
 
 每轮决策(`checkOnce`):
 
@@ -47,9 +55,15 @@ cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhih
    记一次错误并空转);
 2. 由 `Mains`/`USB`/`USB_*`/`Wireless` 的 `online` 判断是否插着充电线,插拔各记一条日志;
 3. `threshold` 模式:恒置 `start=30/end=75` 后返回;
-4. `switch` 模式且已插线:`capacity>=75` 且未停 → 停充;`capacity<=30` 且已停 → 恢复;
-   中间区间不动(回滞)。未插线时不动作;重新插线后,若电量仍 `>=75` 则保持停充,
-   若已 `<=30` 则恢复。
+4. `level` 模式:恒置 `end=75` 后返回;
+5. `switch` 模式且已插线:按容量**无状态**决定——`capacity>=75` 写停、`capacity<=30`
+   写启、中间区间不动(回滞);`lastState` 仅用于日志去重。因不记忆状态,重启后
+   能自动纠正上次遗留的停充/恢复态;
+6. 有效性告警:阈值/level/switch 模式下,若已插线且 `capacity>=75`,但电池仍
+   `status=Charging` 且 `|current_now|>40mA`,记一条 warning,提示当前节点可能
+   无效——只告警,不自动切换节点;缺少 `current_now` 时不告警,避免误报。
+7. 连续写失败累计到 `reprobeAfter=3` 次时重新 `probeController()`,以应对节点
+   被热移除或驱动重载;任一次写入成功后计数清零。
 
 ## 权限探测
 
@@ -62,12 +76,25 @@ SELinux 拒写的问题:很多机型节点能读、写被拒。进程以 root �
 - `charge_control_start_threshold` / `charge_control_end_threshold`:
   Linux **4.20(2018-12 合并,2019-03 发布)** 加入的 power_supply 标准节点。
 - `charge_behaviour`(`auto` / `inhibit-charge` / `force-discharge`):更晚加入。
+- `charge_stop_level`(Google/LGE 等):单一百分比"停止档",按 end-level 语义使用。
 - Android 6~10 基本无上述标准节点;Android 12+ 部分机型才有,故主要靠厂商开关回退。
 - 未插线时的探测"按可写接受",不写入,标记为未实测。
 
 参考:
 - 内核文档 `Documentation/ABI/testing/sysfs-class-power`
 - ACC: <https://github.com/VR-25/acc>
+
+## 已知硬件怪癖
+
+- `battery/store_mode`(Samsung):触发时把电量冻在当前值,拔线数秒才解冻;ACC 默认
+  禁用它,故本表将其排在 `battery/batt_slate_mode` 之后。
+- `VPC2004:*/conservation_mode`(IdeaPad):布尔开关,`1` 把上限压到约 50-60%、
+  `0` 恢复充满;是**固定**上限,无法设成 75%,故排在所有百分比节点之后仅作兜底。
+- `charge_stop_level`(Google/LGE):按 end-level 恒写 75;不再用 `@capacity` 写当前
+  容量(满电时等于不停充)。
+- `charge_control_end_threshold` 的驱动会**四舍五入**写入值,读回为实际值;懒写可能
+  每轮重写一次,属正常。
+- 单 end 阈值机型(ASUS/Apple)无回滞,会在 75% 附近微循环,这是硬件行为。
 
 ## 平台矩阵
 
@@ -90,9 +117,18 @@ go test -race ./fbprotocols/chargectl/
 | --- | --- |
 | `TestProbePrefersThreshold` | ABI 表优先时选中阈值节点并写入 75/30 |
 | `TestProbeFallsBackToSwitch` | 仅有厂商开关时回退 `battery/store_mode` |
-| `TestWriteAtCapacity` | `@capacity` 替换为当前容量,恢复写 100 |
-| `TestHysteresis` | 50→76→76→20 的停/保持/恢复 |
+| `TestChargeStopLevelLevel` | `charge_stop_level` 选 `modeLevel` 并写 75 |
+| `TestConservationMode` | IdeaPad `conservation_mode` 兜底开关的停/启 |
+| `TestChargingNowMissingCurrent` | 无 `current_now` 时不误报在充电 |
+| `TestChargeTypeRetriesAfterFailure` | `charge_type` 写失败保持未完成、后续重试 |
+| `TestWriteFailTracking` | 写失败累计/成功清零(重探测依据) |
+| `TestHysteresis` | 50→76→76→20 的停/保持/恢复(校验 `lastState`) |
 | `TestPlugUnplug` | 插→拔→低位重插的状态机 |
+| `TestLevelMode` | 仅有 end 阈值时选 `modeLevel` 并写 75 |
+| `TestChargeTypeCustom` | 阈值写入前 best-effort 写 `charge_types=Custom` |
+| `TestThresholdDegrade` | start 写失败时降级为 end-only |
+| `TestStatelessSwitch` | 遗留停充态下中间区间不动、低电量恢复 |
+| `TestWriteAddsNewline` | 写入带尾随换行 |
 | `TestNoBatteryIdle` | 无电池时记错误、不 panic |
 | `TestProbeAccess` | 只读节点判定 + errno 归类 |
 
