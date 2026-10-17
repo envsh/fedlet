@@ -3,11 +3,15 @@
 // It is a purely local backend: it never publishes and never receives. While
 // fedbridge runs it re-asserts a charging limit on the battery hardware so the
 // pack spends its life around the middle of its range instead of pinned at full.
-// The policy is fixed (pause at PauseAt %, resume at ResumeAt %) and there is no
-// configuration file and no flag — the whole point is not to be another knob.
+// The window defaults to DefaultPauseAt/DefaultResumeAt and is runtime-tunable
+// via SetThresholds; fedbridge wires that to the chargectl-pause-at /
+// chargectl-resume-at settings (env FEDLET_CHARGECTL_PAUSE_AT / _RESUME_AT,
+// ~/.config/fedlet/config.json and the web config page). There is deliberately
+// no command-line flag.
 package chargectl
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -15,15 +19,54 @@ import (
 )
 
 const (
-	// PauseAt is the capacity (%) at or above which charging is stopped.
-	PauseAt = 75
-	// ResumeAt is the capacity (%) at or below which charging is allowed again.
-	// The gap to PauseAt is the hysteresis that stops a full pack from toggling
-	// the charger on and off every tick.
-	ResumeAt = 30
+	// DefaultPauseAt is the capacity (%) at or above which charging is stopped.
+	DefaultPauseAt = 75
+	// DefaultResumeAt is the capacity (%) at or below which charging is allowed
+	// again. The gap to pauseAt() is the hysteresis that stops a full pack from
+	// toggling the charger on and off every tick.
+	DefaultResumeAt = 30
 	// Interval is how often the battery state is re-checked.
 	Interval = 30 * time.Second
 )
+
+// thresholds holds the active {pause, resume} window; nil means the defaults.
+var thresholds atomic.Pointer[[2]int]
+
+// ValidateWindow rejects an out-of-range pause/resume pair, naming the offending
+// value and its allowed range so both the web page and the log carry a clear hint.
+func ValidateWindow(pause, resume int) error {
+	if pause < 1 || pause > 100 {
+		return fmt.Errorf("停充阈值需为 1..100 的整数(当前 %d)", pause)
+	}
+	if resume < 0 || resume > 100 {
+		return fmt.Errorf("恢复阈值需在 0..100(当前 %d)", resume)
+	}
+	if resume >= pause {
+		return fmt.Errorf("恢复阈值需小于停充阈值(恢复 %d,停充 %d)", resume, pause)
+	}
+	return nil
+}
+
+// SetThresholds replaces the runtime window after ValidateWindow passes.
+func SetThresholds(pause, resume int) error {
+	if err := ValidateWindow(pause, resume); err != nil {
+		return err
+	}
+	v := [2]int{pause, resume}
+	thresholds.Store(&v)
+	return nil
+}
+
+// Thresholds returns the active pause/resume window (defaults when unset).
+func Thresholds() (pause, resume int) {
+	if v := thresholds.Load(); v != nil {
+		return v[0], v[1]
+	}
+	return DefaultPauseAt, DefaultResumeAt
+}
+
+func pauseAt() int  { p, _ := Thresholds(); return p }
+func resumeAt() int { _, r := Thresholds(); return r }
 
 // authStatusLocal is reported for a backend that needs no credentials.
 const authStatusLocal = "local"

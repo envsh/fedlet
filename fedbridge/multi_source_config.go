@@ -32,10 +32,14 @@ var (
 var liveCfg atomic.Pointer[map[string]string]
 
 // seedFromFlags 在 loadMultiSourceConfig 之后调用,把合并后的全部 flag 现值
-// 快照进 liveCfg,作为 getter 的初始数据源。
+// 快照进 liveCfg,作为 getter 的初始数据源。无 flag 的"额外设置"
+// (mscfgExtra)一并并入,否则会被这次重建丢弃。
 func seedFromFlags(fs *flag.FlagSet) {
 	m := map[string]string{}
 	fs.VisitAll(func(f *flag.Flag) { m[f.Name] = f.Value.String() })
+	for name, val := range mscfgExtraSnapshot(nil) {
+		m[name] = val
+	}
 	liveCfg.Store(&m)
 }
 
@@ -200,6 +204,35 @@ func applyMultiSourceConfig(fs *flag.FlagSet, path string, environ []string) {
 			mscfgSetSource(key, "env")
 		} else {
 			mscfgSetSource(key, "file")
+		}
+	}
+
+	// 无 flag 的额外设置:与 flag 一样支持 env/文件来源,并成对整体校验。
+	extras := map[string]string{}
+	for _, key := range k.Keys() {
+		if fs.Lookup(key) != nil || !mscfgExtraExists(key) {
+			continue
+		}
+		val := k.Get(key)
+		if val == nil {
+			continue
+		}
+		extras[key] = fmt.Sprint(val)
+	}
+	if len(extras) > 0 {
+		snap := mscfgExtraSnapshot(extras)
+		if bad, err := mscfgExtraVerify(extras, snap); err != nil {
+			log.Printf("config: 额外设置 %s 非法,忽略(保留默认/上次值): %v", bad, err)
+		} else {
+			applyLive(extras)
+			for key := range extras {
+				if envKeys[key] {
+					mscfgSetSource(key, "env")
+				} else {
+					mscfgSetSource(key, "file")
+				}
+			}
+			mscfgExtraApply(snap)
 		}
 	}
 }

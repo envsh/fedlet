@@ -1,26 +1,41 @@
 # fbprotocols/chargectl — 本机电池充电限额
 
-纯本地后端：fedbridge 运行期间,对**本机电池**施加一个固定的充电区间,
+纯本地后端：fedbridge 运行期间,对**本机电池**施加一个充电窗口,
 让电池长期停留在中间电量,而不是一直顶在 100%。**不 publish、不接收、无
-凭据、无状态文件、无 flag、无 build tag**(与 `sysinfo` 一样总是编译)。
-策略硬编码:`>=75%` 停充,`<=30%` 恢复;每 `30s` 复查一次。
+凭据、无状态文件、无命令行 flag、无 build tag**(与 `sysinfo` 一样总是编译)。
+窗口默认 `>=75%` 停充、`<=30%` 恢复,经运行时设置可改;每 `30s` 复查一次。
 
 | 项 | 值 |
 | --- | --- |
 | build tag | 无(总是编译) |
 | 注册文件 | `fedbridge/chargectl.go` |
-| flag | 无 |
+| 命令行 flag | 无(改用运行时设置 `chargectl-pause-at` / `chargectl-resume-at`) |
 | 状态文件 | 无(不持久化) |
 | AuthStatus | `local` |
 | Capacities | 都不置位(既不发送也不接收) |
-| 停充阈值 | `PauseAt = 75` |
-| 恢复阈值 | `ResumeAt = 30` |
+| 停充阈值 | 默认 `DefaultPauseAt = 75`(运行时设置 `chargectl-pause-at`) |
+| 恢复阈值 | 默认 `DefaultResumeAt = 30`(运行时设置 `chargectl-resume-at`) |
 | 复查间隔 | `Interval = 30s` |
 
 ```
 cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhihu,xhs,toutiao,weibo,coolapk,hongguo,bdtieba,bilibili,irccloud,irclounge,matrixlite
 # chargectl 无需 tag 即包含在二进制中,随进程启动
 ```
+
+## 运行时设置
+
+两个设置**没有命令行 flag**,只经以下三处,且均为 **hot**(改后下一 tick 生效,
+无需重启):
+
+| 设置项 | 环境变量 | 默认 | 范围/约束 |
+| --- | --- | --- | --- |
+| `chargectl-pause-at` | `FEDLET_CHARGECTL_PAUSE_AT` | `75` | 整数 `1..100` |
+| `chargectl-resume-at` | `FEDLET_CHARGECTL_RESUME_AT` | `30` | 整数 `0..100`,且 `< pause` |
+
+来源:网页 `Config` 页(写 `~/.config/fedlet/config.json`)、上述环境变量、
+`config.json`。**成对整体校验**:网页 PATCH 非法返回 `400`,提示含范围
+(如「停充阈值需为 1..100 的整数(当前 150)」「恢复阈值需小于停充阈值」);
+环境变量/文件非法则记一条日志并忽略(保留默认/上次值)。
 
 ## 控制方式
 

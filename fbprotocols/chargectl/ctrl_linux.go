@@ -75,7 +75,7 @@ type loopState struct {
 }
 
 func runLoop(stop <-chan struct{}) {
-	logf("start: pause>=%d%% resume<=%d%% interval=%s", PauseAt, ResumeAt, Interval)
+	logf("start: pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
 	defer logf("stopped")
 
 	ctl := probeController()
@@ -145,7 +145,7 @@ func checkOnce(ctl *controller, st *loopState) {
 		ctl.checkEffective(name, capacity, plugged, st)
 		return
 	case modeLevel:
-		// End-threshold only: charge up to PauseAt and stop; recharges below it,
+		// End-threshold only: charge up to pauseAt() and stop; recharges below it,
 		// so no resume step is needed.
 		if err := ctl.ensureLevel(); err != nil {
 			st.writeFails++
@@ -166,9 +166,9 @@ func checkOnce(ctl *controller, st *loopState) {
 	// any stale hardware state left behind by a previous run.
 	desired := -1 // -1: leave as-is
 	switch {
-	case capacity >= PauseAt:
+	case capacity >= pauseAt():
 		desired = 1
-	case capacity <= ResumeAt:
+	case capacity <= resumeAt():
 		desired = 0
 	}
 	if desired < 0 {
@@ -189,9 +189,9 @@ func checkOnce(ctl *controller, st *loopState) {
 	st.writeFails = 0
 	if desired != st.lastState {
 		if desired == 1 {
-			logf("capacity=%d%% >= %d%%: charging stopped", capacity, PauseAt)
+			logf("capacity=%d%% >= %d%%: charging stopped", capacity, pauseAt())
 		} else {
-			logf("capacity=%d%% <= %d%%: charging resumed", capacity, ResumeAt)
+			logf("capacity=%d%% <= %d%%: charging resumed", capacity, resumeAt())
 		}
 		st.lastState = desired
 	}
@@ -263,7 +263,7 @@ const idleCurrentUA = 40000
 // like it took effect: the charger is attached, capacity is at or above PauseAt,
 // yet the pack still reports active charging. It never changes state.
 func (c *controller) checkEffective(name string, capacity int, plugged bool, st *loopState) {
-	if !plugged || capacity < PauseAt {
+	if !plugged || capacity < pauseAt() {
 		st.warned = false
 		return
 	}
@@ -271,7 +271,7 @@ func (c *controller) checkEffective(name string, capacity int, plugged bool, st 
 		return
 	}
 	if chargingNow(name) {
-		logf("warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, PauseAt, c.label)
+		logf("warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, pauseAt(), c.label)
 		st.warned = true
 	}
 }
@@ -307,8 +307,8 @@ const (
 	// threshold node the kernel itself enforces.
 	modeThreshold mode = iota
 	// modeLevel is an end-threshold-only node (ASUS, Apple, some Dell). Writing
-	// PauseAt makes the pack charge up to PauseAt and stop; it recharges whenever
-	// it drops below, so no resume step is needed.
+	// pauseAt() makes the pack charge up to that level and stop; it recharges
+	// whenever it drops below, so no resume step is needed.
 	modeLevel
 	// modeSwitch is a single vendor node written with an allow value or a stop
 	// value; the stop value may be atCapacity.
@@ -349,24 +349,24 @@ func (c *controller) modeName() string { return c.mode.String() }
 // it degrades to end-only mode instead of failing on every tick.
 func (c *controller) ensureThreshold() error {
 	c.ensureChargeType()
-	if err := writeValue(c.endPath, strconv.Itoa(PauseAt)); err != nil {
+	if err := writeValue(c.endPath, strconv.Itoa(pauseAt())); err != nil {
 		return err
 	}
 	if c.degraded || c.startPath == "" {
 		return nil
 	}
-	if err := writeValue(c.startPath, strconv.Itoa(ResumeAt)); err != nil {
-		logf("start threshold write failed (%v); falling back to end=%d only", err, PauseAt)
+	if err := writeValue(c.startPath, strconv.Itoa(resumeAt())); err != nil {
+		logf("start threshold write failed (%v); falling back to end=%d only", err, pauseAt())
 		c.degraded = true
 		c.mode = modeLevel
 	}
 	return nil
 }
 
-// ensureLevel keeps an end-threshold-only node at PauseAt.
+// ensureLevel keeps an end-threshold-only node at pauseAt().
 func (c *controller) ensureLevel() error {
 	c.ensureChargeType()
-	return writeValue(c.endPath, strconv.Itoa(PauseAt))
+	return writeValue(c.endPath, strconv.Itoa(pauseAt()))
 }
 
 // ensureChargeType writes "Custom" once so drivers that only honour the

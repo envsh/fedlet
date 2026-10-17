@@ -90,7 +90,7 @@ var mscfgHotFlags = map[string]bool{
 }
 
 func mscfgApplies(name string) string {
-	if mscfgHotFlags[name] {
+	if mscfgHotFlags[name] || mscfgExtraExists(name) {
 		return "hot"
 	}
 	return "restart"
@@ -138,6 +138,16 @@ func mscfgHandleGet(w http.ResponseWriter, r *http.Request) {
 			Type:    mscfgType(f.Value),
 		}
 	})
+	for name, val := range mscfgExtraSnapshot(nil) {
+		spec, _ := mscfgExtraSpecOf(name)
+		out[name] = mscfgEntry{
+			Value:   val,
+			Default: spec.dft,
+			Source:  mscfgGetSource(name),
+			Applies: "hot",
+			Type:    spec.typ,
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
@@ -149,24 +159,41 @@ func mscfgHandlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updates := map[string]string{}
+	extras := map[string]string{}
 	invalid := map[string]string{}
 	var updated, restart, unknown, hot []string
 	for name, raw := range req {
-		if flag.CommandLine.Lookup(name) == nil {
-			unknown = append(unknown, name)
-			continue
-		}
 		val := mscfgStringify(raw)
-		if err := mscfgValidateValue(name, val); err != nil {
-			invalid[name] = err.Error()
-			continue
+		switch {
+		case flag.CommandLine.Lookup(name) != nil:
+			if err := mscfgValidateValue(name, val); err != nil {
+				invalid[name] = err.Error()
+				continue
+			}
+			updates[name] = val
+			updated = append(updated, name)
+			if mscfgApplies(name) == "hot" {
+				hot = append(hot, name)
+			} else {
+				restart = append(restart, name)
+			}
+		case mscfgExtraExists(name):
+			extras[name] = val
+		default:
+			unknown = append(unknown, name)
 		}
-		updates[name] = val
-		updated = append(updated, name)
-		if mscfgApplies(name) == "hot" {
-			hot = append(hot, name)
+	}
+	// 额外设置:成对整体校验,非法则整单拒绝(带中文范围/回滞提示)。
+	if len(extras) > 0 && len(invalid) == 0 {
+		snap := mscfgExtraSnapshot(extras)
+		if bad, err := mscfgExtraVerify(extras, snap); err != nil {
+			invalid[bad] = err.Error()
 		} else {
-			restart = append(restart, name)
+			for name, val := range extras {
+				updates[name] = val
+				updated = append(updated, name)
+				hot = append(hot, name)
+			}
 		}
 	}
 	// 任一已知 flag 的值非法 → 整单拒绝,不落盘、不热应用。
@@ -182,6 +209,7 @@ func mscfgHandlePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(updates) > 0 {
 		applyLive(updates)
+		mscfgExtraApply(mscfgExtraSnapshot(updates))
 		if err := persistMultiSourceConfig(updates); err != nil {
 			http.Error(w, "persist failed: "+err.Error(), http.StatusInternalServerError)
 			return

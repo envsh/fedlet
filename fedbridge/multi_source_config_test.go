@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,5 +167,40 @@ func TestMakeMscfgGetter(t *testing.T) {
 	}
 	if g := makeMscfgGetter("bad-f", 1.0); g() != 1.0 {
 		t.Errorf("bad float got %v", g())
+	}
+}
+
+func TestMscfgExtraRegistry(t *testing.T) {
+	resetMscfgState()
+	var applied string
+	registerMscfgExtra("test-extra-num", mscfgExtraSpec{
+		dft: "7",
+		typ: "number",
+		verify: func(vals map[string]string) error {
+			if vals["test-extra-num"] == "bad" {
+				return fmt.Errorf("test-extra-num 非法(提示)")
+			}
+			return nil
+		},
+		apply: func(vals map[string]string) error { applied = vals["test-extra-num"]; return nil },
+	})
+
+	if snap := mscfgExtraSnapshot(nil); snap["test-extra-num"] != "7" {
+		t.Fatalf("default=%q, want 7", snap["test-extra-num"])
+	}
+
+	in := map[string]string{"test-extra-num": "bad"}
+	if bad, err := mscfgExtraVerify(in, mscfgExtraSnapshot(in)); err == nil || bad != "test-extra-num" {
+		t.Fatalf("verify bad: bad=%q err=%v", bad, err)
+	}
+
+	ok := map[string]string{"test-extra-num": "42"}
+	snap := mscfgExtraSnapshot(ok)
+	if bad, err := mscfgExtraVerify(ok, snap); err != nil {
+		t.Fatalf("verify ok: %q %v", bad, err)
+	}
+	mscfgExtraApply(snap)
+	if applied != "42" {
+		t.Fatalf("apply=%q, want 42", applied)
 	}
 }

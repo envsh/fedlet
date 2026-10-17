@@ -463,3 +463,56 @@ func TestWriteAddsNewline(t *testing.T) {
 		t.Fatalf("raw=%q, want trailing newline", raw)
 	}
 }
+
+func TestValidateWindow(t *testing.T) {
+	cases := []struct {
+		pause, resume int
+		ok            bool
+	}{
+		{75, 30, true},
+		{1, 0, true},
+		{100, 99, true},
+		{0, 0, false},
+		{101, 50, false},
+		{50, -1, false},
+		{50, 50, false},
+		{50, 60, false},
+	}
+	for _, c := range cases {
+		if err := ValidateWindow(c.pause, c.resume); (err == nil) != c.ok {
+			t.Errorf("ValidateWindow(%d,%d)=%v, want ok=%v", c.pause, c.resume, err, c.ok)
+		}
+	}
+	if err := ValidateWindow(150, 30); err == nil || !strings.Contains(err.Error(), "1..100") {
+		t.Errorf("out-of-range pause should hint 1..100, got %v", err)
+	}
+	if err := ValidateWindow(40, 80); err == nil || !strings.Contains(err.Error(), "小于") {
+		t.Errorf("inverted window should hint '< pause', got %v", err)
+	}
+}
+
+func TestThresholdsRuntime(t *testing.T) {
+	ps := sandbox(t)
+	bat := filepath.Join(ps, "BAT0")
+	writeAttr(t, filepath.Join(bat, "type"), "Battery")
+	end := filepath.Join(bat, "charge_control_end_threshold")
+	writeAttr(t, end, "100")
+
+	t.Cleanup(func() { _ = SetThresholds(DefaultPauseAt, DefaultResumeAt) })
+	if err := SetThresholds(80, 40); err != nil {
+		t.Fatalf("SetThresholds: %v", err)
+	}
+	if p, r := Thresholds(); p != 80 || r != 40 {
+		t.Fatalf("Thresholds=%d/%d, want 80/40", p, r)
+	}
+	ctl := probeController()
+	if ctl == nil || ctl.mode != modeLevel {
+		t.Fatalf("expected a level controller, got %v", ctl)
+	}
+	if err := ctl.ensureLevel(); err != nil {
+		t.Fatalf("ensureLevel: %v", err)
+	}
+	if got := readAttr(t, end); got != "80" {
+		t.Fatalf("end threshold=%s, want 80", got)
+	}
+}

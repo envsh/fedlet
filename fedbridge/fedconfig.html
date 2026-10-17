@@ -95,6 +95,9 @@ const GROUPS = [
     {flag:'ntfysh-topic',label:'ntfy topic'},{flag:'ntfysh-server',label:'ntfy server'},
     {flag:'mozpush-uaid',label:'Mozilla UAID'},{flag:'mozpush-endpoint',label:'Mozilla endpoint'},
     {flag:'sync-dir',label:'同步目录'},{flag:'peerno',label:'peer'},{flag:'vlan',label:'vlan 前缀'}]},
+  {label:'Chargectl', items:[
+    {flag:'chargectl-pause-at',label:'停充阈值 % (1..100)'},
+    {flag:'chargectl-resume-at',label:'恢复阈值 % (< 停充阈值)'}]},
 ];
 
 let CFG = {}, ORIG = {}, SECRET = new Set();
