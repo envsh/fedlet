@@ -337,7 +337,7 @@ func runMobSubSelfSend(cfg mobsubConfig, st *mobsubState) {
 		VAPIDPublicKey:  vpub,
 		VAPIDPrivateKey: vpriv,
 		TTL:             39,
-		HTTPClient:      httpClient30s,
+		HTTPClient:      httpClient31s,
 	}
 	var n uint64
 	ticker := time.NewTicker(mobsubSelfSendPeriod)
@@ -408,7 +408,7 @@ func sendMozPushSunup(msg any, endpoint, auth, p256dh string) error {
 		VAPIDPublicKey:  vpub,
 		VAPIDPrivateKey: vpriv,
 		TTL:             60,
-		HTTPClient:      httpClient30s,
+		HTTPClient:      httpClient31s,
 	}
 	return sendMobSubSelf(sub, opts, payload) // 复用:POST + 2xx(含 201)校验 + 关 body
 }

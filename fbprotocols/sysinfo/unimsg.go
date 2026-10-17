@@ -24,7 +24,7 @@ import (
 // Fixed conversation identity shared by every host (see file comment).
 const (
 	unifiedChatID   = "sysinfo"
-	unifiedChatName = "主机信息"
+	unifiedChatName = "主机信息板"
 )
 
 // ToUnified converts one snapshot into the push form. raw is the marshalled

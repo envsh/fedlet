@@ -113,7 +113,7 @@ func publishNtfy(protocol, channel string, v any) error {
 // doNtfyPublish performs the real POST, returning status, Retry-After header
 // value and response body for logging.
 func doNtfyPublish(req *http.Request) (int, string, string, error) {
-	resp, err := httpClient30s.Do(req)
+	resp, err := httpClient31s.Do(req)
 	if err != nil {
 		return 0, "", "", err
 	}

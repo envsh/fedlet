@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -49,7 +50,16 @@ type serviceCapacities struct {
 
 var syncDir string
 
-var httpClient30s = &http.Client{Timeout: 30 * time.Second}
+// httpClient31s 推送/发布共用:强制 HTTP/1.1 且不复用连接(每次
+// Connection: close),避免复用到对端已静默断开的陈旧连接导致
+// Client.Timeout 在等响应头阶段超时。
+var httpClient31s = &http.Client{
+	Timeout: 31 * time.Second,
+	Transport: &http.Transport{
+		DisableKeepAlives: true,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+	},
+}
 
 var publishViaHTTP bool = true
 var channel_name = "reddit"
@@ -113,7 +123,7 @@ func publish(protocol, channel string, v any) error {
 func publishBytes(channel string, data []byte) error {
 	if publishViaHTTP {
 		url := fmt.Sprintf("http://127.0.0.1:4004/p2pin/send?topic=%s", channel)
-		resp, err := httpClient30s.Post(url, "application/octet-stream", bytes.NewReader(data))
+		resp, err := httpClient31s.Post(url, "application/octet-stream", bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
