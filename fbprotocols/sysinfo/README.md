@@ -4,6 +4,15 @@
 **一条**消息发布到 P2P（topic 由 fedbridge 的 `channel_name` 决定，当前为
 `reddit`）。没有任何凭据、不需要网络访问（除发布走 `127.0.0.1:4004`）。
 
+每轮**双发**（`publishSnapshot`）：
+
+1. **扁平 Snapshot**（`proto_type=sysinfo`）→ P2P topic，行为与历史版本一致；
+2. **UnifiedMessage**（`unimsg.go` 的 `ToUnified`）→ fedbridge 的推送分支
+   （ntfy / mozpush；未配置时为空操作）。`Text` 是一行人读摘要
+   （`host=… cpu=…% mem=…% load=… | / 78% | batt=… | temp=…C`，`-1` 渲染为
+   `?`，无电池/无温度整段省略），完整数据在进程内 `Raw` 字段。
+   身份固定为 `ChatID="sysinfo"` 单会话，主机名走 `Username`/`Usernick`。
+
 | 项 | 值 |
 | --- | --- |
 | build tag | `sysinfo` |
@@ -105,6 +114,7 @@ go test -race ./fbprotocols/sysinfo/
 | 测试文件 | 覆盖 |
 | --- | --- |
 | `sysinfo_test.go` | 规则 B/C、三态、错误去重与上限、首轮形状、发布平铺字段、state 读写、Start/Stop 时序（含"首轮必须等满一个 interval"）、错误环形 3 条 |
+| `unimsg_test.go` | UnifiedMessage 字段映射、摘要行内容、`-1`→`?` 与整段省略、HostID/hostname/localhost 回退链、秒→纳秒时间戳 |
 | `batt_linux_test.go` | sysfs fixture（能量型/电荷型换算、无电压时的 `-1`、空电池仓跳过、AC 源合并）、dumpsys 解析、status 映射 |
 | `batt_ioreg_test.go` | plist 数组/dict/`<real>` 三种形态解码、整数键回归、嵌套 `BatteryData` 回落、ioreg 换算（mV→V、0.1K→°C、mA×V→mW）、非法字段回落 `-1`（**无 build tag，Linux 也跑**） |
 | `batt_windows_test.go` | 绝对/相对容量、`0xFFFFFFFF` 与 `rate=0x80000000` 哨兵、`PowerState` 标志位→三态 |

@@ -377,13 +377,13 @@ func TestPublishSnapshotAddsFlatFields(t *testing.T) {
 	orig := pubfn_
 	defer func() { pubfn_ = orig }()
 
-	var got []byte
+	var payloads [][]byte
 	pubfn_ = func(v any) error {
 		raw, err := json.Marshal(v)
 		if err != nil {
 			return err
 		}
-		got = raw
+		payloads = append(payloads, raw)
 		return nil
 	}
 
@@ -391,9 +391,11 @@ func TestPublishSnapshotAddsFlatFields(t *testing.T) {
 	if err := publishSnapshot(snap); err != nil {
 		t.Fatalf("publishSnapshot: %v", err)
 	}
-	if len(got) == 0 {
-		t.Fatal("nothing published")
+	// Dual publish: flat snapshot for P2P, then UnifiedMessage for push.
+	if len(payloads) != 2 {
+		t.Fatalf("published %d payloads, want 2 (flat + unified)", len(payloads))
 	}
+	got := payloads[0]
 
 	var m map[string]any
 	if err := json.Unmarshal(got, &m); err != nil {
@@ -420,6 +422,39 @@ func TestPublishSnapshotAddsFlatFields(t *testing.T) {
 		if m[k] == nil {
 			t.Errorf("%s marshalled as null, want []", k)
 		}
+	}
+
+	// Second payload is the UnifiedMessage form.
+	var u struct {
+		Protocol  string `json:"protocol"`
+		MsgType   string `json:"msgtype"`
+		MsgFormat string `json:"msgformat"`
+		MsgID     string `json:"msgid"`
+		ChatID    string `json:"chat_id"`
+		Username  string `json:"username"`
+		Text      string `json:"text"`
+		Timestamp int64  `json:"timestamp"`
+	}
+	if err := json.Unmarshal(payloads[1], &u); err != nil {
+		t.Fatalf("unified payload is not valid JSON: %v", err)
+	}
+	if u.Protocol != "sysinfo" {
+		t.Errorf("unified protocol = %v, want sysinfo", u.Protocol)
+	}
+	if u.MsgType != "create" {
+		t.Errorf("unified msgtype = %v, want create", u.MsgType)
+	}
+	if u.ChatID != "sysinfo" {
+		t.Errorf("unified chat_id = %v, want sysinfo", u.ChatID)
+	}
+	if u.Username != snap.Host.Hostname {
+		t.Errorf("unified username = %q, want hostname %q", u.Username, snap.Host.Hostname)
+	}
+	if u.Text == "" {
+		t.Error("unified text is empty, want the host summary line")
+	}
+	if u.MsgID == "" || u.Timestamp <= 0 {
+		t.Errorf("unified msgid/timestamp not set: %q/%d", u.MsgID, u.Timestamp)
 	}
 }
 
@@ -641,13 +676,14 @@ func TestStartTwiceDoesNotLeakLoops(t *testing.T) {
 	Stop()
 
 	// Two loops running in parallel would roughly double the publish rate;
-	// with only one loop the count stays within a small window.
+	// with only one loop the count stays within a small window. Each round
+	// publishes twice (flat + unified), so the window is 2× the round count.
 	got := count()
-	if got < 3 {
-		t.Errorf("published %d snapshots, want >= 3", got)
+	if got < 6 {
+		t.Errorf("published %d payloads, want >= 6 (3 rounds × 2)", got)
 	}
-	if max := 14; got > max {
-		t.Errorf("published %d snapshots, want <= %d (two loops were racing)", got, max)
+	if max := 28; got > max {
+		t.Errorf("published %d payloads, want <= %d (two loops were racing)", got, max)
 	}
 }
 

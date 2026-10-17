@@ -4,8 +4,10 @@ package sysinfo
 //
 // A single sampler covers the whole machine: host, cpu, mem, load, disk, io,
 // net, temperature and battery. Every round produces one Snapshot which is
-// marshalled and forwarded as a single entry with the standard top-level
-// proto_type=sysinfo and cycle_count=1 fields (fbshared.InsertFlatFields).
+// published twice (publishSnapshot): the flat JSON form with the standard
+// top-level proto_type=sysinfo and cycle_count=1 fields
+// (fbshared.InsertFlatFields) goes to the P2P topic, and a UnifiedMessage
+// summary (see unimsg.go) goes to the push channels.
 //
 // Timing: the loop sleeps for a full interval before the first round, so the
 // very first sample lands after the HTTP listener in fedbridge/main.go is up
@@ -167,8 +169,10 @@ func round(state *sysinfoState, prev *speedSnapshot) *speedSnapshot {
 	return next
 }
 
-// publishSnapshot marshals the snapshot and forwards it with the standard
-// top-level fields. cycle_count is 1 because one round emits exactly one entry.
+// publishSnapshot marshals the snapshot and forwards it twice: the flat form
+// (with the standard top-level fields) goes to the P2P topic, the UnifiedMessage
+// form goes to the push channels — see unimsg.go. cycle_count is 1 because one
+// round emits exactly one entry.
 func publishSnapshot(s *Snapshot) error {
 	raw, err := json.Marshal(s)
 	if err != nil {
@@ -181,7 +185,10 @@ func publishSnapshot(s *Snapshot) error {
 	if err != nil {
 		return err
 	}
-	return publish(flat)
+	if err := publish(flat); err != nil {
+		return err
+	}
+	return publish(s.ToUnified(raw))
 }
 
 // ---- persisted status state ----

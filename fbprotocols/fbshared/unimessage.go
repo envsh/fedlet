@@ -10,6 +10,7 @@ const (
 	ProtoIRCCloud     = "irccloud"
 	ProtoMatrixLite   = "matrixlite"
 	ProtoIRCLounge    = "irclounge"
+	ProtoSysinfo      = "sysinfo"
 )
 
 // MsgFormat 常量
