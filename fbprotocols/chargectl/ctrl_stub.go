@@ -1,8 +1,8 @@
-//go:build !linux && !android
+//go:build !linux && !android && !darwin
 
 package chargectl
 
-// Start and Stop are no-ops on platforms without the sysfs power-supply tree.
-// The package still compiles so fedbridge/chargectl.go needs no build tag.
+// Start and Stop are no-ops on platforms with no charge-control backend
+// (Windows/FreeBSD). macOS has its own ctrl_darwin.go.
 func Start() {}
 func Stop()  {}

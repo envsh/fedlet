@@ -117,10 +117,11 @@ SELinux 拒写的问题:很多机型节点能读、写被拒。进程以 root �
 | --- | --- |
 | Linux 笔记本 | 优先内核 `charge_control_*` 阈值 |
 | Android | 优先 ACC 厂商开关;sysfs 被 SELinux 拦时只能记录权限错误 |
-| 其他(macOS/Windows/FreeBSD) | `ctrl_stub.go`:`Start`/`Stop` 空实现,`IsRunning()` 恒 false |
+| macOS | `ctrl_darwin.go`:读 `ioreg`/`pmset`;写经外置 `bclm`/`smc`(见「macOS(darwin)」) |
+| Windows/FreeBSD | `ctrl_stub.go`:`Start`/`Stop` 空实现,`IsRunning()` 恒 false |
 
-交叉编译:`ctrl_stub.go` 用 `//go:build !linux && !android` 兜底,保证非 Linux 平台
-`go vet` 通过。
+交叉编译:`ctrl_stub.go` 用 `//go:build !linux && !android && !darwin` 兜底,保证非
+Linux/macOS 平台 `go vet` 通过。
 
 ## 测试
 
@@ -146,11 +147,40 @@ go test -race ./fbprotocols/chargectl/
 | `TestWriteAddsNewline` | 写入带尾随换行 |
 | `TestNoBatteryIdle` | 无电池时记错误、不 panic |
 | `TestProbeAccess` | 只读节点判定 + errno 归类 |
+| `TestParseIoregBattery` | `ioreg` 解析(Intel mAh 换算百分比) |
+| `TestParseIoregBatteryAS` | Apple silicon `MaxCapacity=100` 时直接用百分比 |
+| `TestParsePmset` | `pmset -g batt` 回退解析 |
 
 测试用 `sandbox()` 把 `sysRoot` 指向临时目录,并用 fixture 目录模拟
-`/sys/class/power_supply` 与厂商节点。
+`/sys/class/power_supply` 与厂商节点(`ctrl_linux.go`,仅 linux/android)。
+`mac_read.go` 的解析用例无 build tag,在任意平台可跑。
+
+## macOS(darwin)
+
+无 `/sys/power_supply` 树,SMC 充电原子与 BCLM 只能经 IOKit 访问。本后端
+**不用 cgo 链接 IOKit**(需 macOS SDK、破坏从 Linux/CI 交叉编译),而是 shell 调
+两个事实标准工具,命令语法**未在真机实测**:
+
+| 平台 | 读 | 写 | 备注 |
+| --- | --- | --- | --- |
+| Intel | `ioreg -rn AppleSmartBattery`(回退 `pmset -g batt`) | `bclm write <pauseAt>` | level 语义,充到 pause 停 |
+| Apple silicon | 同上 | `smc -k CH0B -w 02`(停)/`00`(允),并同步 `CH0C` | 自动探测 |
+| AS(Tahoe) | 同上 | `smc -k CHTE -w 01000000`(停)/`00000000`(允) | 自动探测 |
+| AS(兜底) | 同上 | `smc -k CHWA -w 01`(启用 80% 上限)/`00` | 固定 80%,非任意档 |
+
+- 探测顺序:`auto` → 有 `bclm` 用 level,否则有 `smc` 试 `CH0B`→`CHTE`→`CHWA`,
+  都不行则**只读**(记一次 read-only 告警,不反复刷屏)。
+- 提权:默认**直接执行**(假定 fedbridge 以 root 运行);非 root 时设
+  `FEDLET_CHARGECTL_SUDO="sudo -n"` 注入前缀,`none` 表示不提权。
+- env 覆盖:`FEDLET_CHARGECTL_SMC`(默认 `smc`)、`FEDLET_CHARGECTL_BCLM`(默认
+  `bclm`)、`FEDLET_CHARGECTL_MAC_MODE=auto|level|switch`、`FEDLET_CHARGECTL_SUDO`。
+- **现代 macOS 限制(root 不能绕过)**:BCLM 在 macOS `>= 15.0` 为 no-op(需关 SIP);
+  `CH0B/CH0C/CHTE` 在 `26.7+`/`27 beta` 即使 root 也返回 `kIOReturnNotPrivileged`。
+  写入失败即降级只读并告警。若机器暴露 `bfF0` 等固件上限键,需由支持该路径的工具
+  (如 `batt`)处理,本后端暂不覆盖。
 
 ## 许可注记
+
 
 `nodes_acc.go` 的节点清单译自 **ACC**(Advanced Charging Controller,
 <https://github.com/VR-25/acc>),该项目为 **GPL-3.0**。此处仅重新录入硬件节点名

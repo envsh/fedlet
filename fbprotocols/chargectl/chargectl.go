@@ -77,7 +77,7 @@ var (
 	statusLastErrsMu     sync.Mutex
 	statusLastErrs       [3]error
 
-	// loopMu guards the loop handles shared with ctrl_linux.go / ctrl_stub.go.
+	// loopMu guards the loop handles shared with ctrl_linux.go / ctrl_darwin.go / ctrl_stub.go.
 	loopMu   sync.Mutex
 	loopStop chan struct{}
 	loopDone chan struct{}
