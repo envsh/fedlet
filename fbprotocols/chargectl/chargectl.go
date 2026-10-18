@@ -33,6 +33,11 @@ const (
 // re-probes the hardware, in case the chosen node or backend went away.
 const reprobeAfter = 3
 
+// effectiveStrikes is how many consecutive ticks a configured limit may look
+// ineffective (the pack still charging at/above pauseAt) before the loop moves
+// on to the next backend instead of silently trusting a node that does nothing.
+const effectiveStrikes = 3
+
 // thresholds holds the active {pause, resume} window; nil means the defaults.
 var thresholds atomic.Pointer[[2]int]
 

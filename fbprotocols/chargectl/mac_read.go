@@ -15,6 +15,13 @@ type macBattery struct {
 	fullyCharged  bool
 }
 
+// batteryOnAC reports external power from every signal AppleSmartBattery
+// exposes: ExternalConnected can be missing or stale on some models, while
+// IsCharging / FullyCharged are only ever set while a charger is attached.
+func batteryOnAC(b macBattery) bool {
+	return b.externalPower || b.charging || b.fullyCharged
+}
+
 // parseIoregBattery extracts the battery fields from
 // `ioreg -rn AppleSmartBattery`. On Apple silicon CurrentCapacity is already a
 // percentage and MaxCapacity is 100; on Intel both are mAh, so the percentage

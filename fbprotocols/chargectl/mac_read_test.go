@@ -41,6 +41,17 @@ func TestParsePmset(t *testing.T) {
 	}
 }
 
+func TestBatteryOnAC(t *testing.T) {
+	if batteryOnAC(macBattery{}) {
+		t.Fatal("all fields false: want false")
+	}
+	for _, b := range []macBattery{{externalPower: true}, {charging: true}, {fullyCharged: true}} {
+		if !batteryOnAC(b) {
+			t.Fatalf("%+v: want true", b)
+		}
+	}
+}
+
 // A discharging line must not be read as charging: the substring "charging" is
 // itself contained in "discharging".
 func TestParsePmsetDischarging(t *testing.T) {

@@ -62,29 +62,36 @@ func Stop() {
 // loopState is per-run state. It is deliberately not persisted: a restart
 // re-probes the hardware and re-derives everything from the current charge.
 type loopState struct {
-	lastState  int
-	lastPlug   bool
-	havePlug   bool
-	warned     bool
-	writeFails int
+	lastState   int
+	lastPlug    bool
+	havePlug    bool
+	lastCap     int
+	haveCap     bool
+	warned      bool
+	writeFails  int
+	ineffective int
 }
 
 func runLoop(stop <-chan struct{}) {
 	logf("start: pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
 	defer logf("stopped")
 
-	ctl := probeController()
+	bad := map[string]bool{}
+	ctl := probeControllerSkip(bad)
 	if ctl == nil {
-		err := errors.New("no controllable charge node found")
-		pushError(err)
-		logf("%v; giving up", err)
-		setRunning(false)
-		return
+		// No writable node anywhere. Do NOT give up: a node may appear later
+		// (module load, SELinux relabel, driver rebind). Keep reporting status.
+		setAuthStatus("no-backend")
+		pushError(errors.New("no controllable charge node found yet; retrying"))
+		logf("no controllable charge node found; will retry each tick")
+	} else {
+		logf("using %s (mode=%s)", ctl.label, ctl.modeName())
 	}
-	logf("using %s (mode=%s)", ctl.label, ctl.modeName())
 
 	st := &loopState{}
-	checkOnce(ctl, st)
+	if ctl != nil {
+		checkOnce(ctl, st)
+	}
 
 	ticker := time.NewTicker(Interval)
 	defer ticker.Stop()
@@ -93,14 +100,27 @@ func runLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			if st.writeFails >= reprobeAfter {
-				if nc := probeController(); nc != nil {
-					logf("re-probing after %d failed writes (now %s, mode=%s)", st.writeFails, nc.label, nc.modeName())
+			switch {
+			case ctl == nil:
+				if nc := probeControllerSkip(bad); nc != nil {
 					ctl = nc
+					setAuthStatus(authStatusLocal)
+					logf("found %s (mode=%s)", ctl.label, ctl.modeName())
 				}
-				st.writeFails = 0
+			case st.writeFails >= reprobeAfter || st.ineffective >= effectiveStrikes:
+				bad[ctl.label] = true
+				if nc := probeControllerSkip(bad); nc != nil {
+					logf("switching backend: %s -> %s (writeFails=%d ineffective=%d)",
+						ctl.label, nc.label, st.writeFails, st.ineffective)
+					ctl = nc
+				} else {
+					logf("no alternative backend after %s; keeping it", ctl.label)
+				}
+				st.writeFails, st.ineffective = 0, 0
 			}
-			checkOnce(ctl, st)
+			if ctl != nil {
+				checkOnce(ctl, st)
+			}
 		}
 	}
 }
@@ -113,7 +133,7 @@ func checkOnce(ctl *controller, st *loopState) {
 		pushError(errors.New("no battery present"))
 		return
 	}
-	plugged := readPlugged()
+	plugged := readPlugged(name)
 
 	if !st.havePlug || plugged != st.lastPlug {
 		if plugged {
@@ -150,10 +170,6 @@ func checkOnce(ctl *controller, st *loopState) {
 			st.writeFails = 0
 		}
 		ctl.checkEffective(name, capacity, plugged, st)
-		return
-	}
-
-	if !plugged {
 		return
 	}
 
@@ -222,30 +238,61 @@ func readBattery() (string, int, bool) {
 // externalSupplies are the supply "type" values that mean an attached charger.
 var externalSupplies = map[string]bool{
 	"Mains": true, "USB": true, "USB_C": true, "USB_DCP": true,
-	"USB_CDP": true, "USB_ACA": true, "USB_PD": true, "USB_HVDCP": true,
-	"Wireless": true,
+	"USB_CDP": true, "USB_ACA": true, "USB_PD": true, "USB_PD_DRP": true,
+	"USB_PD_VBUS": true, "USB_HVDCP": true, "USB_HVDCP_2": true,
+	"USB_HVDCP_3": true, "USB_HVDCP_3P5": true, "USB_PPS": true,
+	"USB_FLOAT": true, "Wireless": true, "WPC": true,
 }
 
 // plugNames are supply device names that mean an attached charger regardless of
 // the reported type (ACC also watches dc/online and pc_port/online).
-var plugNames = map[string]bool{"dc": true, "pc_port": true}
+var plugNames = map[string]bool{
+	"dc": true, "pc_port": true, "ac": true, "mains": true, "main": true,
+	"usb": true, "usb_c": true, "wireless": true, "wpc": true, "ac_adapter": true,
+}
 
-// readPlugged reports whether any external supply is online.
-func readPlugged() bool {
+// readPlugged reports whether the machine is on external power. Vendor kernels
+// report presence inconsistently, so it ORs every signal available: an external
+// supply online, an external supply present, the battery reporting Charging or
+// Full, or a positive charge current. A false "plugged" only costs one extra
+// (idempotent) stop write and log line; a false "unplugged" is what let the pack
+// charge to 100%, so we bias towards true.
+func readPlugged(battName string) bool {
 	base := resolve(powerSupplyDir)
 	entries, err := os.ReadDir(base)
-	if err != nil {
-		return false
+	if err == nil {
+		for _, e := range entries {
+			dir := filepath.Join(base, e.Name())
+			if typ, ok := readSysfsString(dir, "type"); ok && typ == "Battery" {
+				continue
+			}
+			typ, _ := readSysfsString(dir, "type")
+			name := strings.ToLower(e.Name())
+			if !externalSupplies[typ] && !plugNames[name] &&
+				!strings.HasPrefix(name, "usb") && !strings.HasPrefix(name, "ac") &&
+				!strings.HasPrefix(name, "mtk-") && !strings.HasPrefix(name, "smb") {
+				continue
+			}
+			if v, ok := readSysfsInt(dir, "online"); ok && v > 0 {
+				return true
+			}
+			if v, ok := readSysfsInt(dir, "present"); ok && v > 0 {
+				return true
+			}
+		}
 	}
-	for _, e := range entries {
-		dir := filepath.Join(base, e.Name())
-		typ, _ := readSysfsString(dir, "type")
-		if !externalSupplies[typ] && !plugNames[e.Name()] {
-			continue
-		}
-		if v, ok := readSysfsInt(dir, "online"); ok && v > 0 {
-			return true
-		}
+	return batteryPlugged(battName)
+}
+
+// batteryPlugged infers external power from the battery's own attributes when
+// no supply device reports it (common on Android with vendor chargers).
+func batteryPlugged(name string) bool {
+	dir := filepath.Join(resolve(powerSupplyDir), name)
+	if s, ok := readSysfsString(dir, "status"); ok && (s == "Charging" || s == "Full") {
+		return true
+	}
+	if v, ok := readSysfsInt(dir, "current_now"); ok && v > idleCurrentUA {
+		return true
 	}
 	return false
 }
@@ -255,18 +302,22 @@ func readPlugged() bool {
 // while the pack draws no current).
 const idleCurrentUA = 40000
 
-// checkEffective emits a one-shot warning when a configured limit does not look
-// like it took effect: the charger is attached, capacity is at or above PauseAt,
-// yet the pack still reports active charging. It never changes state.
+// checkEffective warns once and counts ticks when a configured limit does not
+// look like it took effect: on wall power, capacity is at or above pauseAt and
+// the pack is still climbing or reports active charging. The capacity trend is
+// the primary signal (it catches a node that writes OK but does nothing, even
+// when the kernel lies about status/current); chargingNow is a secondary hint.
+// The counter drives the loop's backend fallback.
 func (c *controller) checkEffective(name string, capacity int, plugged bool, st *loopState) {
-	if !plugged || capacity < pauseAt() {
+	rising := st.haveCap && capacity > st.lastCap
+	st.lastCap, st.haveCap = capacity, true
+	if capacity < pauseAt() || !plugged || (!rising && !chargingNow(name)) {
 		st.warned = false
+		st.ineffective = 0
 		return
 	}
-	if st.warned {
-		return
-	}
-	if chargingNow(name) {
+	st.ineffective++
+	if !st.warned {
 		logf("warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, pauseAt(), c.label)
 		st.warned = true
 	}
@@ -275,7 +326,8 @@ func (c *controller) checkEffective(name string, capacity int, plugged bool, st 
 // chargingNow reports whether the pack is drawing meaningful charge current.
 func chargingNow(name string) bool {
 	dir := filepath.Join(resolve(powerSupplyDir), name)
-	if status, _ := readSysfsString(dir, "status"); status != "Charging" {
+	status, _ := readSysfsString(dir, "status")
+	if status != "Charging" && status != "Full" {
 		return false
 	}
 	cur, ok := readSysfsInt(dir, "current_now")
@@ -455,8 +507,15 @@ func findChargeType(end string) string {
 }
 
 // probeController walks the ordered tables and returns the first usable node.
-func probeController() *controller {
+func probeController() *controller { return probeControllerSkip(nil) }
+
+// probeControllerSkip is probeController that ignores any candidate whose label
+// is in skip, so the loop can move on from a node that resolved but does nothing.
+func probeControllerSkip(skip map[string]bool) *controller {
 	for _, cand := range orderedCandidates() {
+		if skip[cand.label] {
+			continue
+		}
 		if c := cand.resolve(); c != nil {
 			return c
 		}

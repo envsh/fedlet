@@ -11,7 +11,7 @@
 | 注册文件 | `fedbridge/chargectl.go` |
 | 命令行 flag | 无(改用运行时设置 `chargectl-pause-at` / `chargectl-resume-at`) |
 | 状态文件 | 无(不持久化) |
-| AuthStatus | `local` |
+| AuthStatus | `local`(无凭据);macOS 只读为 `read-only`、Linux 无可写节点为 `no-backend` |
 | Capacities | 都不置位(既不发送也不接收) |
 | 停充阈值 | 默认 `DefaultPauseAt = 75`(运行时设置 `chargectl-pause-at`) |
 | 恢复阈值 | 默认 `DefaultResumeAt = 30`(运行时设置 `chargectl-resume-at`) |
@@ -68,17 +68,27 @@ cd fedbridge && go build -v -tags gomuks,toxoverhttp,outlookgraph,emailimap,zhih
 
 1. 枚举 `power_supply`,找 `type == "Battery"` 且未 `present=0` 的电池(无电池 →
    记一次错误并空转);
-2. 由 `Mains`/`USB`/`USB_*`/`Wireless` 的 `online` 判断是否插着充电线,插拔各记一条日志;
+2. **多信号插电判定** `readPlugged()`:任一外接电源 `online>0`、或 `present>0`、
+   或电池 `status` 为 `Charging`/`Full`、或 `current_now>40mA`,即视为插电,插拔各
+   记一条日志。外接设备名兼容 ACC 的 `ac`/`usb`/`dc`/`mains`/`pc_port` 及
+   `mtk-*`、`smb*` 前缀。各厂商上报五花八门(曾因此恒判为"未插线"导致停充被跳过、
+   一路充到 100%),故宁可多判 true;
 3. `threshold` 模式:恒置 `start=30/end=75` 后返回;
 4. `level` 模式:恒置 `end=75` 后返回;
-5. `switch` 模式且已插线:按容量**无状态**决定——`capacity>=75` 写停、`capacity<=30`
-   写启、中间区间不动(回滞);`lastState` 仅用于日志去重。因不记忆状态,重启后
-   能自动纠正上次遗留的停充/恢复态;
-6. 有效性告警:阈值/level/switch 模式下,若已插线且 `capacity>=75`,但电池仍
-   `status=Charging` 且 `|current_now|>40mA`,记一条 warning,提示当前节点可能
-   无效——只告警,不自动切换节点;缺少 `current_now` 时不告警,避免误报。
-7. 连续写失败累计到 `reprobeAfter=3` 次时重新 `probeController()`,以应对节点
-   被热移除或驱动重载;任一次写入成功后计数清零。
+5. `switch` 模式:**不再以"已插线"为前提**,始终按容量**无状态**决定——`capacity>=75`
+   写停、`capacity<=30` 写启、中间区间不动(回滞);`lastState` 仅用于日志去重。停/启
+   写入是幂等的,放电时多写一次无害,而漏判插电才是回到 100% 的根因。因不记忆状态,
+   重启后能自动纠正上次遗留的停充/恢复态;
+6. 有效性告警:阈值/level/switch 模式下,若**插电**且 `capacity>=75`,而容量仍在
+   **上升**(相邻 tick 对比,主信号,能识破"写得进去但不生效"的节点,即使内核谎报
+   `status`/`current`)或电池仍 `status=Charging`/`Full` 且 `|current_now|>40mA`
+   (辅信号),记一条 warning,提示当前节点可能无效;未插电或容量回落时清零。
+7. **自动后端回退**:有效性告警连续累计到 `effectiveStrikes=3` 次,或连续写失败累计到
+   `reprobeAfter=3` 次时,把当前节点加入跳过集并 `probeControllerSkip()`,自动切到下一个
+   可写节点;都不可用时保留原节点继续重试。写成功后计数清零。
+8. **不再放弃**:启动时找不到任何可写节点也不再 `setRunning(false)` 退出,而是标记
+   `AuthStatus=no-backend` 并每 tick 重探——节点可能因模块加载、SELinux relabel、
+   驱动重绑而稍后出现。
 
 ## 权限探测
 
@@ -117,7 +127,7 @@ SELinux 拒写的问题:很多机型节点能读、写被拒。进程以 root �
 | --- | --- |
 | Linux 笔记本 | 优先内核 `charge_control_*` 阈值 |
 | Android | 优先 ACC 厂商开关;sysfs 被 SELinux 拦时只能记录权限错误 |
-| macOS | `ctrl_darwin.go`:读 `ioreg`/`pmset`;写经外置 `bclm`/`smc`(见「macOS(darwin)」) |
+| macOS | `ctrl_darwin.go`:读 `ioreg`/`pmset`;写优先原生 SMC(purego),回退外置 `bclm`/`smc`(见「macOS(darwin)」) |
 | Windows/FreeBSD | `ctrl_stub.go`:`Start`/`Stop` 空实现,`IsRunning()` 恒 false |
 
 交叉编译:`ctrl_stub.go` 用 `//go:build !linux && !android && !darwin` 兜底,保证非
@@ -136,10 +146,17 @@ go test -race ./fbprotocols/chargectl/
 | `TestChargeStopLevelLevel` | `charge_stop_level` 选 `modeLevel` 并写 75 |
 | `TestConservationMode` | IdeaPad `conservation_mode` 兜底开关的停/启 |
 | `TestChargingNowMissingCurrent` | 无 `current_now` 时不误报在充电 |
+| `TestChargingNowFull` | `status=Full` 且有电流时算在充电 |
+| `TestPluggedMtkSmb` | `mtk-*`/`smb*` 前缀外接设备识别 |
+| `TestEffectivenessTrend` | 高电量仍上升时累计有效性 strike(驱动回退) |
 | `TestChargeTypeRetriesAfterFailure` | `charge_type` 写失败保持未完成、后续重试 |
 | `TestWriteFailTracking` | 写失败累计/成功清零(重探测依据) |
 | `TestHysteresis` | 50→76→76→20 的停/保持/恢复(校验 `lastState`) |
 | `TestPlugUnplug` | 插→拔→低位重插的状态机 |
+| `TestSwitchStopsWhenNotPlugged` | 未插线但高电量时仍写停(停充不依赖插电判定) |
+| `TestExternalChargerTypes` | 各类 USB_* / Wireless / WPC 的 `online` 识别 |
+| `TestPluggedFromBattery` | 无外接设备时用电池 `status`/`current_now` 兜底 |
+| `TestPluggedPresentOnly` | 仅 `present=1` 也判为插电 |
 | `TestLevelMode` | 仅有 end 阈值时选 `modeLevel` 并写 75 |
 | `TestChargeTypeCustom` | 阈值写入前 best-effort 写 `charge_types=Custom` |
 | `TestThresholdDegrade` | start 写失败时降级为 end-only |
@@ -151,36 +168,60 @@ go test -race ./fbprotocols/chargectl/
 | `TestParseIoregBatteryAS` | Apple silicon `MaxCapacity=100` 时直接用百分比 |
 | `TestParsePmset` | `pmset -g batt` 回退解析 |
 | `TestParsePmsetDischarging` | `discharging` 不被误判为充电 |
+| `TestBatteryOnAC` | `ExternalConnected`/`IsCharging`/`FullyCharged` 任一为真即插电 |
+| `TestFourCC` / `TestKeyName` | SMC 键的 FourCC 打包/还原 |
+| `TestU32RoundTrip` / `TestHexBytes` | SMC 大端整数与 `smc -w` 十六进制编码 |
+| `TestLE32RoundTrip` | 固件限额键的小端 ui32 编解码 |
+| `TestSmcStopAllow` | CH0B/CHTE/CHWA/CH0I/CH0J/CH0K/CHIE 的停/启取值 |
+| `TestSMCLayout` | 80 字节 `SMCKeyData_t` 关键偏移防回归 |
 
 测试用 `sandbox()` 把 `sysRoot` 指向临时目录,并用 fixture 目录模拟
 `/sys/class/power_supply` 与厂商节点(`ctrl_linux.go`,仅 linux/android)。
-`mac_read.go` 的解析用例无 build tag,在任意平台可跑。
+`mac_read.go` 与 `smc_codec.go` 的用例无 build tag,在任意平台可跑。
 
 ## macOS(darwin)
 
 无 `/sys/power_supply` 树,SMC 充电原子与 BCLM 只能经 IOKit 访问。本后端
-**不用 cgo 链接 IOKit**(需 macOS SDK、破坏从 Linux/CI 交叉编译),而是 shell 调
-两个事实标准工具,命令语法**未在真机实测**:
+**不用 cgo**(需 macOS SDK、破坏从 Linux/CI 交叉编译),而是用
+[purego](https://github.com/ebitengine/purego) 在运行时 `dlopen` IOKit,直接调用
+`AppleSMC` 的 `IOConnectCallStructMethod`(80 字节 `SMCKeyData_t`,selector=2)。
+仅在原生不可用/无效时回退 shell 调外置 `bclm`/`smc`。**原生路径未在真机实测**。
 
-| 平台 | 读 | 写 | 备注 |
+| 后端 | 读 | 写 | 备注 |
 | --- | --- | --- | --- |
-| Intel | `ioreg -rn AppleSmartBattery`(回退 `pmset -g batt`) | `bclm write <pauseAt>` | level 语义,充到 pause 停 |
-| Apple silicon | 同上 | `smc -k CH0B -w 02`(停)/`00`(允),并同步 `CH0C` | 自动探测 |
-| AS(Tahoe) | 同上 | `smc -k CHTE -w 01000000`(停)/`00000000`(允) | 自动探测 |
-| AS(兜底) | 同上 | `smc -k CHWA -w 01`(启用 80% 上限)/`00` | 固定 80%,非任意档 |
+| 原生 SMC 固件限额 `bfF0` | `ioreg -rn AppleSmartBattery`(回退 `pmset -g batt`) | `bfF0=00`→`bfD0=upper`→`bfE0=lower`→`bfF0=02` | macOS 27 代起,固件自执行窗口(小端 ui32);三键齐备才启用 |
+| 原生 SMC BCLM (Intel) | 同上 | `BCLM=<pauseAt>` | level 语义,充到 pause 停 |
+| 原生 SMC CH0B/CH0C | 同上 | `CH0B=02`/`00`,并同步 `CH0C` | Apple silicon |
+| 原生 SMC CHTE | 同上 | `CHTE=01000000`/`00000000` | Tahoe 起 |
+| 原生 SMC 适配器 `CHIE`/`CH0J`/`CH0I`/`CH0K` | 同上 | 切断墙电(`CHIE=08`、其余 `01`)/恢复(`00`) | **适配器模式**:上限靠放电维持,插电时低于 `pause-5` 才恢复,避免频繁通断 |
+| 原生 SMC CHWA | 同上 | `CHWA=01`(启用 80% 上限)/`00` | 固定 80%,非任意档 |
+| 外置 `bclm` | 同上 | `bclm write <pauseAt>` | 仅当原生缺席 |
+| 外置 `smc` | 同上 | `smc -k CH0B -w 02`(停)/`00`(允),并同步 `CH0C` | 仅当原生缺席 |
 
-- 探测顺序:`auto` → 有 `bclm` 用 level,否则有 `smc` 试 `CH0B`→`CHTE`→`CHWA`,
-  都不行则**只读**(记一次 read-only 告警,不反复刷屏)。
-- 提权:默认**直接执行**(假定 fedbridge 以 root 运行);非 root 时设
-  `FEDLET_CHARGECTL_SUDO="sudo -n"` 注入前缀,`none` 表示不提权。
+- 后端探测顺序(逐个能力探测,**不按 macOS 版本分支**):
+  原生 `BCLM` → 原生 `CH0B` → 原生 `CHTE` → 原生 `CHWA` → 外置 `bclm` → 外置
+  `smc`(试 `CH0B`→`CHTE`→`CHWA`);全部不可用则**只读**(记一次 read-only 告警,
+  不反复刷屏)。
+- 插电判定:`readPlugged` 由 `ExternalConnected` / `IsCharging` / `FullyCharged`
+  **任一为真**即判为插电,避免个别机型 `ExternalConnected` 缺失时误判。
+- **自动回退**:某后端连续写失败 `reprobeAfter=3` 次,或连续 `effectiveStrikes=3`
+  次"高电量仍在充电"却无效时,自动切到下一个后端;直至只剩只读。
+- 提权:原生走 IOKit(需 root/相应 entitlement,fedbridge 以 root 运行为宜);外置
+  工具默认**直接执行**,非 root 时设 `FEDLET_CHARGECTL_SUDO="sudo -n"` 注入前缀,
+  `none` 表示不提权。
 - env 覆盖:`FEDLET_CHARGECTL_SMC`(默认 `smc`)、`FEDLET_CHARGECTL_BCLM`(默认
-  `bclm`)、`FEDLET_CHARGECTL_MAC_MODE=auto|level|switch`、`FEDLET_CHARGECTL_SUDO`。
-- 稳健性:所有外部调用 5s 超时;连续写失败 3 次后重新探测;只读降级经 `AuthStatus`
-  暴露为 `read-only`;`CHWA`(固定 80%)命中时打印忽略 75/30 的告警。
+  `bclm`)、`FEDLET_CHARGECTL_SUDO`。**不再有 `FEDLET_CHARGECTL_MAC_MODE`**——后端
+  一律自动探测。
+- 稳健性:所有外部工具调用 5s 超时;只读降级经 `AuthStatus` 暴露为 `read-only`、
+  无可写节点时为 `no-backend`;`CHWA`(固定 80%)命中时打印忽略 75/30 的告警。
 - **现代 macOS 限制(root 不能绕过)**:BCLM 在 macOS `>= 15.0` 为 no-op(需关 SIP);
-  `CH0B/CH0C/CHTE` 在 `26.7+`/`27 beta` 即使 root 也返回 `kIOReturnNotPrivileged`。
-  写入失败即降级只读并告警。若机器暴露 `bfF0` 等固件上限键,需由支持该路径的工具
-  (如 `batt`)处理,本后端暂不覆盖。
+  `CH0B/CH0C/CHTE` 在 `26.7+`/`27 beta` 即使 root 也返回 `kIOReturnNotPrivileged`
+  (此时 `CH0B/CH0C/CHTE` 常退化为零长度占位键,`keySize` 直接判缺)。失效即自动回退
+  下一后端。若机器暴露 `bfF0/bfD0/bfE0`,本后端按固件限额路径写入;若只剩适配器键
+  (`CHIE` 等),则退为适配器模式(切断墙电、以电池放电压住上限)。后端顺序:
+  `固件 bfF0 → BCLM → CH0B/CH0C → CHTE → 适配器 CHIE/CH0J/CH0I/CH0K → CHWA`。
+  适配器与固件路径**未在真机实测**,取值依据 `batt`
+  (<https://github.com/charlie0129/batt>,`pkg/smc/charging.go`/`adapter.go`)。
 
 ## 许可注记
 

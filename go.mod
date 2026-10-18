@@ -3,6 +3,7 @@ module github.com/envsh/fedlet
 go 1.25.9
 
 require (
+	github.com/ebitengine/purego v0.8.1
 	github.com/emersion/go-imap v1.2.1
 	github.com/emersion/go-imap-id v0.0.0-20190926060100-f94a56b9ecde
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	github.com/ebitengine/purego v0.8.1 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect

@@ -491,6 +491,121 @@ func TestValidateWindow(t *testing.T) {
 	}
 }
 
+// The stop decision must not depend on plug detection: a discharging pack left
+// above pauseAt still gets the stop write (it is idempotent and harmless).
+func TestSwitchStopsWhenNotPlugged(t *testing.T) {
+	ps := sandbox(t)
+	bat := filepath.Join(ps, "battery")
+	writeAttr(t, filepath.Join(bat, "type"), "Battery")
+	writeAttr(t, filepath.Join(bat, "present"), "1")
+	writeAttr(t, filepath.Join(bat, "status"), "Discharging")
+	writeAttr(t, filepath.Join(bat, "capacity"), "76")
+	writeAttr(t, filepath.Join(bat, "store_mode"), "0")
+
+	preferACC = true
+	ctl := probeController()
+	if ctl == nil {
+		t.Fatal("expected a controller")
+	}
+	checkOnce(ctl, &loopState{})
+	if got := readAttr(t, ctl.switchPath); got != "1" {
+		t.Fatalf("unplugged 76%%: store_mode=%s, want 1", got)
+	}
+}
+
+func TestExternalChargerTypes(t *testing.T) {
+	for _, typ := range []string{"USB_HVDCP_3", "USB_PPS", "USB_PD_DRP", "USB_FLOAT", "Wireless", "WPC", "Mains"} {
+		ps := sandbox(t)
+		writeAttr(t, filepath.Join(ps, "battery", "type"), "Battery")
+		writeAttr(t, filepath.Join(ps, "battery", "status"), "Discharging")
+		writeAttr(t, filepath.Join(ps, "usb", "type"), typ)
+		writeAttr(t, filepath.Join(ps, "usb", "online"), "1")
+		if !readPlugged("battery") {
+			t.Errorf("type=%s online=1: readPlugged=false, want true", typ)
+		}
+	}
+}
+
+func TestPluggedFromBattery(t *testing.T) {
+	ps := sandbox(t)
+	bat := filepath.Join(ps, "battery")
+	writeAttr(t, filepath.Join(bat, "type"), "Battery")
+	if readPlugged("battery") {
+		t.Fatal("no supply, no status: want false")
+	}
+	writeAttr(t, filepath.Join(bat, "status"), "Charging")
+	if !readPlugged("battery") {
+		t.Fatal("battery status=Charging: want true")
+	}
+	writeAttr(t, filepath.Join(bat, "status"), "Discharging")
+	writeAttr(t, filepath.Join(bat, "current_now"), "500000")
+	if !readPlugged("battery") {
+		t.Fatal("current_now>0: want true")
+	}
+}
+
+func TestPluggedPresentOnly(t *testing.T) {
+	ps := sandbox(t)
+	writeAttr(t, filepath.Join(ps, "battery", "type"), "Battery")
+	writeAttr(t, filepath.Join(ps, "usb", "type"), "USB")
+	writeAttr(t, filepath.Join(ps, "usb", "present"), "1")
+	if !readPlugged("battery") {
+		t.Fatal("present=1 only: want true")
+	}
+}
+
+func TestChargingNowFull(t *testing.T) {
+	ps := sandbox(t)
+	bat := filepath.Join(ps, "BAT0")
+	writeAttr(t, filepath.Join(bat, "status"), "Full")
+	writeAttr(t, filepath.Join(bat, "current_now"), "500000")
+	if !chargingNow("BAT0") {
+		t.Fatal("status=Full with real current: want true")
+	}
+}
+
+func TestPluggedMtkSmb(t *testing.T) {
+	for _, name := range []string{"mtk-master-charger", "mtk-master-chg", "smb135x-charger"} {
+		ps := sandbox(t)
+		writeAttr(t, filepath.Join(ps, "battery", "type"), "Battery")
+		writeAttr(t, filepath.Join(ps, "battery", "status"), "Discharging")
+		writeAttr(t, filepath.Join(ps, name, "online"), "1")
+		if !readPlugged("battery") {
+			t.Errorf("%s online=1: readPlugged=false, want true", name)
+		}
+	}
+}
+
+// A node that writes OK but does nothing must be flagged once the pack keeps
+// climbing on wall power at/above pauseAt; the counter drives backend fallback.
+func TestEffectivenessTrend(t *testing.T) {
+	ps := sandbox(t)
+	bat := filepath.Join(ps, "battery")
+	writeAttr(t, filepath.Join(bat, "type"), "Battery")
+	writeAttr(t, filepath.Join(bat, "present"), "1")
+	writeAttr(t, filepath.Join(bat, "status"), "Charging")
+	writeAttr(t, filepath.Join(bat, "current_now"), "500000")
+	capPath := filepath.Join(bat, "capacity")
+	writeAttr(t, capPath, "74")
+	writeAttr(t, filepath.Join(bat, "store_mode"), "0")
+	writeAttr(t, filepath.Join(ps, "AC", "type"), "Mains")
+	writeAttr(t, filepath.Join(ps, "AC", "online"), "1")
+
+	preferACC = true
+	ctl := probeController()
+	if ctl == nil {
+		t.Fatal("expected a controller")
+	}
+	st := &loopState{}
+	for _, c := range []string{"75", "76", "77"} {
+		writeAttr(t, capPath, c)
+		checkOnce(ctl, st)
+	}
+	if st.ineffective < effectiveStrikes {
+		t.Fatalf("ineffective=%d, want >=%d after a rising pack at/above pauseAt", st.ineffective, effectiveStrikes)
+	}
+}
+
 func TestThresholdsRuntime(t *testing.T) {
 	ps := sandbox(t)
 	bat := filepath.Join(ps, "BAT0")
