@@ -4,6 +4,7 @@ package chargectl
 
 import (
 	"errors"
+	"log"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,7 +17,7 @@ func probeAccess(path string) bool {
 	if err == nil {
 		return true
 	}
-	logf("skip %s: %s", path, errReason(err))
+	log.Printf("chargectl: skip %s: %s", path, errReason(err))
 	return false
 }
 

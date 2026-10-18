@@ -1,6 +1,9 @@
 package chargectl
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // AppleSMC wire constants and the byte offsets of SMCKeyData_t (an 80-byte
 // struct). The platform glue lives in smc_darwin.go; these pieces are pure Go so
@@ -15,6 +18,7 @@ const (
 
 	offKey         = 0  // UInt32 key
 	offKeyInfoSize = 28 // keyInfo.dataSize
+	offResult      = 40 // char result (SMC status byte)
 	offData8       = 42 // char data8 (the command byte)
 	offBytes       = 48 // UInt8 bytes[32]
 )
@@ -82,6 +86,34 @@ func smcStopAllow(key string) (stop, allow []byte) {
 		return []byte{0x08}, []byte{0x00}
 	}
 	return nil, nil
+}
+
+// smcResultName renders the SMC result byte (SMCKeyData_t.result) for logs.
+func smcResultName(r byte) string {
+	switch r {
+	case 0:
+		return "success"
+	case 1:
+		return "SMC error"
+	case 132: // 0x84
+		return "key not found"
+	default:
+		return fmt.Sprintf("SMC result 0x%x", r)
+	}
+}
+
+// bfclValue mirrors bclm on Intel: BFCL is set 5 below the BCLM ceiling
+// (clamped to 1..100) so the MagSafe LED / "fully charged" display matches. It
+// is cosmetic and does not itself stop charging.
+func bfclValue(level int) byte {
+	v := level - 5
+	if v < 1 {
+		v = 1
+	}
+	if v > 100 {
+		v = 100
+	}
+	return byte(v)
 }
 
 // le32 reads a little-endian uint32. The macOS 27 firmware limit keys (bfD0/

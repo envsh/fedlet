@@ -82,8 +82,29 @@ func TestLE32RoundTrip(t *testing.T) {
 // The native path depends on these exact offsets into the 80-byte struct.
 func TestSMCLayout(t *testing.T) {
 	if smcKeyDataSize != 80 || offKey != 0 || offKeyInfoSize != 28 ||
-		offData8 != 42 || offBytes != 48 {
-		t.Fatalf("SMC layout changed: size=%d key=%d sizeOff=%d data8=%d bytes=%d",
-			smcKeyDataSize, offKey, offKeyInfoSize, offData8, offBytes)
+		offResult != 40 || offData8 != 42 || offBytes != 48 {
+		t.Fatalf("SMC layout changed: size=%d key=%d sizeOff=%d result=%d data8=%d bytes=%d",
+			smcKeyDataSize, offKey, offKeyInfoSize, offResult, offData8, offBytes)
+	}
+}
+
+func TestSMCResultName(t *testing.T) {
+	if got := smcResultName(0); got != "success" {
+		t.Fatalf("smcResultName(0)=%q", got)
+	}
+	if got := smcResultName(132); got != "key not found" {
+		t.Fatalf("smcResultName(132)=%q", got)
+	}
+	if got := smcResultName(0x86); got != "SMC result 0x86" {
+		t.Fatalf("smcResultName(0x86)=%q", got)
+	}
+}
+
+func TestBFCLValue(t *testing.T) {
+	cases := map[int]byte{75: 70, 100: 95, 10: 5, 6: 1, 5: 1, 1: 1}
+	for in, want := range cases {
+		if got := bfclValue(in); got != want {
+			t.Errorf("bfclValue(%d)=%d, want %d", in, got, want)
+		}
 	}
 }

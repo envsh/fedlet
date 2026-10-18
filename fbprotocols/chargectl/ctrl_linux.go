@@ -5,6 +5,7 @@ package chargectl
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -73,8 +74,8 @@ type loopState struct {
 }
 
 func runLoop(stop <-chan struct{}) {
-	logf("start: pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
-	defer logf("stopped")
+	log.Printf("chargectl: start: pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
+	defer log.Printf("chargectl: stopped")
 
 	bad := map[string]bool{}
 	ctl := probeControllerSkip(bad)
@@ -83,9 +84,9 @@ func runLoop(stop <-chan struct{}) {
 		// (module load, SELinux relabel, driver rebind). Keep reporting status.
 		setAuthStatus("no-backend")
 		pushError(errors.New("no controllable charge node found yet; retrying"))
-		logf("no controllable charge node found; will retry each tick")
+		log.Printf("chargectl: no controllable charge node found; will retry each tick")
 	} else {
-		logf("using %s (mode=%s)", ctl.label, ctl.modeName())
+		log.Printf("chargectl: using %s (mode=%s)", ctl.label, ctl.modeName())
 	}
 
 	st := &loopState{}
@@ -105,16 +106,16 @@ func runLoop(stop <-chan struct{}) {
 				if nc := probeControllerSkip(bad); nc != nil {
 					ctl = nc
 					setAuthStatus(authStatusLocal)
-					logf("found %s (mode=%s)", ctl.label, ctl.modeName())
+					log.Printf("chargectl: found %s (mode=%s)", ctl.label, ctl.modeName())
 				}
 			case st.writeFails >= reprobeAfter || st.ineffective >= effectiveStrikes:
 				bad[ctl.label] = true
 				if nc := probeControllerSkip(bad); nc != nil {
-					logf("switching backend: %s -> %s (writeFails=%d ineffective=%d)",
+					log.Printf("chargectl: switching backend: %s -> %s (writeFails=%d ineffective=%d)",
 						ctl.label, nc.label, st.writeFails, st.ineffective)
 					ctl = nc
 				} else {
-					logf("no alternative backend after %s; keeping it", ctl.label)
+					log.Printf("chargectl: no alternative backend after %s; keeping it", ctl.label)
 				}
 				st.writeFails, st.ineffective = 0, 0
 			}
@@ -137,9 +138,9 @@ func checkOnce(ctl *controller, st *loopState) {
 
 	if !st.havePlug || plugged != st.lastPlug {
 		if plugged {
-			logf("charger plugged in (battery=%s)", name)
+			log.Printf("chargectl: charger plugged in (battery=%s)", name)
 		} else {
-			logf("charger unplugged (battery=%s)", name)
+			log.Printf("chargectl: charger unplugged (battery=%s)", name)
 		}
 		st.lastPlug, st.havePlug = plugged, true
 	}
@@ -201,9 +202,9 @@ func checkOnce(ctl *controller, st *loopState) {
 	st.writeFails = 0
 	if desired != st.lastState {
 		if desired == 1 {
-			logf("capacity=%d%% >= %d%%: charging stopped", capacity, pauseAt())
+			log.Printf("chargectl: capacity=%d%% >= %d%%: charging stopped", capacity, pauseAt())
 		} else {
-			logf("capacity=%d%% <= %d%%: charging resumed", capacity, resumeAt())
+			log.Printf("chargectl: capacity=%d%% <= %d%%: charging resumed", capacity, resumeAt())
 		}
 		st.lastState = desired
 	}
@@ -318,7 +319,7 @@ func (c *controller) checkEffective(name string, capacity int, plugged bool, st 
 	}
 	st.ineffective++
 	if !st.warned {
-		logf("warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, pauseAt(), c.label)
+		log.Printf("chargectl: warning: %s is at %d%% (>=%d%%) but still charging via %s; the node may be ineffective", name, capacity, pauseAt(), c.label)
 		st.warned = true
 	}
 }
@@ -404,7 +405,7 @@ func (c *controller) ensureThreshold() error {
 		return nil
 	}
 	if err := writeValue(c.startPath, strconv.Itoa(resumeAt())); err != nil {
-		logf("start threshold write failed (%v); falling back to end=%d only", err, pauseAt())
+		log.Printf("chargectl: start threshold write failed (%v); falling back to end=%d only", err, pauseAt())
 		c.degraded = true
 		c.mode = modeLevel
 	}
@@ -426,7 +427,7 @@ func (c *controller) ensureChargeType() {
 	}
 	if err := writeValue(c.chargeTypePath, "Custom"); err != nil {
 		if !c.chargeTypeWarned {
-			logf("charge_type write failed (%v); will retry, thresholds may be ignored", err)
+			log.Printf("chargectl: charge_type write failed (%v); will retry, thresholds may be ignored", err)
 			c.chargeTypeWarned = true
 		}
 		return

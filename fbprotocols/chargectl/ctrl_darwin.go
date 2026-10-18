@@ -3,13 +3,16 @@
 package chargectl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -131,8 +134,8 @@ type macLoopState struct {
 }
 
 func runMacLoop(stop <-chan struct{}) {
-	logf("start(darwin): pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
-	defer logf("stopped")
+	log.Printf("chargectl: start(darwin): pause>=%d%% resume<=%d%% interval=%s", pauseAt(), resumeAt(), Interval)
+	defer log.Printf("chargectl: stopped")
 
 	cands := macBackends()
 	idx := 0
@@ -140,10 +143,10 @@ func runMacLoop(stop <-chan struct{}) {
 	if len(cands) > 0 {
 		ctl = cands[idx]
 		setAuthStatus(authStatusLocal)
-		logf("darwin: using %s (mode=%s)", ctl.label, ctl.mode)
+		log.Printf("chargectl: darwin: using %s (mode=%s)", ctl.label, ctl.mode)
 	} else {
 		setAuthStatus("read-only")
-		logf("read-only: no SMC charge key and no bclm/smc tool; install one (see README)")
+		log.Printf("chargectl: read-only: no SMC charge key and no bclm/smc tool; install one (see README)")
 	}
 
 	st := &macLoopState{}
@@ -165,16 +168,16 @@ func runMacLoop(stop <-chan struct{}) {
 				if c := macBackends(); len(c) > 0 {
 					cands, idx, ctl = c, 0, c[0]
 					setAuthStatus(authStatusLocal)
-					logf("darwin: found %s (mode=%s)", ctl.label, ctl.mode)
+					log.Printf("chargectl: darwin: found %s (mode=%s)", ctl.label, ctl.mode)
 				}
 			case st.writeFails >= reprobeAfter || st.ineffective >= effectiveStrikes:
 				if idx+1 < len(cands) {
-					logf("darwin: switching backend %s -> %s (writeFails=%d ineffective=%d)",
+					log.Printf("chargectl: darwin: switching backend %s -> %s (writeFails=%d ineffective=%d)",
 						ctl.label, cands[idx+1].label, st.writeFails, st.ineffective)
 					idx++
 					ctl = cands[idx]
 				} else {
-					logf("darwin: no alternative backend after %s; keeping it", ctl.label)
+					log.Printf("chargectl: darwin: no alternative backend after %s; keeping it", ctl.label)
 				}
 				st.writeFails, st.ineffective = 0, 0
 			}
@@ -187,11 +190,35 @@ func runMacLoop(stop <-chan struct{}) {
 	}
 }
 
+// smcProbeKeys is the set of charge-control keys whose presence the startup log
+// reports, so one run reveals the machine's writable surface.
+var smcProbeKeys = []string{"bfF0", "bfD0", "bfE0", "BCLM", "BFCL", "CH0B", "CH0C", "CHTE", "CHIE", "CH0J", "CH0I", "CH0K", "CHWA"}
+
+var smcInvOnce sync.Once
+
+// logSMCDiagnostics reports which charge keys exist (and their data size) once
+// per process, so "no suitable key" is distinguishable from "SMC would not
+// open" from a single log line.
+func logSMCDiagnostics(h *smcHandle) {
+	smcInvOnce.Do(func() {
+		var present, absent []string
+		for _, k := range smcProbeKeys {
+			if sz, err := h.keySize(k); err == nil {
+				present = append(present, fmt.Sprintf("%s(%d)", k, sz))
+			} else {
+				absent = append(absent, k)
+			}
+		}
+		log.Printf("chargectl: darwin SMC keys: present=[%s] absent=[%s]", strings.Join(present, " "), strings.Join(absent, " "))
+	})
+}
+
 // macBackends probes the native SMC atoms and then the external tools, returning
 // every candidate that exists. An empty result means read-only.
 func macBackends() []*macCtl {
 	var out []*macCtl
 	if h, err := openSMC(); err == nil {
+		logSMCDiagnostics(h)
 		if hasAllKeys(h, "bfF0", "bfD0", "bfE0") {
 			out = append(out, &macCtl{label: "SMC firmware limit bfF0 (native)", mode: macModeFirmware, h: h})
 		}
@@ -211,28 +238,28 @@ func macBackends() []*macCtl {
 				continue
 			}
 			stop, allow := smcStopAllow(k)
-			logf("warning: %s holds the ceiling by cutting wall power; the pack discharges to %d%% before the adapter returns", k, resumeAt())
+			log.Printf("chargectl: warning: %s holds the ceiling by cutting wall power; the pack discharges to %d%% before the adapter returns", k, resumeAt())
 			out = append(out, &macCtl{label: "SMC adapter " + k + " (native)", mode: macModeSwitch, h: h, key: k, stop: stop, allow: allow, adapter: true})
 			break
 		}
 		if _, err := h.keySize("CHWA"); err == nil {
-			logf("warning: CHWA is a fixed 80%% firmware cap; the %d/%d%% window is ignored", pauseAt(), resumeAt())
+			log.Printf("chargectl: warning: CHWA is a fixed 80%% firmware cap; the %d/%d%% window is ignored", pauseAt(), resumeAt())
 			stop, allow := smcStopAllow("CHWA")
 			out = append(out, &macCtl{label: "SMC CHWA (native, fixed 80%)", mode: macModeSwitch, h: h, key: "CHWA", stop: stop, allow: allow})
 		}
 	} else {
-		logf("darwin: native SMC unavailable (%v)", err)
+		log.Printf("chargectl: darwin: native SMC unavailable (%v)", err)
 	}
-	if p, err := exec.LookPath(bclmBin); err == nil {
+	if p := findTool(bclmBin); p != "" {
 		out = append(out, &macCtl{label: "bclm " + p, mode: macModeLevel, bin: p})
 	}
-	if p, err := exec.LookPath(smcBin); err == nil {
+	if p := findTool(smcBin); p != "" {
 		for _, key := range []string{"CH0B", "CHTE", "CHWA"} {
 			if _, ok := smcRead(p, key); !ok {
 				continue
 			}
 			if key == "CHWA" {
-				logf("warning: CHWA is a fixed 80%% firmware cap; the %d/%d%% window is ignored", pauseAt(), resumeAt())
+				log.Printf("chargectl: warning: CHWA is a fixed 80%% firmware cap; the %d/%d%% window is ignored", pauseAt(), resumeAt())
 			}
 			stop, allow := smcStopAllow(key)
 			out = append(out, &macCtl{label: "smc " + key + " " + p, mode: macModeSwitch, bin: p, key: key, stop: stop, allow: allow})
@@ -277,9 +304,9 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 	}
 	if !st.havePlug || plugged != st.lastPlug {
 		if plugged {
-			logf("charger plugged in (battery=%s)", name)
+			log.Printf("chargectl: charger plugged in (battery=%s)", name)
 		} else {
-			logf("charger unplugged (battery=%s)", name)
+			log.Printf("chargectl: charger unplugged (battery=%s)", name)
 		}
 		st.lastPlug, st.havePlug = plugged, true
 	}
@@ -343,9 +370,9 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 			st.writeFails = 0
 			if desired != st.lastState {
 				if desired == 1 {
-					logf("capacity=%d%% >= %d%%: charging stopped", capacity, pauseAt())
+					log.Printf("chargectl: capacity=%d%% >= %d%%: charging stopped", capacity, pauseAt())
 				} else {
-					logf("capacity=%d%% <= %d%%: charging resumed", capacity, resume)
+					log.Printf("chargectl: capacity=%d%% <= %d%%: charging resumed", capacity, resume)
 				}
 				st.lastState = desired
 			}
@@ -362,7 +389,7 @@ func checkMacOnce(ctl *macCtl, st *macLoopState) {
 	if plugged && capacity >= pauseAt() && (rising || charging) {
 		st.ineffective++
 		if !st.warned {
-			logf("warning: battery at %d%% (>=%d%%) but still charging via %s; the backend may be ineffective", capacity, pauseAt(), ctl.label)
+			log.Printf("chargectl: warning: battery at %d%% (>=%d%%) but still charging via %s; the backend may be ineffective", capacity, pauseAt(), ctl.label)
 			st.warned = true
 		}
 	} else {
@@ -379,7 +406,7 @@ func checkMacReadOnly(st *macLoopState) {
 		return
 	}
 	if !st.roWarned {
-		logf("read-only: battery=%d%% plugged=%v; no SMC charge key and no bclm/smc tool available", capacity, plugged)
+		log.Printf("chargectl: read-only: battery=%d%% plugged=%v; no SMC charge key and no bclm/smc tool available", capacity, plugged)
 		st.roWarned = true
 	}
 }
@@ -398,7 +425,24 @@ func (c *macCtl) writeLevel(level int) error {
 	if size >= 2 {
 		val[size-2] = byte(level >> 8)
 	}
-	return c.h.writeKeyRaw("BCLM", val)
+	if err := c.h.writeKeyRaw("BCLM", val); err != nil {
+		return err
+	}
+	// Read back so a write the SMC accepts but drops (or that the firmware
+	// immediately reverts) is treated as a failure and triggers fallback.
+	if got, err := c.h.readKey("BCLM"); err != nil {
+		return fmt.Errorf("BCLM readback: %w", err)
+	} else if !bytes.Equal(got, val) {
+		return fmt.Errorf("BCLM did not stick: wrote %s, read %s", hexBytes(val), hexBytes(got))
+	}
+	// Mirror bclm on Intel: also set BFCL (MagSafe LED / "final" level) when the
+	// key exists. Cosmetic, so a failure only warns.
+	if _, err := c.h.keySize("BFCL"); err == nil {
+		if err := c.h.writeKey("BFCL", []byte{bfclValue(level)}); err != nil {
+			log.Printf("chargectl: warning: BFCL write failed: %v", err)
+		}
+	}
+	return nil
 }
 
 // setCharging writes the stop/allow value for a switch atom. On Apple silicon
@@ -414,7 +458,15 @@ func (c *macCtl) setCharging(on bool) error {
 				return err
 			}
 		}
-		return c.h.writeKey(c.key, val)
+		if err := c.h.writeKey(c.key, val); err != nil {
+			return err
+		}
+		if got, err := c.h.readKey(c.key); err != nil {
+			return fmt.Errorf("%s readback: %w", c.key, err)
+		} else if !bytes.Equal(got, val) {
+			return fmt.Errorf("%s did not stick: wrote %s, read %s", c.key, hexBytes(val), hexBytes(got))
+		}
+		return nil
 	}
 	hex := hexBytes(val)
 	if c.key == "CH0B" {

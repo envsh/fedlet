@@ -173,7 +173,10 @@ go test -race ./fbprotocols/chargectl/
 | `TestU32RoundTrip` / `TestHexBytes` | SMC 大端整数与 `smc -w` 十六进制编码 |
 | `TestLE32RoundTrip` | 固件限额键的小端 ui32 编解码 |
 | `TestSmcStopAllow` | CH0B/CHTE/CHWA/CH0I/CH0J/CH0K/CHIE 的停/启取值 |
-| `TestSMCLayout` | 80 字节 `SMCKeyData_t` 关键偏移防回归 |
+| `TestSMCLayout` | 80 字节 `SMCKeyData_t` 关键偏移(含 `result`)防回归 |
+| `TestSMCResultName` | SMC `result` 字节(0/0x84/其他)的可读名称 |
+| `TestBFCLValue` | Intel `BFCL=value-5` 的边界收敛 |
+| `TestFindTool` | 外置工具显式目录探测(可执行性判定) |
 
 测试用 `sandbox()` 把 `sysRoot` 指向临时目录,并用 fixture 目录模拟
 `/sys/class/power_supply` 与厂商节点(`ctrl_linux.go`,仅 linux/android)。
@@ -214,6 +217,24 @@ go test -race ./fbprotocols/chargectl/
   一律自动探测。
 - 稳健性:所有外部工具调用 5s 超时;只读降级经 `AuthStatus` 暴露为 `read-only`、
   无可写节点时为 `no-backend`;`CHWA`(固定 80%)命中时打印忽略 75/30 的告警。
+- **日志前缀**:所有日志经标准 `log` 在输出处直接带 `chargectl: ` 前缀(与
+  `emailimap:`/`weibo:`/`sysinfo:` 一致),`grep chargectl` 即可捞出本后端全部输出。
+- **写入校验(与版本无关)**:每次原生写后**回读比对**,并校验 80 字节
+  `SMCKeyData_t.result` 字节(非 0 即视为被 SMC 拒绝,如 `0x84` key not found、
+  `0x86` not writable)。被拒或“写了不生效”即触发后端回退,绝不静默成功。
+  写 `BCLM` 成功且机器存在 `BFCL` 时,同步写 `BFCL=value-5`(仅 MagSafe LED 指示,
+  不决定停充)。
+- **系统可能覆盖该键**:写充电限额需 root;macOS 自带的电池健康管理 /
+  Optimized Battery Charging 会改写同一 SMC 状态。本后端每 `30s` 重写并回读,
+  若发现被覆盖,建议在系统设置中关闭该功能。Intel 机上 macOS 可能多充约 3%
+  (设 75 实际约 77–78),属正常。
+- **外置工具查找**:除 `$PATH` 外还显式探测 `/usr/local/bin`、`/opt/homebrew/bin`、
+  `/opt/local/bin`、`/usr/local/sbin`、`/usr/bin`——以 root/daemon 运行时 `PATH`
+  常不含这些目录。
+- **启动诊断**:原生 SMC 打开成功时打印一次键清单
+  (`bfF0/bfD0/bfE0/BCLM/BFCL/CH0B/CH0C/CHTE/CHIE/CH0J/CH0I/CH0K/CHWA` 的存在与
+  数据长度);打开失败则打印 `chargectl: darwin: native SMC unavailable (...)`。
+  一条日志即可区分“键缺失”“SMC 打不开”“工具找不到”“写入被拒”四种情况。
 - **现代 macOS 限制(root 不能绕过)**:BCLM 在 macOS `>= 15.0` 为 no-op(需关 SIP);
   `CH0B/CH0C/CHTE` 在 `26.7+`/`27 beta` 即使 root 也返回 `kIOReturnNotPrivileged`
   (此时 `CH0B/CH0C/CHTE` 常退化为零长度占位键,`keySize` 直接判缺)。失效即自动回退

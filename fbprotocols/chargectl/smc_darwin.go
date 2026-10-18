@@ -143,6 +143,12 @@ func (h *smcHandle) callStruct(in, out []byte) error {
 	if r1 != 0 {
 		return fmt.Errorf("IOConnectCallStructMethod: 0x%x", r1)
 	}
+	// A successful IOKit call does not mean the SMC accepted the operation
+	// (e.g. 0x84 key not found, 0x86 not writable). Check the result byte so a
+	// rejected write is never mistaken for success.
+	if r := out[offResult]; r != 0 {
+		return fmt.Errorf("SMC %s", smcResultName(r))
+	}
 	return nil
 }
 

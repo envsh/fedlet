@@ -12,7 +12,6 @@ package chargectl
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,11 +96,6 @@ var (
 	loopStop chan struct{}
 	loopDone chan struct{}
 )
-
-// logf prefixes every line so chargectl is easy to pick out of the bridge log.
-func logf(format string, args ...any) {
-	log.Printf("chargectl: "+format, args...)
-}
 
 func setRunning(v bool) {
 	statusRunning.Store(v)
