@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"encoding/json"
 	"testing"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -248,5 +249,63 @@ func TestToDisplaySecret(t *testing.T) {
 		if got := toDisplaySecret(in); got != want {
 			t.Errorf("toDisplaySecret(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestIsSendMsg(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"完整", `{"type":"imap_mail","id":"a","message":"hi"}`, true},
+		{"缺 message", `{"type":"imap_mail","id":"a"}`, false},
+		{"缺 id", `{"type":"x","message":"hi"}`, false},
+		{"缺 type", `{"id":"a","message":"hi"}`, false},
+		{"file 替代 message", `{"type":"x","id":"a","file":"f.png"}`, true},
+		{"数字 message", `{"type":"x","id":"a","message":1}`, true},
+		{"非 JSON", `not json`, false},
+		{"空对象", `{}`, false},
+		{"原始 mobsub 无 type", `{"proto_type":"mobsub","seq":3}`, false},
+	}
+	for _, c := range cases {
+		if got := isSendMsg([]byte(c.raw)); got != c.want {
+			t.Errorf("%s: isSendMsg=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestParseMobSubMsg(t *testing.T) {
+	raw := `{"type":"imap_mail","id":"a","message":"hi","relates_to":"$1,$2","mentions":"@u"}`
+	if !isSendMsg([]byte(raw)) {
+		t.Fatal("want sendmsg")
+	}
+	m := parseMobSubMsg([]byte(raw))
+	if m.Type != "imap_mail" || m.ID != "a" || m.Message != "hi" {
+		t.Fatalf("parsed = %+v", m)
+	}
+	if m.RelatesTo != "$1,$2" || m.Mentions != "@u" {
+		t.Fatalf("relates_to=%q mentions=%q", m.RelatesTo, m.Mentions)
+	}
+}
+
+func TestMobsubBasicMarshal(t *testing.T) {
+	b, err := json.Marshal(mobsubBasic{
+		ProtoType: "mobsub", UAID: "", VirtIP4: "10.0.0.1",
+		PeerID7: "abcdefg", Seq: 3, TS: 1789357931,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["proto_type"] != "mobsub" || m["virtip4"] != "10.0.0.1" ||
+		m["peerid7"] != "abcdefg" || m["uaid"] != "" {
+		t.Fatalf("marshal = %s", b)
+	}
+	if m["seq"] != float64(3) || m["ts"] != float64(1789357931) {
+		t.Fatalf("seq/ts = %v/%v", m["seq"], m["ts"])
 	}
 }

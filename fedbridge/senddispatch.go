@@ -50,6 +50,10 @@ func DispatchSend(ctype, to, msg, msgType string, filedata []byte, fileinfo *fbs
 		log.Printf("senddispatch: forwardReq=%s", data)
 		return fbshared.SendResult{}, fmt.Errorf("senddispatch: no local sender for %q", ctype)
 	}
+	// 纯接收型后端注册了 nil SendFn，直接调用会 panic
+	if info.SendFn == nil {
+		return fbshared.SendResult{}, fmt.Errorf("senddispatch: no local sender for %q", ctype)
+	}
 	if info.statusFn != nil {
 		st := info.Status()
 		log.Printf("sendbr: protocol=%q running=%v connected=%v reconn=%d errs=%d",

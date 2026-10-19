@@ -23,6 +23,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 
 	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
 // mobsub 只做接收订阅:Mozilla Push(autopush-rs),ntfy 主题=uaid。
@@ -137,6 +138,12 @@ func startMobSub(cfg mobsubConfig) {
 }
 
 func handleMobSubMsg(src string, msg []byte) {
+	if isSendMsg(msg) { // 判断在先
+		m := parseMobSubMsg(msg) // 命中才解析
+		log.Printf("mobsub[%s]: sendmsg=1 type=%s id=%s msg_len=%d ttl=%s",
+			src, m.Type, m.ID, len(m.Message), m.TTL)
+		return // 匹配即返回,不继续,不转发
+	}
 	log.Printf("mobsub[%s]: %s", src, msg)
 	err := publishBytes(channel_name, msg)
 	if err != nil {
@@ -344,13 +351,13 @@ func runMobSubSelfSend(cfg mobsubConfig, st *mobsubState) {
 	defer ticker.Stop()
 	for range ticker.C {
 		n++
-		payload, err := json.Marshal(map[string]any{
-			"proto_type": "mobsub",
-			"uaid":       "", // st.UAID,
-			"virtip4":    virtIP(),
-			"peerid7":    peerID7(),
-			"seq":        n,
-			"ts":         time.Now().Unix(),
+		payload, err := json.Marshal(mobsubBasic{
+			ProtoType: "mobsub",
+			UAID:      "", // st.UAID,
+			VirtIP4:   virtIP(),
+			PeerID7:   peerID7(),
+			Seq:       n,
+			TS:        time.Now().Unix(),
 		})
 		if err != nil {
 			log.Printf("[mobsub] moz %s: self-send: marshal: %v", cfg.uaid, err)
@@ -569,4 +576,42 @@ func mobsubLoadPrivateKey(st *mobsubState) (*ecdh.PrivateKey, error) {
 		return nil, err
 	}
 	return ecdh.P256().NewPrivateKey(raw)
+}
+
+// mobsubBasic selfsend 自发探测包的基础结构体,平铺,与 runMobSubSelfSend 原 map 等价。
+type mobsubBasic struct {
+	ProtoType string `json:"proto_type"`
+	UAID      string `json:"uaid"`
+	VirtIP4   string `json:"virtip4"`
+	PeerID7   string `json:"peerid7"`
+	Seq       uint64 `json:"seq"`
+	TS        int64  `json:"ts"`
+	Command   string `json:"command,omitempty"`
+}
+
+// mobsubSendMsg 平铺结构,字段与 /api/messages/send 完全同名;无 chat_id、无包装层。
+type mobsubSendMsg struct {
+	Type       string `json:"type"`
+	ID         string `json:"id"`
+	Message    string `json:"message"`
+	TTL        string `json:"ttl"`
+	Visibility string `json:"visibility"`
+	RelatesTo  string `json:"relates_to"`
+	Mentions   string `json:"mentions"`
+	File       string `json:"file"`
+	Filename   string `json:"filename,omitempty"`
+}
+
+// isSendMsg 判定在先:镜像必填校验(toxrestsim.go:554)。gjson 逐键廉价取值,
+// 不做全量解码,非 sendmsg 直接短路返回 false。
+func isSendMsg(raw []byte) bool {
+	g := func(k string) string { return gjson.GetBytes(raw, k).String() }
+	return g("type") != "" && g("id") != "" && (g("message") != "" || g("file") != "")
+}
+
+// parseMobSubMsg 仅在 isSendMsg 通过后调用,把字段落进结构体供日志。
+func parseMobSubMsg(raw []byte) mobsubSendMsg {
+	var m mobsubSendMsg
+	_ = json.Unmarshal(raw, &m) // 数字型(如 ttl=1)只报类型错,其余字段照填
+	return m
 }
