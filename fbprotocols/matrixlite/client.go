@@ -211,7 +211,7 @@ func (c *Client) TokenRefresh() error {
 }
 
 type versionsResp struct {
-	Versions         []string          `json:"versions"`
+	Versions         []string        `json:"versions"`
 	UnstableFeatures map[string]bool `json:"unstable_features"`
 }
 
@@ -295,15 +295,15 @@ func (c *Client) Sync(timeout time.Duration) ([]map[string]any, error) {
 }
 
 type slidingSyncReq struct {
-	Lists          map[string]slidingList `json:"lists"`
+	Lists             map[string]slidingList `json:"lists"`
 	RoomSubscriptions map[string]interface{} `json:"room_subscriptions,omitempty"`
 }
 
 type slidingList struct {
-	Ranges         [][]int       `json:"ranges"`
-	TimelineLimit  int           `json:"timeline_limit"`
-	RequiredState  [][]string    `json:"required_state,omitempty"`
-	BumpEventTypes []string      `json:"bump_event_types,omitempty"`
+	Ranges         [][]int    `json:"ranges"`
+	TimelineLimit  int        `json:"timeline_limit"`
+	RequiredState  [][]string `json:"required_state,omitempty"`
+	BumpEventTypes []string   `json:"bump_event_types,omitempty"`
 }
 
 type slidingRoom struct {
@@ -537,8 +537,8 @@ var (
 	ErrTokenExpired       = errors.New("matrixlite: token expired")
 	ErrSessionInvalidated = errors.New("matrixlite: session invalidated")
 	ErrUserDeactivated    = errors.New("matrixlite: user deactivated")
- 
-	wellKnownHC          *http.Client
+
+	wellKnownHC         *http.Client
 	prevNormalNextBatch string
 )
 
@@ -895,5 +895,3 @@ func authErrorFromResponse(resp *http.Response, body []byte) error {
 		return ErrTokenExpired
 	}
 }
-
-

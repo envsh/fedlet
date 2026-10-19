@@ -92,14 +92,17 @@ func publish(protocol, channel string, v any) error {
 			vv.ChatID, vv.ChatName,
 			vv.UserID, vv.Username,
 			len(vv.Text), len(vv.Attachments))
-		
+
 		if matchPubMsg(data, "proto_type", "mobsub") {
 			return nil
 		}
 
 		err = publishNtfy(protocol, channel, vv)
-		if false { err = publishWebPush(protocol, channel, vv)
-		} else { err = publishMozPush(protocol, channel, vv) }
+		if false {
+			err = publishWebPush(protocol, channel, vv)
+		} else {
+			err = publishMozPush(protocol, channel, vv)
+		}
 		return err
 
 	default:

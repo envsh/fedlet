@@ -75,7 +75,7 @@ func onP2PTopicEvent(raw any) {
 	if !matchPubMsg(data, "proto_type", "mobsub") {
 		log.Println("wtfff, some error")
 	}
-		
+
 	// 第二步:命中的少数才做一次 Unmarshal 取全部字段。
 	var m struct {
 		Endpoint string `json:"endpoint"`

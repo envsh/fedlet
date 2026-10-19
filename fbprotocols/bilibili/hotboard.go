@@ -40,8 +40,8 @@ type rankingItem struct {
 		Share    int64 `json:"share"`
 		Like     int64 `json:"like"`
 	} `json:"stat"`
-	ShortLinkV2 string `json:"short_link_v2"`
-	Raw          json.RawMessage `json:"-"`
+	ShortLinkV2 string          `json:"short_link_v2"`
+	Raw         json.RawMessage `json:"-"`
 }
 
 // UnmarshalJSON keeps the original entry bytes for verbatim forwarding.

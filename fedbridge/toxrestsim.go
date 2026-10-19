@@ -27,7 +27,7 @@ type selfInfo struct {
 	PeerID           string `json:"peer_id"`
 	Name             string `json:"name"`
 	StatusMessage    string `json:"status_message"`
-	ConnectionStatus string    `json:"connection_status"` // offline, tcp, udp
+	ConnectionStatus string `json:"connection_status"` // offline, tcp, udp
 }
 
 type simEvent struct {
@@ -252,8 +252,8 @@ func handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-req.Header.Set("User-Agent", mediaDownloadUA)
-	resp, err := dlClient.Do(req)
+		req.Header.Set("User-Agent", mediaDownloadUA)
+		resp, err := dlClient.Do(req)
 		if err != nil {
 			writeErr(w, err.Error(), http.StatusBadGateway)
 			return
@@ -350,7 +350,9 @@ req.Header.Set("User-Agent", mediaDownloadUA)
 		resp.Body = io.NopCloser(bytes.NewReader(b))
 		msg := strings.TrimSpace(string(b))
 		if strings.HasPrefix(ct, "application/json") {
-			var e struct{ Err string `json:"error"` }
+			var e struct {
+				Err string `json:"error"`
+			}
 			if json.Unmarshal(b, &e) == nil && e.Err != "" {
 				msg = strings.TrimSpace(e.Err)
 			}

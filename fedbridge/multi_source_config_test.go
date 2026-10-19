@@ -131,6 +131,9 @@ func TestMscfgApplies(t *testing.T) {
 	if got := mscfgApplies("ntfysh-topic"); got != "restart" {
 		t.Errorf("ntfysh-topic = %q, want restart", got)
 	}
+	if got := mscfgApplies("batctl"); got != "hot" {
+		t.Errorf("batctl = %q, want hot", got)
+	}
 }
 
 func TestMakeMscfgGetter(t *testing.T) {

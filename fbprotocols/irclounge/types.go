@@ -77,11 +77,11 @@ type Channel struct {
 }
 
 type Network struct {
-	UUID     string         `json:"uuid"`
-	Name     string         `json:"name"`
-	Nick     string         `json:"nick"`
-	Status   NetworkStatus  `json:"status"`
-	Channels []Channel      `json:"channels"`
+	UUID     string        `json:"uuid"`
+	Name     string        `json:"name"`
+	Nick     string        `json:"nick"`
+	Status   NetworkStatus `json:"status"`
+	Channels []Channel     `json:"channels"`
 }
 
 type NetworkStatus struct {
@@ -111,19 +111,19 @@ type moreEvent struct {
 }
 
 type NetworkConfig struct {
-	Name              string `json:"name"`
-	Host              string `json:"host"`
-	Port              int    `json:"port"`
-	TLS               bool   `json:"tls"`
-	Nick              string `json:"nick"`
-	Username          string `json:"username"`
-	Realname          string `json:"realname"`
-	Password          string `json:"password,omitempty"`
-	RejectUnauthorized bool  `json:"rejectUnauthorized"`
-	SASL              string `json:"sasl,omitempty"`
-	SASLAccount       string `json:"saslAccount,omitempty"`
-	SASLPassword      string `json:"saslPassword,omitempty"`
-	Join              string `json:"join,omitempty"`
+	Name               string `json:"name"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	TLS                bool   `json:"tls"`
+	Nick               string `json:"nick"`
+	Username           string `json:"username"`
+	Realname           string `json:"realname"`
+	Password           string `json:"password,omitempty"`
+	RejectUnauthorized bool   `json:"rejectUnauthorized"`
+	SASL               string `json:"sasl,omitempty"`
+	SASLAccount        string `json:"saslAccount,omitempty"`
+	SASLPassword       string `json:"saslPassword,omitempty"`
+	Join               string `json:"join,omitempty"`
 }
 
 func DefaultNetwork() NetworkConfig {

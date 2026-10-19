@@ -34,10 +34,10 @@ var (
 	stateFile   string
 	stateLoaded bool
 
-	errsMu sync.RWMutex
+	errsMu   sync.RWMutex
 	lastErrs []error
 
-	connSinceMu sync.RWMutex
+	connSinceMu    sync.RWMutex
 	connectedSince time.Time
 )
 

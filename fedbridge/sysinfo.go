@@ -15,6 +15,10 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "sysinfo",
 	Ctypes:     []string{"sysinfo"},
 	Capacities: ProtocolCapacities{CanReceive: true},
+	WebLabel:   "Host metrics (sysinfo)",
+	WebSettings: []WebSetting{
+		{Flag: "sysinfo-interval", Key: "interval"},
+	},
 	StartFn: func() {
 		sysinfo.SetPublishInfo(func(v any) error {
 			return publish("sysinfo", channel_name, v)
@@ -35,4 +39,6 @@ var _ = RegisterProtocol(&ProtocolInfo{
 func init() {
 	flag.DurationVar(&sysinfoInterval, "sysinfo-interval", sysinfo.DefaultInterval,
 		"sysinfo sampling interval (0=123s default)")
+	// Read at use time each tick, so a change is hot with no action.
+	registerFlagApply("sysinfo-interval", nil)
 }

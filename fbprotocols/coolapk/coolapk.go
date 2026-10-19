@@ -35,11 +35,11 @@ const (
 const authStatusPublic = "public"
 
 var (
-	pubfn_ func(any) error
-	mu     sync.Mutex
-	hotOn  bool
-	newsOn bool
-	hotInt time.Duration
+	pubfn_  func(any) error
+	mu      sync.Mutex
+	hotOn   bool
+	newsOn  bool
+	hotInt  time.Duration
 	newsInt time.Duration
 )
 

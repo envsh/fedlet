@@ -42,16 +42,16 @@ type NewsNext struct {
 
 // NewsItem is one feed article, flattened from the web payload.
 type NewsItem struct {
-	Title         string `json:"title"`
-	Source        string `json:"source"`
-	ChineseTag    string `json:"chinese_tag"`
-	GroupID       string `json:"group_id"`
-	ItemID        string `json:"item_id"`
-	BehotTime     int64  `json:"behot_time"`
-	HasVideo      bool   `json:"has_video"`
-	CommentsCount int64  `json:"comments_count"`
-	ImageURL      string `json:"image_url"`
-	IsFeedAd      bool   `json:"is_feed_ad"`
+	Title         string          `json:"title"`
+	Source        string          `json:"source"`
+	ChineseTag    string          `json:"chinese_tag"`
+	GroupID       string          `json:"group_id"`
+	ItemID        string          `json:"item_id"`
+	BehotTime     int64           `json:"behot_time"`
+	HasVideo      bool            `json:"has_video"`
+	CommentsCount int64           `json:"comments_count"`
+	ImageURL      string          `json:"image_url"`
+	IsFeedAd      bool            `json:"is_feed_ad"`
 	Raw           json.RawMessage `json:"-"`
 }
 

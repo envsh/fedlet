@@ -46,16 +46,16 @@ type ZhihuCollection struct {
 
 // CollectionItem is one entry inside a collection (answer/article/video/pin).
 type CollectionItem struct {
-	ID          int64  `json:"id"`
-	ContentType string `json:"content_type"`
-	CreatedTime int64  `json:"created_time"`
-	UpdatedTime int64  `json:"updated_time"`
-	Title       string `json:"title"`
-	Excerpt     string `json:"excerpt"`
-	URL         string `json:"url"`
-	Author      string `json:"author"`
-	QuestionID  int64  `json:"question_id"`
-	VoteupCount int64  `json:"voteup_count"`
+	ID          int64           `json:"id"`
+	ContentType string          `json:"content_type"`
+	CreatedTime int64           `json:"created_time"`
+	UpdatedTime int64           `json:"updated_time"`
+	Title       string          `json:"title"`
+	Excerpt     string          `json:"excerpt"`
+	URL         string          `json:"url"`
+	Author      string          `json:"author"`
+	QuestionID  int64           `json:"question_id"`
+	VoteupCount int64           `json:"voteup_count"`
 	Raw         json.RawMessage `json:"-"`
 }
 

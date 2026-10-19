@@ -31,6 +31,37 @@ var (
 // 因此后端可无重启、无 Stop/Start 地拿到最新值。
 var liveCfg atomic.Pointer[map[string]string]
 
+// mscfgFlagApply maps a real flag name to a hot reload hook. A nil hook means
+// "hot but nothing to do" (the value is read at use time, e.g. sysinfo-interval).
+// Hooks run in applyLive after the values are installed, so every Set path
+// (CLI, config.json, env, web PATCH) shares one mechanism. This replaces the
+// old hand-maintained mscfgHotFlags map.
+var (
+	mscfgFlagApplyMu sync.Mutex
+	mscfgFlagApply   = map[string]func(map[string]string) error{}
+)
+
+// registerFlagApply declares a flag as hot (restart-free). fn receives the full
+// post-change snapshot; pass nil for settings consumed at use time.
+func registerFlagApply(name string, fn func(map[string]string) error) {
+	mscfgFlagApplyMu.Lock()
+	mscfgFlagApply[name] = fn
+	mscfgFlagApplyMu.Unlock()
+}
+
+func mscfgFlagApplyOf(name string) (func(map[string]string) error, bool) {
+	mscfgFlagApplyMu.Lock()
+	defer mscfgFlagApplyMu.Unlock()
+	fn, ok := mscfgFlagApply[name]
+	return fn, ok
+}
+
+// mscfgFlagIsHot reports whether a flag has a registered reload hook.
+func mscfgFlagIsHot(name string) bool {
+	_, ok := mscfgFlagApplyOf(name)
+	return ok
+}
+
 // seedFromFlags 在 loadMultiSourceConfig 之后调用,把合并后的全部 flag 现值
 // 快照进 liveCfg,作为 getter 的初始数据源。无 flag 的"额外设置"
 // (mscfgExtra)一并并入,否则会被这次重建丢弃。
@@ -117,6 +148,14 @@ func applyLive(updates map[string]string) {
 		cur[k] = v
 	}
 	liveCfg.Store(&cur)
+	// 写完快照后再回调,确保钩子读到的是最新全量值。
+	for name := range updates {
+		if fn, ok := mscfgFlagApplyOf(name); ok && fn != nil {
+			if err := fn(cur); err != nil {
+				log.Printf("config: 热应用 %s 失败: %v", name, err)
+			}
+		}
+	}
 }
 
 func mscfgSetSource(name, src string) {

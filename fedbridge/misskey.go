@@ -18,8 +18,14 @@ var _ = RegisterProtocol(&ProtocolInfo{
 	Name:       "misskey",
 	Ctypes:     []string{TypeMisskeyNote},
 	Capacities: ProtocolCapacities{CanSend: true, CanReceive: true},
-	SendFn:     misskey.Send,
-	RedactFn:   misskey.Redact,
+	WebLabel:   "Misskey",
+	WebSettings: []WebSetting{
+		{Flag: "misskey", Key: "instance"},
+		{Flag: "misskey-timeline", Key: "timeline"},
+		{Flag: "misskey-token", Key: "token", Hide: true},
+	},
+	SendFn:   misskey.Send,
+	RedactFn: misskey.Redact,
 	StartFn: func() {
 		misskey.Start(
 			makeMscfgGetter("misskey", ""),
@@ -44,4 +50,6 @@ func init() {
 	flag.StringVar(&misskeyHost, "misskey", "https://misskey.io", "Misskey instance URL")
 	flag.StringVar(&misskeyToken, "misskey-token", "", "Misskey API token")
 	flag.StringVar(&misskeyTimeline, "misskey-timeline", "home", "Timeline: home/local/hybrid/global")
+	// Read at use time by the backend, so a change is hot with no action.
+	registerFlagApply("misskey-timeline", nil)
 }

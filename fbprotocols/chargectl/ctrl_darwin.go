@@ -92,6 +92,30 @@ func Stop() {
 	setRunning(false)
 }
 
+// Release best-effort lifts the charge ceiling on each backend so the pack
+// charges normally again. Called when the backend is disabled
+// (-batctl=false); errors are logged, never fatal.
+func Release() {
+	for _, c := range macBackends() {
+		var err error
+		switch c.mode {
+		case macModeFirmware:
+			err = c.writeFirmware(1, 100)
+		case macModeLevel:
+			err = c.writeLevel(100)
+		default: // switch / adapter
+			err = c.setCharging(true)
+		}
+		if err != nil {
+			log.Printf("chargectl: release %s: %v", c.label, err)
+			continue
+		}
+		log.Printf("chargectl: released charge limit (%s)", c.label)
+		return
+	}
+	log.Printf("chargectl: release: no writable backend; nothing to undo")
+}
+
 const (
 	// macModeLevel is an end-threshold value (BCLM): charge up to pauseAt().
 	macModeLevel = "level"

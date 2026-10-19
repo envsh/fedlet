@@ -60,6 +60,40 @@ func Stop() {
 	setRunning(false)
 }
 
+// Release best-effort lifts the configured ceiling so the pack charges normally
+// again. Called when the backend is disabled (-batctl=false); errors are logged,
+// never fatal. Unlike Stop it is NOT run on ordinary process exit.
+func Release() {
+	ctl := probeController()
+	if ctl == nil {
+		log.Printf("chargectl: release: no writable node; nothing to undo")
+		return
+	}
+	switch ctl.mode {
+	case modeThreshold:
+		if err := writeValue(ctl.endPath, "100"); err != nil {
+			log.Printf("chargectl: release %s: %v", ctl.endPath, err)
+			return
+		}
+		if !ctl.degraded && ctl.startPath != "" {
+			if err := writeValue(ctl.startPath, "0"); err != nil {
+				log.Printf("chargectl: release %s: %v", ctl.startPath, err)
+			}
+		}
+	case modeLevel:
+		if err := writeValue(ctl.endPath, "100"); err != nil {
+			log.Printf("chargectl: release %s: %v", ctl.endPath, err)
+			return
+		}
+	default: // modeSwitch
+		if err := ctl.startCharging(); err != nil {
+			log.Printf("chargectl: release %s: %v", ctl.switchPath, err)
+			return
+		}
+	}
+	log.Printf("chargectl: released charge limit (mode=%s)", ctl.modeName())
+}
+
 // loopState is per-run state. It is deliberately not persisted: a restart
 // re-probes the hardware and re-derives everything from the current charge.
 type loopState struct {

@@ -125,7 +125,7 @@ func TestHotBoardRespJSONShape(t *testing.T) {
 	resp := &HotBoardResp{
 		Items: []HotBoardItem{
 			{Rank: 1, SeriesID: "7111943588446997534", Title: "天神殿",
-				URL: "https://hongguoduanju.com/detail?series_id=7111943588446997534",
+				URL:   "https://hongguoduanju.com/detail?series_id=7111943588446997534",
 				Cover: "https://p3.byteimg.com/cover/1.jpg", Tags: []string{"复仇"},
 				EpisodeCnt: 217},
 		},

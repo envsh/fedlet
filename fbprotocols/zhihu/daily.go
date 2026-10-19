@@ -28,14 +28,14 @@ const (
 
 // DailyStory is one entry of the daily bulletin list.
 type DailyStory struct {
-	ID       int64    `json:"id"`
-	Title    string   `json:"title"`
-	URL      string   `json:"url"`
-	Hint     string   `json:"hint"`
-	Images   []string `json:"images"`
-	ImageHue string   `json:"image_hue"`
-	Type     int      `json:"type"`
-	GaPrefix string   `json:"ga_prefix"`
+	ID       int64           `json:"id"`
+	Title    string          `json:"title"`
+	URL      string          `json:"url"`
+	Hint     string          `json:"hint"`
+	Images   []string        `json:"images"`
+	ImageHue string          `json:"image_hue"`
+	Type     int             `json:"type"`
+	GaPrefix string          `json:"ga_prefix"`
 	Raw      json.RawMessage `json:"-"`
 }
 

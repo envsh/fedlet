@@ -82,15 +82,10 @@ func mscfgStringify(v any) string {
 	return fmt.Sprint(v)
 }
 
-// mscfgHotFlags 列出已改造为"用时读取"、无需重启即可生效的 flag。
-// 其余 flag 仍标记 restart(改动已持久化,但需重启才生效)。
-var mscfgHotFlags = map[string]bool{
-	"sysinfo-interval": true,
-	"misskey-timeline": true,
-}
-
+// mscfgApplies reports whether a change takes effect without a restart: extra
+// settings always do, and so does any flag with a registered reload hook.
 func mscfgApplies(name string) string {
-	if mscfgHotFlags[name] || mscfgExtraExists(name) {
+	if mscfgExtraExists(name) || mscfgFlagIsHot(name) {
 		return "hot"
 	}
 	return "restart"

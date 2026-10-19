@@ -69,12 +69,6 @@ type protoParam struct {
 	Hide  bool   `json:"hide"`
 }
 
-type protoInfo struct {
-	Name   string       `json:"name"`
-	Label  string       `json:"label"`
-	Params []protoParam `json:"params"`
-}
-
 var knownProtocols = []struct {
 	Flag   string
 	Name   string
@@ -229,6 +223,11 @@ var knownProtocols = []struct {
 		{"tiebakw", "keywords", false},
 		{"tiebainterval", "interval", false},
 	}},
+}
+type protoInfo struct {
+	Name   string       `json:"name"`
+	Label  string       `json:"label"`
+	Params []protoParam `json:"params"`
 }
 
 func handleProtocols(w http.ResponseWriter, r *http.Request) {

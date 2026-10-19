@@ -345,12 +345,12 @@ func runMobSubSelfSend(cfg mobsubConfig, st *mobsubState) {
 	for range ticker.C {
 		n++
 		payload, err := json.Marshal(map[string]any{
-			"proto_type":    "mobsub",
-			"uaid":    "", // st.UAID,
-			"virtip4": virtIP(),
-			"peerid7": peerID7(),
-			"seq":       n,
-			"ts":      time.Now().Unix(),
+			"proto_type": "mobsub",
+			"uaid":       "", // st.UAID,
+			"virtip4":    virtIP(),
+			"peerid7":    peerID7(),
+			"seq":        n,
+			"ts":         time.Now().Unix(),
 		})
 		if err != nil {
 			log.Printf("[mobsub] moz %s: self-send: marshal: %v", cfg.uaid, err)

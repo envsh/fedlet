@@ -87,7 +87,7 @@ func clipWaitProc() {
 			if !clipDedupText(scc) {
 				log.Printf("clipboard: dedup text %q within 2s, skip", scc)
 			} else {
-    			pid, appName, appPath := clipOwner()
+				pid, appName, appPath := clipOwner()
 				log.Printf("clipboard: owner pid=%d name=%s path=%s", pid, appName, appPath)
 				publish("clipboard", channel_name, json.RawMessage(marshalClipEvent("text", "", scc, 0, 0, 0, pid, appName, appPath)))
 			}

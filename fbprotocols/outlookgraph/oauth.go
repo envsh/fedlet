@@ -23,11 +23,11 @@ import (
 )
 
 const (
-	AuthEmpty        = ""
-	AuthAwaiting     = "awaiting_auth"
-	AuthReady        = "authenticated"
+	AuthEmpty         = ""
+	AuthAwaiting      = "awaiting_auth"
+	AuthReady         = "authenticated"
 	AuthRefreshFailed = "refresh_failed"
-	AuthError        = "error"
+	AuthError         = "error"
 )
 
 const tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"

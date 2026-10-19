@@ -12,6 +12,15 @@ type ProtocolCapacities struct {
 	CanReceive bool
 }
 
+// WebSetting binds one config flag to the short JSON key shown on the
+// /api/protocols page, optionally masked. Each protocol declares its own so the
+// page no longer needs a central table.
+type WebSetting struct {
+	Flag string
+	Key  string
+	Hide bool
+}
+
 type ProtocolStatus struct {
 	Running        bool
 	AuthStatus     string
@@ -31,7 +40,11 @@ type ProtocolInfo struct {
 	DlMediaFn func(mxcURL string) (io.ReadCloser, string, error)
 	StartFn   func()
 	StopFn    func()
-	statusFn  func() ProtocolStatus
+	// WebLabel is the display name on /api/protocols (falls back to Name);
+	// WebSettings lists the flags rendered there.
+	WebLabel    string
+	WebSettings []WebSetting
+	statusFn    func() ProtocolStatus
 }
 
 func (p *ProtocolInfo) Status() ProtocolStatus {

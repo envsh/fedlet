@@ -1,8 +1,8 @@
 package fedpubhttp
 
 import (
-	"fmt"
 	"bytes"
+	"fmt"
 	"net/http"
 )
 
