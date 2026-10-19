@@ -6,9 +6,9 @@ const (
 	ProtoOutlookGraph = "outlookgraph"
 	ProtoToxOverHttp  = "toxoverhttp"
 	ProtoMisskey      = "misskey"
-	ProtoGomuks       = "gomuks"
+	ProtoGomuks       = "gomuks_room"
 	ProtoIRCCloud     = "irccloud"
-	ProtoMatrixLite   = "matrixlite"
+	ProtoMatrixLite   = "matrix" // matrix
 	ProtoIRCLounge    = "irclounge"
 	ProtoSysinfo      = "sysinfo"
 )
