@@ -4,11 +4,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"encoding/json"
 	"testing"
 
 	webpush "github.com/SherClockHolmes/webpush-go"

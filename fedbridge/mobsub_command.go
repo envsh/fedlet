@@ -22,6 +22,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
@@ -138,10 +139,14 @@ func startMobSub(cfg mobsubConfig) {
 }
 
 func handleMobSubMsg(src string, msg []byte) {
+	log.Printf("mobsub[%s]: %s", src, msg)
 	if isSendMsg(msg) { // 判断在先
 		m := parseMobSubMsg(msg) // 命中才解析
 		log.Printf("mobsub[%s]: sendmsg=1 type=%s id=%s msg_len=%d ttl=%s",
 			src, m.Type, m.ID, len(m.Message), m.TTL)
+		if err := sendMobSubMsgParsed(m); err != nil {
+			log.Printf("mobsub[%s]: sendmsg dispatch: %v", src, err)
+		}
 		return // 匹配即返回,不继续,不转发
 	}
 	log.Printf("mobsub[%s]: %s", src, msg)
@@ -586,7 +591,8 @@ type mobsubBasic struct {
 	PeerID7   string `json:"peerid7"`
 	Seq       uint64 `json:"seq"`
 	TS        int64  `json:"ts"`
-	Command   string `json:"command,omitempty"`
+	// Action 动作标记,当前取值:register(注册/握手)、sendmsg(转发发送消息)、redact(撤回消息)。
+	Action string `json:"action,omitempty"`
 }
 
 // mobsubSendMsg 平铺结构,字段与 /api/messages/send 完全同名;无 chat_id、无包装层。
@@ -614,4 +620,53 @@ func parseMobSubMsg(raw []byte) mobsubSendMsg {
 	var m mobsubSendMsg
 	_ = json.Unmarshal(raw, &m) // 数字型(如 ttl=1)只报类型错,其余字段照填
 	return m
+}
+
+// sendMobSubMsgParsed mobsub 检测到 sendmsg 后进入:规化参数、校验附件后异步派发。
+// 与 handleMobSubMsg 的判定分流解耦;返回值只承载同步阶段的校验错误,
+// 派发(DispatchSend)错误在 goroutine 内记日志。
+func sendMobSubMsgParsed(m mobsubSendMsg) error {
+	var extra *fbshared.SendExtra
+	if m.RelatesTo != "" || m.Mentions != "" || strings.TrimSpace(m.Visibility) != "" {
+		extra = &fbshared.SendExtra{
+			RelatesTo:  splitCommaCSV(m.RelatesTo),
+			Mentions:   splitCommaCSV(m.Mentions),
+			Visibility: strings.TrimSpace(m.Visibility),
+		}
+	}
+
+	msgOut := m.Message
+	if msgOut == "" { // 镜像 toxrestsim.go:552
+		if m.Filename != "" {
+			msgOut = m.Filename
+		} else {
+			msgOut = m.File
+		}
+	}
+
+	var fdata []byte
+	var finfo *fbshared.MediaDataInfo
+	if i := strings.Index(m.File, ","); strings.HasPrefix(m.File, "data:") && i > 0 {
+		b, err := base64.StdEncoding.DecodeString(m.File[i+1:])
+		if err != nil {
+			return fmt.Errorf("sendmsg file base64 decode: %w", err)
+		}
+		if len(b) == 0 {
+			return errors.New("sendmsg file base64 decode: empty payload")
+		}
+		fdata = b
+		info := getMediaDataInfo(b, m.Filename)
+		finfo = &info
+	}
+
+	// 最长存活周期:随 DispatchSend 返回而退出,不跨消息复用。
+	// 上限=目标协议 SendFn 的 HTTP Client.Timeout(仓内最大 67s:gomuks/matrixlite/misskey,
+	// 其余 15~30s);gomuks 文本走 websocket.WriteMessage 且未设 WriteDeadline,
+	// 对端停止读取时可能超过 67s,故不承诺硬上限,只保证单条消息一个 goroutine。
+	go func() { // 异步:不阻塞 ntfy/mozpush 读循环
+		if _, err := DispatchSend(m.Type, m.ID, msgOut, m.Type, fdata, finfo, extra); err != nil {
+			log.Printf("mobsub[sendmsg]: dispatch: %v", err)
+		}
+	}()
+	return nil
 }
