@@ -29,6 +29,13 @@ h2{color:#58a6ff;font-size:13px;font-weight:600;margin-bottom:12px}
 .peer-item.active .peer-radio::after{content:'';width:8px;height:8px;border-radius:50%;background:#58a6ff}
 .peer-id{font-family:'SF Mono','Consolas','Liberation Mono',monospace;font-size:13px;color:#c9d1d9;word-break:break-all}
 .peer-num{color:#8b949e;font-size:13px;min-width:48px}
+.peer-item.peer-row{flex-direction:column;align-items:stretch;gap:6px}
+.peer-main{display:flex;align-items:center;gap:10px}
+.peer-ip{color:#8b949e;font-size:12px;margin-left:8px}
+.peer-links{display:flex;flex-wrap:wrap;gap:8px;padding-left:26px}
+.peer-link{font-size:12px;color:#58a6ff;text-decoration:none}
+.peer-link:hover{text-decoration:underline}
+.peer-item.self{cursor:default}
 .current-peer{margin-bottom:12px;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:13px;color:#8b949e}
 .current-peer span{color:#58a6ff;font-family:'SF Mono','Consolas','Liberation Mono',monospace}
 .error-toast{background:#21262d;border:1px solid #f85149;color:#f85149;padding:10px 14px;border-radius:6px;margin-top:12px;display:none}
@@ -86,6 +93,21 @@ async function loadProtocols() {
 }
 function esc(s) { return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]}) }
 
+function nodeRow(n) {
+  const port = location.port ? ':' + location.port : ''
+  const stfile = `http://${n.ip}${port}/stfile/`
+  const rowCls = 'peer-item peer-row' + (n.active ? ' active' : '') + (n.canSwitch ? '' : ' self')
+  const click = n.canSwitch ? ` onclick="switchPeer(${n.no})"` : ''
+  const stop = n.canSwitch ? ` onclick="event.stopPropagation()"` : ''
+  return `<div class="${rowCls}"${n.canSwitch ? ` data-no="${n.no}"` : ''}${click}>` +
+    `<div class="peer-main"><div class="peer-radio"></div>` +
+    `<span class="peer-num">${n.label}</span>` +
+    `<span class="peer-id">${n.id}</span>` +
+    `<span class="peer-ip">${n.ip}</span></div>` +
+    `<div class="peer-links"><a class="peer-link" href="${stfile}" target="_blank" rel="noopener"${stop}>stfile</a></div>` +
+    `</div>`
+}
+
 async function loadPeers() {
   try {
     const r = await fetch('/api/peer')
@@ -94,10 +116,9 @@ async function loadPeers() {
     const localTag = document.getElementById('localTag')
     if (localTag) localTag.textContent = data.local_id ? data.local_id+' '+data.local_ip : ''
     const list = document.getElementById('peerList')
-    list.innerHTML = data.peers.map(p => {
-      const active = p.no === data.peerno
-      return `<div class="peer-item${active?' active':''}" data-no="${p.no}" onclick="switchPeer(${p.no})"><div class="peer-radio"></div><span class="peer-num">Peer ${p.no}</span><span class="peer-id">${p.id}</span><span style="color:#8b949e;font-size:12px;margin-left:8px">${p.ip}</span></div>`
-    }).join('')
+    const nodes = data.peers.map(p => ({label: 'Peer ' + p.no, id: p.id, ip: p.ip, no: p.no, canSwitch: true, active: p.no === data.peerno}))
+    if (data.local_id) nodes.push({label: 'Self', id: data.local_id, ip: data.local_ip, no: -1, canSwitch: false, active: false})
+    list.innerHTML = nodes.map(nodeRow).join('')
   } catch(e) {
     document.getElementById('peerList').innerHTML = '<div style="color:#c55">failed to load</div>'
   }
