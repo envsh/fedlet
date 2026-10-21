@@ -6,6 +6,8 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 
@@ -58,9 +60,33 @@ func init() {
 	http.HandleFunc("/api/mobsub", handleMobsub)
 }
 
+// assetDirs 返回查找外部模板文件时按序尝试的目录:
+// 先当前工作目录,再可执行文件所在目录。
+func assetDirs() []string {
+	dirs := []string{"."}
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Dir(exe))
+	}
+	return dirs
+}
+
+// serveAsset 按 assetDirs 顺序查找同名文件(免重编译即可改前端),
+// 命中先用文件系统的内容,全部未命中则回退到编译期嵌入的 embedded。
+func serveAsset(w http.ResponseWriter, name string, embedded, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	for _, dir := range assetDirs() {
+		p := filepath.Join(dir, name)
+		if b, err := os.ReadFile(p); err == nil {
+			log.Printf("asset: serve %s from %s (file)", name, p)
+			w.Write(b)
+			return
+		}
+	}
+	w.Write([]byte(embedded))
+}
+
 func handleFedletIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(fedletHTML))
+	serveAsset(w, "fedlet.html", fedletHTML, "text/html; charset=utf-8")
 }
 
 type protoParam struct {

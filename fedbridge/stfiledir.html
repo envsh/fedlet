@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0;
+      padding: 12px;
+      -webkit-text-size-adjust: 100%;
+    }
+    p.crumbs {
+      margin: 0 0 10px;
+      word-break: break-all;
+    }
+    .wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid #ddd;
+      white-space: nowrap;
+    }
+    th { font-weight: 600; }
+    td.name {
+      white-space: normal;
+      word-break: break-all;
+      min-width: 8em;
+    }
+    td.size { text-align: right; }
+    a {
+      text-decoration: none;
+      display: inline-block;
+      padding: 2px 0;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0d1117; color: #c9d1d9; }
+      th, td { border-bottom-color: #30363d; }
+      a { color: #58a6ff; }
+    }
+  </style>
+</head>
+<body>
+  <p class="crumbs">
+    {{range .Crumbs}}<a href="{{.Href}}">{{.Name}}</a> / {{end}}
+  </p>
+  <div class="wrap">
+    <table>
+      <tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr>
+      {{if .Parent}}<tr><td class="name"><a href="{{.Parent}}">../</a></td><td>dir</td><td class="size"></td><td></td></tr>{{end}}
+      {{range .Entries}}
+      <tr>
+        <td class="name"><a href="{{.Href}}">{{.Name}}{{if .IsDir}}/{{end}}</a></td>
+        <td>{{.Type}}</td>
+        <td class="size">{{.Size}}</td>
+        <td>{{.ModTime}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</body>
+</html>
