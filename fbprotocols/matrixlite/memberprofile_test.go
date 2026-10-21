@@ -191,7 +191,7 @@ func TestMemberPublishPathsShareSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a unified message")
 	}
-	if wire.DisplayName != um.Usernick || wire.AvatarURL != um.UsrIcon {
+	if wire.DisplayName != um.Usernick || wire.AvatarURL != um.UserIcon {
 		t.Errorf("raw vs unified mismatch: %+v vs %+v", wire, um)
 	}
 	if wire.Presence != um.UsrPresence || wire.StatusMsg != um.UsrStatus {

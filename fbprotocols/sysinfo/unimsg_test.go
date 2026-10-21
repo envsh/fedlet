@@ -70,9 +70,9 @@ func TestToUnifiedFieldMapping(t *testing.T) {
 		t.Errorf("Raw = %q, want the marshalled snapshot", um.Raw)
 	}
 	// Icons/gateway stay empty: a host has no avatar.
-	if um.UsrIcon != "" || um.ChanIcon != "" || um.Gateway != "" {
+	if um.UserIcon != "" || um.ChanIcon != "" || um.Gateway != "" {
 		t.Errorf("icons/gateway should stay empty, got %q/%q/%q",
-			um.UsrIcon, um.ChanIcon, um.Gateway)
+			um.UserIcon, um.ChanIcon, um.Gateway)
 	}
 }
 

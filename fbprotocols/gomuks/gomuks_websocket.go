@@ -829,7 +829,7 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		UserID:    ev.Sender,
 		Username:  ev.Sender,
 		Usernick:  usernick,
-		UsrIcon:   usrIcon,
+		UserIcon:  usrIcon,
 		ChatID:    roomID,
 		ChatName:  roomName,
 		ChanIcon:  roomIcon,

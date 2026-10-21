@@ -58,7 +58,7 @@ type UnifiedMessage struct {
 	Username string `json:"username,omitempty"`
 	UserID   string `json:"userid,omitempty"`   // sometimes internal id
 	Usernick string `json:"usernick,omitempty"` // display name/nick
-	UsrIcon  string `json:"usr_icon,omitempty"`
+	UserIcon string `json:"user_icon,omitempty"`
 	// UsrPresence and UsrStatus come from m.presence: the online/offline state
 	// and the user's own status_msg. Both are best-effort, since a homeserver
 	// may have presence disabled, so they are frequently absent.
@@ -153,7 +153,7 @@ func (um *UnifiedMessage) ApplySenderProfile(w MemberProfileWire) {
 		um.Usernick = w.DisplayName
 	}
 	if w.AvatarURL != "" {
-		um.UsrIcon = w.AvatarURL
+		um.UserIcon = w.AvatarURL
 	}
 	if w.Presence != "" {
 		um.UsrPresence = w.Presence
