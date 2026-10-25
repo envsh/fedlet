@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -319,5 +320,7 @@ func trimFloat(v float64) string {
 	if err != nil {
 		return "?"
 	}
-	return string(b)
+	_ = b
+	return fmt.Sprintf("%.1f", v)
+	//return string(b)
 }

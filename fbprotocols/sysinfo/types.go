@@ -47,6 +47,7 @@ type Snapshot struct {
 	Temp        []TempInfo    `json:"temp"`
 	Battery     []BatteryInfo `json:"battery"`
 	Errors      []string      `json:"errors"`
+	ExtIP4     string  `json:"extip4"`
 }
 
 // HostInfo identifies the machine. String fields are "" when unknown.

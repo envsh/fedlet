@@ -40,7 +40,7 @@ func poll_demopub() {
 
 	for i := 0; ; i++ {
 		time.Sleep(135 * time.Second) // many nodes pub xN msgs
-		scc := fmt.Sprintf(`{"vvv": "ddddddd %v", "virtip4": "%s", "peerid7": "%s"}`, i, virtIP(), peerID7())
+		scc := fmt.Sprintf(`{"vvv": "ddddddd %v", "virtip4": "%s", "peerid7": "%s", "extip4":"0.0.0.0"}`, i, virtIP(), peerID7())
 		err := publish("demopub", channel_name, json.RawMessage(scc))
 		if err != nil {
 			log.Println(i, err)

@@ -1,0 +1,75 @@
+BINARY = main
+PROTO_TAGS = nowatchdog,gomuks,toxoverhttp,emailimap,outlookgraph,matrixlite,misskey,zhihu,bilibili,xhs
+# noauth toutiao,weibo,coolapk,bdtieba(流量大),hongguo,
+TAGS = $(PROTO_TAGS)
+
+BUILD_CMD = CGO_ENABLED=1 go build -v -tags $(TAGS) -o $(BINARY)
+
+define POST_BUILD
+	@case "$$(uname -s)" in \
+		Linux) \
+			echo "==> setcap cap_net_admin+eip on $(BINARY)"; \
+			sudo setcap cap_net_admin+eip $(BINARY); \
+			getcap $(BINARY);; \
+		Darwin) \
+			echo "==> macOS: run with sudo for utun device"; \
+			sudo chown root:wheel $(BINARY) && sudo chmod u+s $(BINARY);; \
+		*) \
+			echo "==> warning: unknown OS $$(uname -s), setcap/setuid skipped";; \
+	esac
+endef
+
+# about 33M
+all:
+	$(BUILD_CMD)
+	$(POST_BUILD)
+
+# about 30M
+nodht: TAGS := nodht,nopubsub,$(PROTO_TAGS)
+nodht: all
+
+# about 31M
+# with dht but no protos
+noproto: TAGS := nowatchdog
+noproto: all
+
+# about 28M
+min: TAGS := nodht,nopubsub,nowatchdog
+min: all
+
+# about 28M, with noauth proto
+min2: TAGS := nodht,nopubsub,nowatchdog,toutiao,weibo,coolapk,hongguo
+min2: all
+
+NDK_DIR ?= /opt/android-ndk-r26b
+NDK_HOST = $(shell uname -s | tr A-Z a-z)-x86_64
+LLVM_DIR = $(NDK_DIR)/toolchains/llvm/prebuilt/$(NDK_HOST)
+ANDROID_API ?= 23
+
+# anet uses //go:linkname to net.zoneCache; Go >=1.23 linker needs this off.
+ANET_LDFLAGS = -ldflags=-checklinkname=0
+
+# NDK r26 ships per-API clang wrappers that already bake in --target and
+# --sysroot, so no -B/-L/--gcc-toolchain/-lc plumbing is needed.
+CC_ARM64  = $(LLVM_DIR)/bin/aarch64-linux-android$(ANDROID_API)-clang
+CC_ARMV7  = $(LLVM_DIR)/bin/armv7a-linux-androideabi$(ANDROID_API)-clang
+CC_X86_64 = $(LLVM_DIR)/bin/x86_64-linux-android$(ANDROID_API)-clang
+
+# full with append ,$(TAGS)
+a64:
+	CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+	CC=$(CC_ARM64) \
+	CGO_CFLAGS="-isystem $(CURDIR)/android/include" \
+	go build -v -tags nodht,nopubsub,nowatchdog $(ANET_LDFLAGS) -o $(BINARY).arm64
+
+a32:
+	CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
+	CC=$(CC_ARMV7) \
+	CGO_CFLAGS="-isystem $(CURDIR)/android/include" \
+	go build -v -tags nodht,nopubsub,nowatchdog $(ANET_LDFLAGS) -o $(BINARY).arm32
+
+d64:
+	CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
+	CC=$(CC_X86_64) \
+	CGO_CFLAGS="-isystem $(CURDIR)/android/include" \
+	go build -v -tags nodht,nopubsub,nowatchdog $(ANET_LDFLAGS) -o $(BINARY).d64

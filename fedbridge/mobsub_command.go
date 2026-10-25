@@ -588,6 +588,7 @@ type mobsubBasic struct {
 	ProtoType string `json:"proto_type"`
 	UAID      string `json:"uaid"`
 	VirtIP4   string `json:"virtip4"`
+	ExtIP4   string `json:"extip4"`
 	PeerID7   string `json:"peerid7"`
 	Seq       uint64 `json:"seq"`
 	TS        int64  `json:"ts"`
