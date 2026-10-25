@@ -192,10 +192,22 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 	}
 	var visibleUserIds []string
 	if visibility == "specified" {
-		if extra == nil || len(extra.RelatesTo) == 0 {
-			return fbshared.SendResult{}, fmt.Errorf("misskey: specified visibility requires relates_to recipients")
+		if extra == nil || len(extra.Mentions) == 0 {
+			return fbshared.SendResult{}, fmt.Errorf("misskey: specified visibility requires mentions recipients")
 		}
-		visibleUserIds = extra.RelatesTo
+		visibleUserIds = extra.Mentions
+	}
+	var replyID, renoteID string
+	if extra != nil && len(extra.RelatesTo) > 0 {
+		target := extra.RelatesTo[0]
+		if len(extra.RelatesTo) > 1 {
+			log.Printf("misskey: Send: reply supports single target, first=%q extra=%v ignored", target, extra.RelatesTo[1:])
+		}
+		if msgType == "renote" {
+			renoteID = target
+		} else {
+			replyID = target
+		}
 	}
 	host, token, _ := currentCfg()
 	if host == "" || token == "" {
@@ -214,7 +226,7 @@ func Send(to, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaData
 		fileIds = []string{fileID}
 	}
 	log.Printf("misskey: sending [%s]: %s", visibility, truncate(msg, 80))
-	noteID, err := SendNote(host, token, msg, visibility, visibleUserIds, fileIds)
+	noteID, err := SendNote(host, token, msg, visibility, replyID, renoteID, visibleUserIds, fileIds)
 	if err == nil {
 		log.Printf("misskey: sent note_id=%s", noteID)
 	}
@@ -341,6 +353,17 @@ func (n *Note) toUnified(raw []byte) (fbshared.UnifiedMessage, bool) {
 		MsgType:     fbshared.MsgTypeCreate,
 		AccountID:   n.AccountID,
 		AccountName: n.AccountName,
+	}
+	// replyId/renoteId 都是“关联某条 note”的关系,与 Matrix m.relates_to 同构,
+	// 一并进 ReplyTos;mentions 保留原始用户 ID。
+	if n.ReplyID != "" {
+		um.ReplyTos = append(um.ReplyTos, n.ReplyID)
+	}
+	if n.RenoteID != "" {
+		um.ReplyTos = append(um.ReplyTos, n.RenoteID)
+	}
+	if len(n.Mentions) > 0 {
+		um.Mentions = n.Mentions
 	}
 
 	if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {

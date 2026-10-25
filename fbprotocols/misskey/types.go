@@ -13,7 +13,12 @@ type Note struct {
 	ID     string `json:"id"`
 	Text   string `json:"text"`
 	UserID string `json:"userId"`
-	User   struct {
+
+	ReplyID  string   `json:"replyId"`
+	RenoteID string   `json:"renoteId"`
+	Mentions []string `json:"mentions"`
+
+	User struct {
 		// User 与 Note 同理:仅 username/name,完整作者信息(avatarUrl/host 等)以 raw 事件为准。
 		Username string `json:"username"`
 		Name     string `json:"name"`
@@ -29,6 +34,8 @@ type Note struct {
 type noteCreateReq struct {
 	I              string   `json:"i"`
 	Text           string   `json:"text"`
+	ReplyID        string   `json:"replyId,omitempty"`
+	RenoteID       string   `json:"renoteId,omitempty"`
 	Visibility     string   `json:"visibility"`
 	VisibleUserIds []string `json:"visibleUserIds,omitempty"`
 	FileIds        []string `json:"fileIds,omitempty"`

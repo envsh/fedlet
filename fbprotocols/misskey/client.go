@@ -122,11 +122,13 @@ type noteCreateResp struct {
 	} `json:"createdNote"`
 }
 
-func SendNote(host, token, text, visibility string, visibleUserIds, fileIds []string) (string, error) {
+func SendNote(host, token, text, visibility, replyID, renoteID string, visibleUserIds, fileIds []string) (string, error) {
 	var resp noteCreateResp
 	err := apiPost(host, "notes/create", noteCreateReq{
 		I:              token,
 		Text:           text,
+		ReplyID:        replyID,
+		RenoteID:       renoteID,
 		Visibility:     visibility,
 		VisibleUserIds: visibleUserIds,
 		FileIds:        fileIds,
