@@ -657,14 +657,29 @@ func fetchWellKnown(host string) (string, error) {
 	return wk.Homeserver.BaseURL, nil
 }
 
-func (c *Client) SendMessage(roomID, text string) error {
+func (c *Client) SendMessage(roomID, text string, extra *fbshared.SendExtra) error {
 	txnID := atomic.AddInt64(&c.txnID, 1)
 	u := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%d", c.baseURL, url.PathEscape(roomID), txnID)
 
-	body, _ := json.Marshal(map[string]string{
+	content := map[string]any{
 		"msgtype": "m.text",
 		"body":    text,
-	})
+	}
+	if extra != nil {
+		if len(extra.Mentions) > 0 {
+			content["mentions"] = map[string]any{"user_ids": extra.Mentions}
+		}
+		if len(extra.RelatesTo) > 0 {
+			target := extra.RelatesTo[0]
+			if len(extra.RelatesTo) > 1 {
+				log.Printf("matrixlite: Send: reply supports single target, first=%q extra=%v ignored", target, extra.RelatesTo[1:])
+			}
+			content["relates_to"] = map[string]any{
+				"m.in_reply_to": map[string]any{"event_id": target},
+			}
+		}
+	}
+	body, _ := json.Marshal(content)
 
 	resp, err := c.doRequest(http.MethodPut, u, body)
 	if err != nil {

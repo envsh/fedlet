@@ -796,8 +796,16 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 	}
 
 	var content struct {
-		Body    string `json:"body"`
-		Msgtype string `json:"msgtype"`
+		Body     string `json:"body"`
+		Msgtype  string `json:"msgtype"`
+		Mentions *struct {
+			UserIDs []string `json:"user_ids"`
+		} `json:"m.mentions"`
+		RelatesTo *struct {
+			InReplyTo *struct {
+				EventID string `json:"event_id"`
+			} `json:"m.in_reply_to"`
+		} `json:"m.relates_to"`
 	}
 	if json.Unmarshal(ev.Content, &content) != nil || content.Body == "" {
 		return nil
@@ -838,6 +846,23 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		Text:      content.Body,
 		Timestamp: ev.Timestamp * int64(time.Millisecond),
 		Raw:       raw,
+	}
+	if content.Mentions != nil && len(content.Mentions.UserIDs) > 0 {
+		// MSC3952: user_ids 元素就是 Matrix ID,不在此做显示名转换;保留
+		// 原始 ID,与 reply_tos(event_id)/userid(MXID)同构。
+		mns := make([]string, 0, len(content.Mentions.UserIDs))
+		for _, id := range content.Mentions.UserIDs {
+			if id != "" {
+				mns = append(mns, id)
+			}
+		}
+		if len(mns) > 0 {
+			um.Mentions = mns
+		}
+	}
+	if content.RelatesTo != nil && content.RelatesTo.InReplyTo != nil &&
+		content.RelatesTo.InReplyTo.EventID != "" {
+		um.ReplyTos = []string{content.RelatesTo.InReplyTo.EventID}
 	}
 	return &um
 }

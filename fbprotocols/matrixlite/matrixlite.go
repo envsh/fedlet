@@ -361,7 +361,6 @@ func LastErrs() []error {
 }
 
 func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.MediaDataInfo, extra *fbshared.SendExtra) (fbshared.SendResult, error) {
-	_ = extra
 	if roomID == "" || msg == "" {
 		return fbshared.SendResult{}, fmt.Errorf("matrixlite: empty roomID or message")
 	}
@@ -377,7 +376,7 @@ func Send(roomID, msg, msgType string, filedata []byte, fileinfo *fbshared.Media
 		}
 		return fbshared.SendResult{}, c.SendFileMessage(roomID, filedata, fileinfo)
 	}
-	return fbshared.SendResult{}, c.SendMessage(roomID, msg)
+	return fbshared.SendResult{}, c.SendMessage(roomID, msg, extra)
 }
 
 func DownloadMedia(mxcURL string) (io.ReadCloser, string, error) {
@@ -460,6 +459,28 @@ func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage
 			if s2, _ := content["formatted_body"].(string); s2 != "" {
 				um.HTML = s2
 				um.MsgFormat = fbshared.FmtHTML
+			}
+		}
+		if ment, ok := content["m.mentions"].(map[string]any); ok {
+			if ids, ok := ment["user_ids"].([]any); ok && len(ids) > 0 {
+				// MSC3952: user_ids 元素就是 Matrix ID,保留原始值,
+				// 显示名解析是消费方职责。
+				mns := make([]string, 0, len(ids))
+				for _, id := range ids {
+					if s, _ := id.(string); s != "" {
+						mns = append(mns, s)
+					}
+				}
+				if len(mns) > 0 {
+					um.Mentions = mns
+				}
+			}
+		}
+		if rel, ok := content["m.relates_to"].(map[string]any); ok {
+			if irt, ok := rel["m.in_reply_to"].(map[string]any); ok {
+				if s, _ := irt["event_id"].(string); s != "" {
+					um.ReplyTos = []string{s}
+				}
 			}
 		}
 	}
