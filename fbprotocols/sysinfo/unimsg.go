@@ -76,6 +76,9 @@ func summary(s *Snapshot) string {
 	b.WriteString(fmtPercent(s.Load.Load15))
 
 	for _, d := range s.Disk {
+		if strings.HasPrefix(d.Mountpoint, "/private/") {
+			continue
+		}
 		b.WriteString(" | ")
 		b.WriteString(orQ(d.Mountpoint))
 		b.WriteString(" ")
