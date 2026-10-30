@@ -798,6 +798,7 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 	var content struct {
 		Body     string `json:"body"`
 		Msgtype  string `json:"msgtype"`
+		Format   string `json:"format"`
 		Mentions *struct {
 			UserIDs []string `json:"user_ids"`
 		} `json:"m.mentions"`
@@ -830,7 +831,8 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 	usernick = cached.Nick
 	usrIcon = cached.Icon
 
-	msgFormat := fbshared.FmtText
+	msgFormat := fbshared.FmtText // dep
+	msgFormat = content.Format
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoGomuks,
 		MsgID:     ev.EventID,
@@ -841,7 +843,7 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		ChatID:    roomID,
 		ChatName:  roomName,
 		ChanIcon:  roomIcon,
-		MsgType:   fbshared.MsgTypeCreate,
+		MsgType:   content.MsgType, // ev.Type, // fbshared.MsgTypeCreate,
 		MsgFormat: msgFormat,
 		Text:      content.Body,
 		Timestamp: ev.Timestamp * int64(time.Millisecond),

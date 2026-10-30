@@ -418,8 +418,8 @@ func RoomProfileForPublish(roomID string) (fbshared.RoomProfileWire, bool) {
 func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage, bool) {
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoMatrixLite,
-		MsgType:   fbshared.MsgTypeCreate,
-		MsgFormat: fbshared.FmtText,
+		MsgType:   fbshared.MsgTypeCreate, // dep
+		MsgFormat: fbshared.FmtText, // dep
 		Timestamp: time.Now().UnixNano(),
 		Raw:       raw,
 	}
@@ -455,12 +455,15 @@ func matrixEventToUnified(m map[string]any, raw []byte) (fbshared.UnifiedMessage
 		if s, _ := content["msgtype"].(string); s != "" {
 			um.MsgType = s
 		}
+		msgfmt, _ := content["format"].(string)
 		if s, _ := content["format"].(string); s == "org.matrix.custom.html" {
 			if s2, _ := content["formatted_body"].(string); s2 != "" {
 				um.HTML = s2
 				um.MsgFormat = fbshared.FmtHTML
 			}
 		}
+		um.MsgFormat = msgfmt
+		
 		if ment, ok := content["m.mentions"].(map[string]any); ok {
 			if ids, ok := ment["user_ids"].([]any); ok && len(ids) > 0 {
 				// MSC3952: user_ids 元素就是 Matrix ID,保留原始值,
