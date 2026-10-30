@@ -194,7 +194,7 @@ func TestMemberPublishPathsShareSnapshot(t *testing.T) {
 	if wire.DisplayName != um.Usernick || wire.AvatarURL != um.UserIcon {
 		t.Errorf("raw vs unified mismatch: %+v vs %+v", wire, um)
 	}
-	if wire.Presence != um.UsrPresence || wire.StatusMsg != um.UsrStatus {
+	if wire.Presence != um.UserPresence || wire.StatusMsg != um.UserStatus {
 		t.Errorf("presence mismatch: %+v vs %+v", wire, um)
 	}
 	// Username stays the MXID, matching gomuks.

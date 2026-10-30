@@ -788,7 +788,7 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 	if json.Unmarshal(raw, &ev) != nil {
 		return nil
 	}
-	if ev.Type != "m.room.message" {
+	if ev.Type != "m.room.message" && ev.Type != "m.sticker" {
 		return nil
 	}
 	if ev.Decrypted != nil {
@@ -797,8 +797,18 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 
 	var content struct {
 		Body     string `json:"body"`
-		Msgtype  string `json:"msgtype"`
+		MsgType  string `json:"msgtype"`
 		Format   string `json:"format"`
+		URL      string `json:"url"`
+		Filename string `json:"filename"`
+		Info     *struct {
+			MimeType     string `json:"mimetype"`
+			Size         int    `json:"size"`
+			W            int    `json:"w"`
+			H            int    `json:"h"`
+			Duration     int    `json:"duration"`
+			ThumbnailURL string `json:"thumbnail_url"`
+		} `json:"info"`
 		Mentions *struct {
 			UserIDs []string `json:"user_ids"`
 		} `json:"m.mentions"`
@@ -833,6 +843,10 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 
 	msgFormat := fbshared.FmtText // dep
 	msgFormat = content.Format
+	msgType := content.MsgType
+	if msgType == "" {
+		msgType = ev.Type
+	}
 	um := fbshared.UnifiedMessage{
 		Protocol:  fbshared.ProtoGomuks,
 		MsgID:     ev.EventID,
@@ -843,11 +857,31 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		ChatID:    roomID,
 		ChatName:  roomName,
 		ChanIcon:  roomIcon,
-		MsgType:   content.MsgType, // ev.Type, // fbshared.MsgTypeCreate,
+		MsgType:   msgType, // ev.Type, // fbshared.MsgTypeCreate,
 		MsgFormat: msgFormat,
 		Text:      content.Body,
 		Timestamp: ev.Timestamp * int64(time.Millisecond),
 		Raw:       raw,
+	}
+	if at := attachTypeForMsgType(msgType); at != "" {
+		a := fbshared.Attachment{
+			AttachType: at,
+			URL:        content.URL,
+			Filename:   content.Filename,
+		}
+		if a.Filename == "" {
+			a.Filename = content.Body
+		}
+		if content.Info != nil {
+			a.MimeType = content.Info.MimeType
+			a.Size = content.Info.Size
+			a.Width = content.Info.W
+			a.Height = content.Info.H
+			if at == fbshared.AttachImage && a.MimeType == "image/gif" {
+				a.AttachType = fbshared.AttachGif
+			}
+		}
+		um.Attachments = append(um.Attachments, a)
 	}
 	if content.Mentions != nil && len(content.Mentions.UserIDs) > 0 {
 		// MSC3952: user_ids 元素就是 Matrix ID,不在此做显示名转换;保留
@@ -867,4 +901,20 @@ func parseGomuksEvent(raw json.RawMessage, roomID string, roomName string, roomI
 		um.ReplyTos = []string{content.RelatesTo.InReplyTo.EventID}
 	}
 	return &um
+}
+
+func attachTypeForMsgType(mt string) string {
+	switch mt {
+	case "m.image":
+		return fbshared.AttachImage
+	case "m.video":
+		return fbshared.AttachVideo
+	case "m.audio":
+		return fbshared.AttachAudio
+	case "m.file":
+		return fbshared.AttachFile
+	case "m.sticker":
+		return fbshared.AttachSticker
+	}
+	return ""
 }

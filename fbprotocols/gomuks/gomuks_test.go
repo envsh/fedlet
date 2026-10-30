@@ -60,3 +60,35 @@ func TestGomuksSendDataExtraEmpty(t *testing.T) {
 		t.Fatalf("unexpected mentions: %v", d)
 	}
 }
+
+func TestParseGomuksEventAttachments(t *testing.T) {
+	raw := []byte(`{"event_id":"$e1","sender":"@a:s","type":"m.room.message","timestamp":1700000000000,"content":{"body":"pic.jpg","msgtype":"m.image","url":"mxc://s/id","info":{"mimetype":"image/jpeg","size":1234,"w":10,"h":20}}}`)
+	um := parseGomuksEvent(raw, "!r:s", "room", "mxc://s/icon")
+	if um == nil {
+		t.Fatal("nil um")
+	}
+	if um.MsgType != "m.image" {
+		t.Fatalf("msgtype=%q", um.MsgType)
+	}
+	if len(um.Attachments) != 1 {
+		t.Fatalf("attachments=%v", um.Attachments)
+	}
+	a := um.Attachments[0]
+	if a.AttachType != fbshared.AttachImage || a.URL != "mxc://s/id" ||
+		a.MimeType != "image/jpeg" || a.Size != 1234 || a.Width != 10 ||
+		a.Height != 20 || a.Filename != "pic.jpg" {
+		t.Fatalf("bad attachment: %+v", a)
+	}
+}
+
+func TestParseGomuksEventSticker(t *testing.T) {
+	raw := []byte(`{"event_id":"$s1","sender":"@a:s","type":"m.sticker","timestamp":1700000000000,"content":{"body":"st.webp","url":"mxc://s/st","info":{"mimetype":"image/webp","size":9,"w":3,"h":4}}}`)
+	um := parseGomuksEvent(raw, "!r:s", "", "")
+	if um == nil {
+		t.Fatal("nil um")
+	}
+	if um.MsgType != "m.sticker" || len(um.Attachments) != 1 ||
+		um.Attachments[0].AttachType != fbshared.AttachSticker {
+		t.Fatalf("bad sticker: msgtype=%q attachments=%v", um.MsgType, um.Attachments)
+	}
+}

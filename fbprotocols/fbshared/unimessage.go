@@ -59,12 +59,12 @@ type UnifiedMessage struct {
 	UserID   string `json:"userid,omitempty"`   // sometimes internal id
 	Usernick string `json:"usernick,omitempty"` // display name/nick
 	UserIcon string `json:"user_icon,omitempty"`
-	// UsrPresence and UsrStatus come from m.presence: the online/offline state
+	// UserPresence and UserStatus come from m.presence: the online/offline state
 	// and the user's own status_msg. Both are best-effort, since a homeserver
 	// may have presence disabled, so they are frequently absent.
 	UserPresence string `json:"user_presence,omitempty"`
 	UserStatus   string `json:"user_status,omitempty"`
-	ChanIcon    string `json:"chan_icon,omitempty"`
+	ChanIcon     string `json:"chan_icon,omitempty"`
 
 	ChatTopic string `json:"chat_topic,omitempty"`
 	ChatAlias string `json:"chat_alias,omitempty"`
