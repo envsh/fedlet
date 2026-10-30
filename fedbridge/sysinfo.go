@@ -3,7 +3,7 @@
 package main
 
 import (
-	"flag"
+	// "flag"
 	"time"
 
 	"github.com/envsh/fedlet/fbprotocols/sysinfo"
@@ -37,8 +37,8 @@ var _ = RegisterProtocol(&ProtocolInfo{
 })
 
 func init() {
-	flag.DurationVar(&sysinfoInterval, "sysinfo-interval", sysinfo.DefaultInterval,
-		"sysinfo sampling interval (0=123s default)")
+//	flag.DurationVar(&sysinfoInterval, "sysinfo-interval", sysinfo.DefaultInterval,
+	//	"sysinfo sampling interval (0=123s default)")
 	// Read at use time each tick, so a change is hot with no action.
 	registerFlagApply("sysinfo-interval", nil)
 }
