@@ -1,4 +1,4 @@
-//go:build !android
+//go:build !android && !nox11
 
 package main
 
@@ -168,7 +168,7 @@ func cbPlainDataToUnified(ba []byte, obj ClipboardPlainData) fbshared.UnifiedMes
 	
 	res.Protocol = obj.Type
 	res.ChatID = obj.Type
-	res.ChatName = "clipboard 剪贴板"
+	res.ChatName = "clipboard·剪贴板"
 	
 	nowt := time.Now().UnixNano()
 	hname, _ := os.Hostname()

@@ -16,9 +16,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"runtime"
 
 	"github.com/bep/debounce"
 	"github.com/fsnotify/fsnotify"
+	"github.com/envsh/fedlet/fbprotocols/fbshared"
 )
 
 type syncWatch struct {
@@ -100,7 +102,8 @@ func (w *syncWatch) flush() {
 	for path, op := range pending {
 		if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 			w.watcher.Remove(path)
-			publish("fsnotify", channel_name, json.RawMessage(w.marshalEvent("remove", w.rel(path), 0, "", "", "")))
+			b, _ := w.marshalEvent("remove", w.rel(path), 0, "", "", "")
+			publish("fsnotify", channel_name, json.RawMessage(b))
 			continue
 		}
 		stat, err := os.Stat(path)
@@ -120,7 +123,12 @@ func (w *syncWatch) flush() {
 		sha := fileSHA256(path)
 		chk := fileChunk(path)
 		mimeVal := fileMIME(path)
-		publish("fsnotify", channel_name, json.RawMessage(w.marshalEvent(ev, w.rel(path), stat.Size(), mimeVal, sha, chk)))
+		b, o := w.marshalEvent(ev, w.rel(path), stat.Size(), mimeVal, sha, chk)
+		err = publish("fsnotify", channel_name, json.RawMessage(b))
+		um := fsnEvent2Unified(o)
+		if true {
+			err = publish("fsnotify", channel_name, um)
+		} 
 	}
 }
 
@@ -150,25 +158,60 @@ func (w *syncWatch) addRecursive(dir string) {
 	})
 }
 
-func (w *syncWatch) marshalEvent(event, path string, size int64, mimeVal, sha256hex, chunk0b64 string) []byte {
-	b, _ := json.Marshal(struct {
-		Type   string `json:"type"`
-		Event  string `json:"event"`
-		Path   string `json:"path"`
-		Size   int64  `json:"size"`
-		Mime   string `json:"mime"`
-		SHA256 string `json:"sha256"`
-		Chunk0 string `json:"chunk0"`
-	}{
+func (w *syncWatch) marshalEvent(event, path string, size int64, mimeVal, sha256hex, chunk0b64 string) ([]byte, FsnotifyEvent) {
+	o := FsnotifyEvent {
 		Type:   "filesync",
 		Event:  event,
 		Path:   path,
+		Url: fmt.Sprintf("http://%s:4004/", virtIP()) + path,
+		NodeIP: virtIP(),
+		PeerID7: peerID7(),
 		Size:   size,
 		Mime:   mimeVal,
 		SHA256: sha256hex,
 		Chunk0: chunk0b64,
-	})
-	return b
+	}
+	b, _ := json.Marshal(o)
+	return b, o
+}
+
+func fsnEvent2Unified(e FsnotifyEvent) fbshared.UnifiedMessage {
+	nowt := time.Now().UnixNano()
+	hname, _ := os.Hostname()
+	username := fmt.Sprintf("%s-%s-%s", runtime.GOOS, runtime.GOARCH, hname)
+	chatname := fmt.Sprintf("%s·文件同步", e.Type)
+	
+	um := fbshared.UnifiedMessage{
+		Text:        fmt.Sprintf("%s %s %d %s %s", e.PeerID7, e.Event, e.Size, e.Mime, e.Url),
+		MsgFormat:   fbshared.FmtText,
+		Protocol:    e.Type,
+		AccountID:   "", // hostKey(s),
+		AccountName: "", // s.Host.Hostname,
+		ChatID:      e.Type, // "fsnotify",
+		ChatName:   chatname, // "fsnotify",
+		Username:    username, // "fsnotify",
+		UserID:      username, // hostKey(s),
+		Usernick:    hname, // s.Host.Hostname,
+		MsgType:     fbshared.MsgTypeCreate,
+		MsgID:       fmt.Sprintf("FSP%v-%v", 0, nowt), // msgID(s),
+		Timestamp:   nowt, // unifiedTimestamp(s.PublishedAt),
+		ChatTopic:   "", // hostTopic(s),
+		// Raw:         raw,		
+		}
+	return um
+}
+
+type FsnotifyEvent struct {
+		Type   string `json:"type"`
+		Event  string `json:"event"`
+		Path   string `json:"path"`
+		Url    string `json:"url"`
+		NodeIP string `json:"node_ip"`
+		PeerID7 string `json:"peer_id7"`
+		Size   int64  `json:"size"`
+		Mime   string `json:"mime"`
+		SHA256 string `json:"sha256"`
+		Chunk0 string `json:"chunk0"`
 }
 
 func fileSHA256(path string) string {

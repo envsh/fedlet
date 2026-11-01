@@ -28,6 +28,12 @@ all:
 nodht: TAGS := nodht,nopubsub,$(PROTO_TAGS)
 nodht: all
 
+### for envs node, supt dht and out sites, but no cbx
+4envs: TAGS := dht,nox11,tgbot,twibot,discord
+4envs: all
+4envs:
+	mv main main.4envs
+
 # about 31M
 # with dht but no protos
 noproto: TAGS := nowatchdog

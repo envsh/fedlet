@@ -16,6 +16,8 @@ import (
 	// _ "github.com/envsh/libp2px/softun"
 )
 
+var softunPort = ":4040"
+
 type safeConn struct {
 	net.Conn
 	closeOnce sync.Once
@@ -50,7 +52,7 @@ func runSoftunMain(locid string) {
 
 	// ── 3. 本地应用接入虚拟 LAN ──
 	// 3a. 虚拟 LAN 监听（服务端）
-	ln, err := softun.Device().Listen("tcp", myIP+":8080")
+	ln, err := softun.Device().Listen("tcp", myIP+softunPort) // ":8080")
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +130,7 @@ func runSoftunPhyport(port int) {
 func testSoftunPeer(myIP string) {
 	// 3b. 访问对端虚拟 IP 上的服务（整包走 iptunnel/1.0）
 	peerIP := "10.0.0.5" // 由 p2put 集群 / StringToHostPart 得到
-	conn, err := softun.Device().Dial("tcp", peerIP+":8080")
+	conn, err := softun.Device().Dial("tcp", peerIP+softunPort) // ":8080")
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +139,7 @@ func testSoftunPeer(myIP string) {
 
 	// 3c. HTTP / DNS 走虚拟 LAN
 	client := softun.Device().HTTPClient()
-	resp, _ := client.Get("http://" + peerIP + ":8080/")
+	resp, _ := client.Get("http://" + peerIP + softunPort) // ":8080/")
 	fmt.Println(resp.StatusCode)
 
 	// ── 4. loportmap 使用示意 ──
