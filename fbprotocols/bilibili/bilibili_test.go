@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -865,5 +866,89 @@ func TestIsWBIStale(t *testing.T) {
 	}
 	if isWBIStale(errors.New("net down")) {
 		t.Fatal("unrelated error must not be flagged stale")
+	}
+}
+
+func TestEnsureSessionTransientRefreshNoLoginUI(t *testing.T) {
+	resetBili(t)
+	resetGateway()
+	t.Setenv("HOME", t.TempDir())
+
+	origRefresh, origUI := refreshCookies, startLoginUIFn
+	defer func() { refreshCookies, startLoginUIFn = origRefresh, origUI }()
+
+	refreshCookies = func() error { return errors.New("bilibili: refresh http 502: html shed") }
+	startLoginUIFn = func() (string, error) {
+		t.Errorf("login UI must NOT open on a transient refresh failure")
+		return "", nil
+	}
+
+	auth.mu.Lock()
+	auth.status = AuthStatusInvalid
+	auth.mu.Unlock()
+
+	if err := ensureSession(); err == nil {
+		t.Fatalf("transient refresh failure should surface an error")
+	}
+}
+
+func TestEnsureSessionPostRefreshProbeTransientNoLoginUI(t *testing.T) {
+	resetBili(t)
+	resetGateway()
+	t.Setenv("HOME", t.TempDir())
+
+	origRefresh, origProbe, origUI := refreshCookies, probeSession, startLoginUIFn
+	defer func() { refreshCookies, probeSession, startLoginUIFn = origRefresh, origProbe, origUI }()
+
+	refreshCookies = func() error { return nil }
+	probeSession = func() error { return errors.New("bilibili: probe session: nav code -412: request error") }
+	startLoginUIFn = func() (string, error) {
+		t.Errorf("login UI must NOT open on a transient post-refresh probe")
+		return "", nil
+	}
+
+	auth.mu.Lock()
+	auth.status = AuthStatusInvalid
+	auth.mu.Unlock()
+
+	if err := ensureSession(); err == nil {
+		t.Fatalf("transient probe failure should surface an error")
+	}
+}
+
+func TestSmsLoginCapturesRefreshToken(t *testing.T) {
+	resetBili(t)
+	resetGateway()
+	t.Setenv("HOME", t.TempDir())
+
+	var gotURL string
+	origPost := postForm
+	defer func() { postForm = origPost }()
+	postForm = func(data any, u string, form url.Values) error {
+		gotURL = u
+		if data != nil {
+			b := []byte(`{"refresh_token":"newtok123","status":0,"message":""}`)
+			return json.Unmarshal(b, data)
+		}
+		return nil
+	}
+	smsSetCaptchaKey("ck")
+	jar.set("SESSDATA", "sess")
+	jar.set("bili_jct", "jct")
+	auth.mu.Lock()
+	auth.refreshToken = ""
+	auth.mu.Unlock()
+
+	if err := smsLogin("13800138000", "123456"); err != nil {
+		t.Fatalf("smsLogin: %v", err)
+	}
+	if gotURL != smsLoginURL {
+		t.Errorf("smsLogin posted to %q, want %q", gotURL, smsLoginURL)
+	}
+	auth.mu.Lock()
+	tok := auth.refreshToken
+	auth.mu.Unlock()
+	if tok != "newtok123" {
+		t.Fatalf("sms login must capture refresh_token, got %q", tok)
 	}
 }

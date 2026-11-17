@@ -228,13 +228,18 @@ func ensureSession() error {
 			if errors.Is(err, ErrNotLoggedIn) {
 				return loginGate()
 			}
-			log.Printf("bilibili: refresh failed: %v", err)
-			markSessionInvalid(err)
-			return loginGate()
+			// Transient failure (network / 5xx / WAF shed): keep the state
+			// invalid and retry on the next round; do NOT pop the login UI.
+			log.Printf("bilibili: refresh transient, keeping state (no login UI): %v", err)
+			return err
 		}
 		if err := probeSession(); err != nil {
-			markSessionInvalid(err)
-			return loginGate()
+			if errors.Is(err, ErrNotLoggedIn) {
+				markSessionInvalid(err)
+				return loginGate()
+			}
+			log.Printf("bilibili: post-refresh probe transient, keeping state (no login UI): %v", err)
+			return err
 		}
 		return nil
 	default:

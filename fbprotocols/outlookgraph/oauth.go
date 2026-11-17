@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,19 @@ const (
 )
 
 const tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+// refreshAuthError marks a refresh attempt that the STS definitively rejected
+// (invalid_grant / HTTP 400). Only this class of failure may flip the stored
+// status and demand interactive re-auth; network or 5xx failures are transient
+// and must be retried on the next call instead.
+type refreshAuthError struct{ err error }
+
+func (e *refreshAuthError) Error() string { return e.err.Error() }
+
+func isRefreshAuthError(err error) bool {
+	var rae *refreshAuthError
+	return errors.As(err, &rae)
+}
 const authEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 
 type tokenJSON struct {
@@ -117,13 +131,21 @@ func getToken(ctx context.Context, clientID string) (string, error) {
 	}
 
 	if tok != nil && tok.RefreshToken != "" {
-		if err := refreshToken(clientID); err == nil {
+		err := refreshToken(clientID)
+		if err == nil {
 			ensureAccountID(ctx)
 			return tok.AccessToken, nil
 		}
-		log.Printf("outlook: refresh failed, re-authenticating")
-		tok.Status = AuthRefreshFailed
-		saveToken()
+		if isRefreshAuthError(err) {
+			log.Printf("outlook: refresh rejected by STS, re-authenticating: %v", err)
+			tok.Status = AuthRefreshFailed
+			saveToken()
+		} else {
+			// Transient (network / 5xx / throttling): keep the stored token and
+			// let the next getToken retry; do not trigger interactive re-auth.
+			log.Printf("outlook: refresh transient, keeping token status: %v", err)
+			return "", err
+		}
 	}
 
 	if err := authCodeFlow(ctx, clientID); err != nil {
@@ -157,6 +179,27 @@ func accountID() string {
 	return tok.AccountID
 }
 
+// classifyRefreshHTTP turns a non-200 token endpoint response into the right
+// error class. It must NOT flip the stored status: only getToken decides, and
+// only for a definitive STS rejection. The body is logged either way.
+func classifyRefreshHTTP(status int, body []byte) error {
+	err := fmt.Errorf("refresh: HTTP %d: %s", status, truncateBody(body))
+	if status == http.StatusBadRequest {
+		return &refreshAuthError{err} // OAuth: error=invalid_grant
+	}
+	log.Printf("outlook: %v", err)
+	return err
+}
+
+// truncateBody caps a response body excerpt for logs.
+func truncateBody(b []byte) string {
+	const n = 200
+	if len(b) > n {
+		return string(b[:n])
+	}
+	return string(b)
+}
+
 func refreshToken(clientID string) error {
 	v := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -172,10 +215,7 @@ func refreshToken(clientID string) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		tok.Status = AuthRefreshFailed
-		saveToken()
-		statusAuthStatus.Store(AuthRefreshFailed)
-		return fmt.Errorf("refresh: HTTP %d: %s", resp.StatusCode, string(body))
+		return classifyRefreshHTTP(resp.StatusCode, body)
 	}
 
 	var r struct {
@@ -188,7 +228,8 @@ func refreshToken(clientID string) error {
 		return fmt.Errorf("refresh: parse: %w", err)
 	}
 	if r.Error != "" {
-		return fmt.Errorf("%s", r.Error)
+		// HTTP 200 with an OAuth error payload: a definitive STS rejection.
+		return &refreshAuthError{fmt.Errorf("refresh: %s", r.Error)}
 	}
 	tok.AccessToken = r.AccessToken
 	if r.RefreshToken != "" {

@@ -788,13 +788,35 @@ func passwordLogin(req struct {
 		form.Set("validate", req.Validate)
 		form.Set("seccode", req.Seccode)
 	}
-	if err := postForm(nil, loginURL, form); err != nil {
+	// The login envelope carries data.refresh_token; dropping it (postForm nil)
+	// leaves the auth file without a renewal token — every later session
+	// invalidation then forced a full re-login (the recurring login window).
+	var data struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := postForm(&data, loginURL, form); err != nil {
 		return fmt.Errorf("bilibili: 密码登录失败: %w", err)
 	}
 	if jar.get("SESSDATA") == "" {
 		return fmt.Errorf("bilibili: 密码登录未获得 SESSDATA(可能需要极验人机验证)")
 	}
+	captureRefreshToken(data.RefreshToken, "password")
 	return nil
+}
+
+// captureRefreshToken persists the login envelope's refresh_token. Without it
+// refreshCookies cannot renew a dead session and the login UI re-opens every
+// time the server-side login state decays.
+func captureRefreshToken(tok, via string) {
+	if tok == "" {
+		log.Printf("bilibili: WARNING %s login returned no refresh_token; auto-renewal unavailable", via)
+		return
+	}
+	auth.mu.Lock()
+	auth.refreshToken = tok
+	auth.mu.Unlock()
+	saveAuth()
+	log.Printf("bilibili: %s login captured refresh_token", via)
 }
 
 // rsaEncrypt encrypts a string with a PEM PKCS#1/PKIX public key (PKCS1v15).
@@ -934,11 +956,17 @@ func smsLogin(phone, code string) error {
 	form.Set("source", "main_web")
 	form.Set("captcha_key", ck)
 	form.Set("keep", "true")
-	if err := postForm(nil, smsLoginURL, form); err != nil {
+	// The login envelope carries data.refresh_token (see captureRefreshToken);
+	// postForm(nil) here silently dropped it and broke auto-renewal.
+	var data struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := postForm(&data, smsLoginURL, form); err != nil {
 		return fmt.Errorf("bilibili: 短信验证码登录失败: %w", err)
 	}
 	if jar.get("SESSDATA") == "" {
 		return fmt.Errorf("bilibili: 短信登录未获得 SESSDATA")
 	}
+	captureRefreshToken(data.RefreshToken, "sms")
 	return nil
 }

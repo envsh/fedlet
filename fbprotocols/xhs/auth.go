@@ -202,20 +202,32 @@ const (
 // rather than a transient failure.
 func isHttpAuthErr(err error, status int) bool {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return true
+		// 401/403 also fires for risk control / rate limiting; only trust it
+		// when the response body carries explicit not-logged-in markers. The
+		// error string embeds the first 200 bytes of the body (client.go
+		// getJSONOpts), so matching on it IS matching the actual response.
+		if isAuthRejectedText(err) {
+			return true
+		}
+		logPrefix("http %d auth-suspect but body lacks not-logged-in markers, keeping session: %v", status, err)
+		return false
 	}
 	return errors.Is(err, ErrNotLoggedIn) || isAuthRejectedText(err)
 }
 
 // isAuthRejectedText flags error texts that mean "session rejected/expired"
-// (the API answers -100 / 未登录 inside HTTP 200 envelopes).
+// (the API answers -100 / 未登录 inside HTTP 200 envelopes). Deliberately
+// narrow: the old free-form "auth" substring also matched "author",
+// "authorized" and risk-control bodies.
 func isAuthRejectedText(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
+	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "未登录") || strings.Contains(s, "-100") ||
-		strings.Contains(s, "auth") || strings.Contains(s, "http 401") || strings.Contains(s, "http 403")
+		strings.Contains(s, "http 401") ||
+		strings.Contains(s, "unauthorized") ||
+		strings.Contains(s, "login required")
 }
 
 // authStatusInvalid marks the stored session as rejected.

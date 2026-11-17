@@ -246,6 +246,12 @@ var probeSession = func() error {
 		log.Printf("bilibili: session ok for %q", env.Data.Uname)
 		return nil
 	}
+	// Only definitive not-logged-in / dead-refresh-pair codes kill the session.
+	// -412 rate limiting and friends are transient and must not open the UI.
+	if env.Code != -101 && env.Code != -111 && env.Code != 86095 {
+		log.Printf("bilibili: probe session: nav code %d (%s), treated as transient", env.Code, env.Message)
+		return fmt.Errorf("bilibili: probe session: nav code %d: %s", env.Code, env.Message)
+	}
 	markSessionInvalid(ErrNotLoggedIn)
 	return ErrNotLoggedIn
 }
@@ -292,6 +298,9 @@ var refreshCookies = func() error {
 	tok := auth.refreshToken
 	auth.mu.Unlock()
 	if tok == "" || jar.get("SESSDATA") == "" {
+		if tok == "" {
+			log.Printf("bilibili: refresh_token missing in auth file (login did not capture it) — re-login required to restore auto-renewal")
+		}
 		return ErrNotLoggedIn
 	}
 
@@ -324,6 +333,7 @@ var refreshCookies = func() error {
 	auth.status = AuthStatusReady
 	auth.mu.Unlock()
 	saveAuth()
+	confirmOldToken(tok) // best-effort: retire the rotated-out token
 	log.Printf("bilibili: refresh_token rotate ok")
 	return nil
 }

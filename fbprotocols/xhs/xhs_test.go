@@ -666,7 +666,11 @@ func TestIsSessionErrMatchesRejectedText(t *testing.T) {
 	}{
 		{fmt.Errorf("xhs: api code -100: 未登录"), true},
 		{errors.New("xhs: unread_count: 未登录"), true},
-		{errors.New("xhs: http 403"), true},
+		// A bare http 403 is risk control / rate limiting, not a session death
+		// signal: the response body must carry not-logged-in markers (the new
+		// isHttpAuthErr policy). Plain text alone must not kill the session.
+		{errors.New("xhs: http 403"), false},
+		{errors.New(`xhs: http 403 {"code":-100,"msg":"未登录"}`), true},
 		{errors.New("xhs: bad json: invalid character '<'"), false},
 		{errors.New("xhs: upstream down"), false},
 		{nil, false},
@@ -1050,5 +1054,26 @@ func TestPhoneLoginWireMatchesReference(t *testing.T) {
 	}
 	if got := rec.cookies[0]; !strings.Contains(got, "a1=") {
 		t.Errorf("login/code Cookie = %q, want a1 kept", got)
+	}
+}
+
+func TestHttp403BodyConfirmed(t *testing.T) {
+	if !isHttpAuthErr(errors.New(`xhs: http 403 {"code":-100,"msg":"未登录"}`), http.StatusForbidden) {
+		t.Errorf("403 with -100 body must be an auth error")
+	}
+}
+
+func TestHttp403RiskBodyKept(t *testing.T) {
+	if isHttpAuthErr(errors.New(`xhs: http 403 {"code":-1,"msg":"request blocked"}`), http.StatusForbidden) {
+		t.Errorf("403 without not-logged-in markers must NOT be an auth error")
+	}
+}
+
+func TestIsAuthRejectedTextNarrow(t *testing.T) {
+	if isAuthRejectedText(errors.New("xhs: sign author mismatch")) {
+		t.Errorf("free-form 'auth' substring must not match anymore")
+	}
+	if !isAuthRejectedText(errors.New(`xhs: http 200 {"code":-100,"msg":"未登录"}`)) {
+		t.Errorf("-100 envelope must still match")
 	}
 }

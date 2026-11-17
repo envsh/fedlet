@@ -227,8 +227,9 @@ func getJSON(data any, u string, needAuth bool) error {
 }
 
 // postForm posts a url-encoded form and decodes the envelope, classifying the
-// API code the same way as getJSON.
-func postForm(data any, u string, form url.Values) error {
+// API code the same way as getJSON. It is a seam (var) so tests can override
+// the network round-trip.
+var postForm = func(data any, u string, form url.Values) error {
 	body, status, err := doBili(http.MethodPost, u, form)
 	if err != nil {
 		return err
