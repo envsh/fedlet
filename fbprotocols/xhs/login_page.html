@@ -13,6 +13,7 @@ button{padding:.55rem 1.4rem;border:0;border-radius:6px;background:#ff2442;color
 button.blue{background:#0d69d5}
 #state{font-weight:600}
 .err{color:#b00020}
+.done{background:#e8f9ee;color:#0a7d33;padding:.9rem 1rem;border-radius:8px;margin-top:.6rem;font-weight:600}
 pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;border-radius:6px}
 .slider{max-width:100%}
 .hint{color:#666;font-size:.85rem}
@@ -27,6 +28,7 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
   <p>用 <b>小红书 App</b> 的「扫一扫」登录;<br>或手机浏览器打开:<pre id="qrl"></pre></p>
 </div>
 <div id="userbox" style="display:none">登录成功:<b id="user"></b></div>
+<div id="donebox" class="done" style="display:none">✓ 已登录成功:<b id="doneuser"></b></div>
 <div id="failed" class="err" style="display:none"></div>
 </div>
 <div class="card" id="riskcard" style="display:none">
@@ -84,12 +86,22 @@ pre{white-space:normal;word-break:break-all;background:#f6f6f6;padding:.6rem;bor
 <script>
 const $=id=>document.getElementById(id);
 const stage_txt={'idle':'准备二维码…','waiting':'等待扫码…','scanned':'已扫码,确认中…','done':'登录成功','expired':'二维码已过期,请刷新页面','failed':'登录失败'};
+let loginDone=false;
+function showLoginSuccess(user){
+  loginDone=true;
+  clearInterval(pollTimer);
+  ['qrbox','phoneform','codeform','cookieform','userbox','failed']
+    .forEach(id=>{const el=$(id); if(el) el.style.display='none';});
+  $('donebox').style.display=''; $('doneuser').textContent=user||'';
+  $('state').textContent='登录成功';
+}
 async function poll(){
+  if(loginDone){ clearInterval(pollTimer); return; }
   try{
     const r=await fetch('/api/state');const s=await r.json();
     $('state').textContent=stage_txt[s.stage]||s.stage;
     if(s.qr_code_url){$('qrbox').style.display='';$('qr').src=s.qr_code_url;$('qrl').textContent=s.qr_url;}
-    if(s.stage==='done'){ $('qrbox').style.display='none';$('userbox').style.display='';$('user').textContent=s.user||'';}
+    if(s.stage==='done'){ showLoginSuccess(s.user||''); return; }
     if(s.stage==='failed'){ $('failed').style.display='';$('failed').textContent=s.error||'未知错误';}
     renderRisk(s.risk);
   }catch(e){}
@@ -119,10 +131,10 @@ async function doVerify(){
   const phone=$('phone').value.trim(),code=$('code').value.trim();
   const r=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
   const j=await r.json();
-  if(j.ok){ $('phoneform').style.display='none';$('codeform').style.display='none';$('phonemsg').style.display='none';
+  if(j.ok){ showLoginSuccess(j.user||'');
   } else { $('phonemsg').style.display='';$('phonemsg').textContent='登录失败:\n'+j.error; }
 }
-poll();setInterval(poll,1500);
+poll();const pollTimer=setInterval(poll,1500);
 async function cookieLogin(){
   const a1=$('cookie_a1').value.trim(),web_session=$('cookie_session').value.trim();
   const web_session_sec=$('cookie_sec').value.trim(),webId=$('cookie_webid').value.trim();
@@ -135,9 +147,7 @@ async function cookieLogin(){
     const r=await fetch('/api/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j=await r.json();
     if(j.ok){
-      $('cookieform').style.display='none'; msg.style.display='none';
-      $('qrbox').style.display='none'; $('phoneform').style.display='none'; $('codeform').style.display='none';
-      $('state').textContent='登录成功'; $('userbox').style.display=''; $('user').textContent=j.user||'';
+      showLoginSuccess(j.user||'');
     } else { msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+j.error; }
   }catch(e){ msg.style.display=''; msg.textContent='Cookie 登录失败:\n'+(e&&e.message||'网络错误'); }
 }
